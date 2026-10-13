@@ -55,6 +55,32 @@ class LifecycleTests(unittest.TestCase):
     def test_real_process_birth_is_available(self):
         self.assertIsNotNone(manager.birth(__import__("os").getpid()))
 
+    def test_same_pid_and_start_time_from_another_boot_do_not_match(self):
+        import os
+        from unittest.mock import patch
+        stat = Path(f"/proc/{os.getpid()}/stat").read_text()
+        identities = []
+        for boot in ("previous-boot", "current-boot"):
+            def read(path, boot=boot):
+                return boot if str(path) == "/proc/sys/kernel/random/boot_id" else stat
+            with patch.object(Path, "read_text", read):
+                identities.append(manager.birth(os.getpid()))
+        self.assertNotEqual(*identities)
+
+    def test_legacy_lease_without_boot_identity_is_not_adopted(self):
+        import json
+        import os
+        import tempfile
+        from unittest.mock import patch
+        pid = os.getpid()
+        start = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+        with tempfile.TemporaryDirectory() as directory:
+            lease = Path(directory) / "lease-legacy.json"
+            lease.write_text(json.dumps({"pid": pid, "birth": start, "workdir": "/projects/fleet"}))
+            with patch.object(manager, "STATE", Path(directory)):
+                self.assertEqual(manager.live_leases(), [])
+            self.assertFalse(lease.exists())
+
 
 class OwnershipTests(unittest.TestCase):
     def test_cold_start_rejects_foreign_container_before_start(self):

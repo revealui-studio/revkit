@@ -26,7 +26,10 @@ def run(args, timeout=15):
 def birth(pid):
     try:
         fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-        return None if fields[0] in ("Z", "X") else fields[19]
+        if fields[0] in ("Z", "X"):
+            return None
+        boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        return f"{boot}:{fields[19]}" if boot else None
     except (OSError, IndexError):
         return None
 
