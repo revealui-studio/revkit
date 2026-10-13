@@ -72,6 +72,12 @@ class Races(unittest.TestCase):
                 self.assertTrue(m.database_clients_busy([PROJECTS[0]]))
 
     def test_enter_writes_lease_while_real_tick_process_waits_in_stop(self):
+        self.exercise_admission("stop")
+
+    def test_enter_writes_lease_while_pre_stop_inspection_waits(self):
+        self.exercise_admission("inspection")
+
+    def exercise_admission(self, phase):
         # Real cross-process flock: the tick stays stalled until entry succeeds.
         started, release = multiprocessing.Event(), multiprocessing.Event()
         with tempfile.TemporaryDirectory() as directory:
@@ -83,7 +89,20 @@ class Races(unittest.TestCase):
                 started.set()
                 if not release.wait(10):
                     raise RuntimeError('test stop timed out')
-            backend.after_stop = wait
+            if phase == "stop":
+                backend.after_stop = wait
+            else:
+                original_run = backend.run
+                inspections = 0
+                def slow_inspection(args, timeout=15):
+                    nonlocal inspections
+                    if args[:3] == ["docker", "inspect", "a"]:
+                        inspections += 1
+                        # Initial inventory, target pinning, then pre-stop check.
+                        if inspections == 3:
+                            wait()
+                    return original_run(args, timeout)
+                backend.run = slow_inspection
             def cleanup():
                 tick(directory, backend, through_main=True)
             worker = multiprocessing.Process(target=cleanup)

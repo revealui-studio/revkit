@@ -191,17 +191,17 @@ def tick(projects, dry_run=False):
         project = next(p for p in projects if p["container"] == name)
         targets.append((project, inspect_owned(project)["Id"]))
     for project, container_id in targets:
-        # Revalidate after each earlier stop, while holding only the short
-        # lease decision lock. Never hold it during Docker shutdown waits.
+        # External inspection can take minutes; it must not block lease writes.
+        current = inspect_owned(project)
+        if current["Id"] != container_id:
+            raise RuntimeError("managed container identity changed")
+        _, foreign, available = snapshot(projects)
+        blocked = foreign or clients_busy() or database_clients_busy(available)
+        # Revalidate incoming leases only after external checks finish.
         with lease_lock():
             fresh_leases = live_leases()
-            current = inspect_owned(project)
-            if current["Id"] != container_id:
-                raise RuntimeError("managed container identity changed")
-            _, foreign, available = snapshot(projects)
-            if (foreign or clients_busy() or database_clients_busy(available)
-                    or any(contains(project["root"], lease["workdir"])
-                           for lease in fresh_leases)):
+            if (blocked or any(contains(project["root"], lease["workdir"])
+                               for lease in fresh_leases)):
                 seen[project["container"]] = time.time()
                 atomic_json(state_file, seen)
                 continue
