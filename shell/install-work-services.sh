@@ -32,16 +32,36 @@ for directory in [units, config, binary.parent, state]:
 config.chmod(0o700)
 state.chmod(0o700)
 
-files = {
-    binary: source.read_text(),
-    config / "work-services.json": json.dumps({
+# Preserve operator mappings, including renamed PostgreSQL containers/projects.
+# Validate before constructing or publishing any replacement lifecycle files.
+project_config = config / "work-services.json"
+if project_config.exists():
+    project_contents = project_config.read_text()
+    existing = json.loads(project_contents)
+    projects = existing.get("projects")
+    if not isinstance(projects, list) or not projects:
+        raise ValueError("existing work-services projects must be a non-empty list")
+    for project in projects:
+        if not isinstance(project, dict) or any(
+            not isinstance(project.get(key), str) or not project[key].strip()
+            for key in ("root", "container", "compose_project")
+        ):
+            raise ValueError("invalid existing work-services project mapping")
+        if not Path(project["root"]).is_absolute():
+            raise ValueError("existing project roots must be absolute")
+else:
+    project_contents = json.dumps({
         "projects": [
             {"root": str(demo.resolve()), "container": "docker-postgres-1",
              "compose_project": "docker"},
             {"root": str(fleet.resolve()), "container": "revfleet-pg-dev",
              "compose_project": "pg-dev"}
         ]
-    }, indent=2) + "\n",
+    }, indent=2) + "\n"
+
+files = {
+    binary: source.read_text(),
+    config / "work-services.json": project_contents,
     units / "revealfleet-work-services.service": """[Unit]
 Description=RevealFleet work service idle cleanup
 

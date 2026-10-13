@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Project-scoped Docker services with process leases and graceful idle cleanup."""
 import argparse
+from contextlib import contextmanager
 import fcntl
 import hashlib
 import json
@@ -106,18 +107,35 @@ def live_leases():
 
 
 def database_clients_busy(projects):
-    ports = set()
+    ports, direct = set(), set()
     for project in projects:
         details = json.loads(run(["docker", "inspect", project["container"]]))[0]
-        bindings = details["NetworkSettings"].get("Ports") or {}
+        network = details["NetworkSettings"]
+        bindings = network.get("Ports") or {}
         for binding in bindings.get("5432/tcp") or []:
             ports.add(binding["HostPort"])
+        for attachment in (network.get("Networks") or {}).values():
+            for key in ("IPAddress", "GlobalIPv6Address"):
+                if attachment.get(key):
+                    direct.add((attachment[key], "5432"))
+        if network.get("IPAddress"):
+            direct.add((network["IPAddress"], "5432"))
     connections = run(["ss", "-Htn", "state", "established"])
     for line in connections.splitlines():
         for endpoint in line.split():
-            if ":" in endpoint and endpoint.rsplit(":", 1)[1] in ports:
+            if ":" not in endpoint:
+                continue
+            address, port = endpoint.rsplit(":", 1)
+            if port in ports or (address.strip("[]"), port) in direct:
                 return True
     return False
+
+
+@contextmanager
+def lease_lock():
+    with (STATE / "manager.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
 
 
 def inspect_owned(project):
@@ -141,7 +159,8 @@ def snapshot(projects):
 
 
 def tick(projects, dry_run=False):
-    leases = live_leases()
+    with lease_lock():
+        leases = live_leases()
     state_file = STATE / "idle.json"
     previous = json.loads(state_file.read_text()) if state_file.exists() else {}
     now = time.time()
@@ -159,17 +178,40 @@ def tick(projects, dry_run=False):
     if dry_run:
         print(json.dumps({"start": starts, "stop": stops, "other_work": blocked}))
         return
-    atomic_json(state_file, seen)
+    with lease_lock():
+        atomic_json(state_file, seen)
     for name in starts:
         # Absence is harmless only for unrelated projects. Recheck ownership
         # immediately before starting each requested database.
         inspect_owned(next(p for p in projects if p["container"] == name))
         run(["docker", "start", name], timeout=90)
+    # Pin every target before the first potentially slow shutdown.
+    targets = []
     for name in stops:
-        run(["docker", "stop", "--time", "-1", name], timeout=75)
+        project = next(p for p in projects if p["container"] == name)
+        targets.append((project, inspect_owned(project)["Id"]))
+    for project, container_id in targets:
+        # Revalidate after each earlier stop, while holding only the short
+        # lease decision lock. Never hold it during Docker shutdown waits.
+        with lease_lock():
+            fresh_leases = live_leases()
+            current = inspect_owned(project)
+            if current["Id"] != container_id:
+                raise RuntimeError("managed container identity changed")
+            _, foreign, available = snapshot(projects)
+            if (foreign or clients_busy() or database_clients_busy(available)
+                    or any(contains(project["root"], lease["workdir"])
+                           for lease in fresh_leases)):
+                seen[project["container"]] = time.time()
+                atomic_json(state_file, seen)
+                continue
+        # Names may be reused; Docker IDs cannot refer to a replacement.
+        run(["docker", "stop", "--time", "-1", container_id], timeout=75)
     # Recheck after database shutdown; another workload may have arrived.
     running, foreign, _ = snapshot(projects)
     quiet = all(now - seen[p["container"]] >= IDLE for p in projects)
+    with lease_lock():
+        leases = live_leases()
     if not leases and quiet and not running and not foreign and not clients_busy():
         run(["sudo", "-n", "systemctl", "stop", "docker.service"], timeout=100)
 
@@ -184,12 +226,17 @@ def main():
     args = parser.parse_args()
     STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
     STATE.chmod(0o700)
-    with (STATE / "manager.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        projects = json.loads(CONFIG.read_text())["projects"]
-        if args.action == "tick":
+    projects = json.loads(CONFIG.read_text())["projects"]
+    if args.action == "tick":
+        # Cleanup/startup runs serialize separately from incoming lease writes.
+        with (STATE / "tick.lock").open("a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return  # Existing tick or the timer will see persistent leases.
             tick(projects, args.dry_run)
-            return
+        return
+    with lease_lock():
         if not args.session:
             parser.error("--session is required")
         key = hashlib.sha256(args.session.encode()).hexdigest()
