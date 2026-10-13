@@ -1,0 +1,58 @@
+Work services lifecycle
+
+Install from this repository:
+  REVEALFLEET_ROOT="$HOME/revealfleet" \
+  DEMO_FLEET_ROOT="$HOME/demo-fleet" \
+  bash shell/install-work-services.sh
+
+Prerequisites:
+  Linux systemd, Python 3, Docker Engine, ss, Docker socket access, and
+  noninteractive sudo for the installer's systemctl operations and for:
+    sudo -n systemctl stop docker.service
+
+RevDev must include work-services.ts. RevealUI's shared session boundary must
+include ensure-daemon.ts. The installer enables Docker socket activation and
+the user cleanup timer. It preserves previous lifecycle files in a private
+backup and does not restart running services.
+
+Project mappings:
+  DEMO_FLEET_ROOT: docker-postgres-1, Compose project docker
+  REVEALFLEET_ROOT: revfleet-pg-dev, Compose project pg-dev
+
+Only registered local work sessions create database leases. Each lease is
+bound to the process PID and Linux process start time. Signed session end
+releases it; an exited process is reaped by the timer. An open shell alone
+does not create a lease.
+
+The timer checks once a minute. Managed databases stop after five quiet
+minutes. SIGINT shutdown waits without forcing a kill; a slow shutdown
+causes the check to fail and retry rather than force termination.
+Volumes are retained. Other running containers, Docker CLI/API clients,
+build processes, and host database connections postpone cleanup.
+Docker stops only after the workload checks pass and all containers stop.
+Idle timer checks do not contact Docker's socket when its service is stopped.
+
+Inspect without waking Docker:
+  systemctl show docker.service -p ActiveState -p Result
+  systemctl --user show revdev-daemon.service -p ActiveState -p Result
+  journalctl --user -u revealfleet-work-services.service --no-pager -n 30
+
+A Docker CLI command can wake Docker through socket activation.
+
+Diagnostics:
+  ~/.local/share/revealfleet/work-services/startup.log
+  ~/.local/share/revealfleet/work-services/lease-*.json
+  ~/.local/share/revealfleet/work-services/idle.json
+
+Never remove a live database lock to automate recovery. PGlite crash recovery
+requires a separate ownership check and preserved backup.
+
+Verification:
+  PYTHONDONTWRITEBYTECODE=1 python3 tests/test-work-services.py
+
+Observed native checks on 2026-10-11:
+  Registered fleet session started RevDev, Docker, and healthy fleet Postgres.
+  The unrelated demo database stayed stopped during cold startup.
+  Signed session end succeeded.
+  RevDev and Docker later stopped successfully with zero daemon restarts.
+  Subsequent timer checks did not wake Docker.
