@@ -129,10 +129,12 @@ def inspect_owned(project):
 
 def snapshot(projects):
     names = run(["docker", "ps", "--format", "{{.Names}}"]).splitlines()
+    existing = set(run(["docker", "ps", "--all", "--format", "{{.Names}}"]).splitlines())
     managed = {p["container"] for p in projects}
-    for project in projects:
+    available = [p for p in projects if p["container"] in existing]
+    for project in available:
         inspect_owned(project)
-    return set(names), bool(set(names) - managed)
+    return set(names), bool(set(names) - managed), available
 
 
 def tick(projects, dry_run=False):
@@ -148,19 +150,22 @@ def tick(projects, dry_run=False):
                     inspect_owned(project)
                     run(["docker", "start", project["container"]], timeout=90)
         return
-    running, foreign = snapshot(projects)
-    blocked = foreign or clients_busy() or database_clients_busy(projects)
+    running, foreign, available = snapshot(projects)
+    blocked = foreign or clients_busy() or database_clients_busy(available)
     starts, stops, seen = plan(projects, leases, running, blocked, now, previous)
     if dry_run:
         print(json.dumps({"start": starts, "stop": stops, "other_work": blocked}))
         return
     atomic_json(state_file, seen)
     for name in starts:
+        # Absence is harmless only for unrelated projects. Recheck ownership
+        # immediately before starting each requested database.
+        inspect_owned(next(p for p in projects if p["container"] == name))
         run(["docker", "start", name], timeout=90)
     for name in stops:
         run(["docker", "stop", "--time", "-1", name], timeout=75)
     # Recheck after database shutdown; another workload may have arrived.
-    running, foreign = snapshot(projects)
+    running, foreign, _ = snapshot(projects)
     quiet = all(now - seen[p["container"]] >= IDLE for p in projects)
     if not leases and quiet and not running and not foreign and not clients_busy():
         run(["sudo", "-n", "systemctl", "stop", "docker.service"], timeout=100)

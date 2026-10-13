@@ -84,5 +84,97 @@ class OwnershipTests(unittest.TestCase):
                 )
                 self.assertEqual(run.call_count, 1)
 
+class ActiveDockerStartupTests(unittest.TestCase):
+    def test_absent_unrelated_container_does_not_block_requested_start(self):
+        import json
+        import subprocess
+        import tempfile
+        from unittest.mock import patch
+        projects = [
+            {"root": "/projects/demo", "container": "demo", "compose_project": "demo"},
+            {"root": "/projects/fleet", "container": "fleet", "compose_project": "fleet"},
+        ]
+        running = set()
+        calls = []
+        def docker(args, timeout=15):
+            calls.append(args)
+            if args[1] == "ps":
+                return "fleet\n" if "--all" in args else "\n".join(running)
+            if args[1] == "inspect":
+                if args[2] == "demo":
+                    raise subprocess.CalledProcessError(1, args)
+                return json.dumps([{"Config": {"Labels": {
+                    "com.docker.compose.project": "fleet",
+                    "com.docker.compose.service": "postgres",
+                }}}])
+            if args[1] == "start":
+                running.add(args[2])
+                return ""
+            raise AssertionError(args)
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(manager, "STATE", Path(directory)), \
+                 patch.object(manager, "live_leases", return_value=[{"workdir": "/projects/fleet"}]), \
+                 patch.object(manager, "docker_active", return_value=True), \
+                 patch.object(manager, "clients_busy", return_value=False), \
+                 patch.object(manager, "database_clients_busy", return_value=False) as clients, \
+                 patch.object(manager, "run", side_effect=docker):
+                manager.tick(projects)
+                self.assertEqual(clients.call_args.args[0], [projects[1]])
+        self.assertEqual(running, {"fleet"})
+        self.assertFalse(any(args[1:] == ["inspect", "demo"] for args in calls))
+
+
+class InventorySafetyTests(unittest.TestCase):
+    def test_existing_unrelated_container_still_requires_ownership(self):
+        import json
+        from unittest.mock import patch
+        project = {"root": "/projects/demo", "container": "demo", "compose_project": "demo"}
+        def docker(args, timeout=15):
+            if args[1] == "ps": return "demo\n"
+            return json.dumps([{"Config": {"Labels": {
+                "com.docker.compose.project": "foreign",
+                "com.docker.compose.service": "postgres",
+            }}}])
+        with patch.object(manager, "run", side_effect=docker):
+            with self.assertRaisesRegex(RuntimeError, "ownership changed"):
+                manager.snapshot([project])
+
+    def test_incomplete_inventory_does_not_authorize_start_or_cleanup(self):
+        import subprocess
+        from unittest.mock import patch
+        with patch.object(manager, "run", side_effect=["", subprocess.CalledProcessError(1, ["docker", "ps", "--all"])]):
+            with self.assertRaises(subprocess.CalledProcessError):
+                manager.snapshot([])
+
+    def test_missing_requested_database_still_fails_before_start(self):
+        import subprocess
+        import tempfile
+        from unittest.mock import patch
+        project = {"root": "/projects/fleet", "container": "fleet", "compose_project": "fleet"}
+        calls = []
+        def docker(args, timeout=15):
+            calls.append(args)
+            if args[1] == "ps": return ""
+            raise subprocess.CalledProcessError(1, args)
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(manager, "STATE", Path(directory)), \
+                 patch.object(manager, "live_leases", return_value=[{"workdir": "/projects/fleet"}]), \
+                 patch.object(manager, "docker_active", return_value=True), \
+                 patch.object(manager, "clients_busy", return_value=False), \
+                 patch.object(manager, "database_clients_busy", return_value=False), \
+                 patch.object(manager, "run", side_effect=docker):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    manager.tick([project])
+        self.assertFalse(any(args[1] in ("start", "stop") for args in calls))
+
+    def test_foreign_running_container_still_blocks_cleanup(self):
+        from unittest.mock import patch
+        with patch.object(manager, "run", side_effect=["unrelated-work\n", "unrelated-work\n"]):
+            running, foreign, available = manager.snapshot([])
+        self.assertEqual(running, {"unrelated-work"})
+        self.assertTrue(foreign)
+        self.assertEqual(available, [])
+
+
 if __name__ == "__main__":
     unittest.main()
