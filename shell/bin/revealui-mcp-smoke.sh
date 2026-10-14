@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# revealui-mcp-smoke — fleet-owned; never prints secrets.
 # MCP initialization and discovery only; no tool execution or permission proof.
 # Exit: 0 discovery passed, 1 protocol/auth failure, 2 network/config error.
 # GNU timeout exits 124 or 137 on deadline. Cleanup may be skipped on termination;
