@@ -204,6 +204,22 @@ jobs:
             exit 1
           fi
 
+  test-mcp-smoke:
+    name: MCP smoke protocol and deadlines
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Run synthetic MCP transport and process regressions
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python3 -m unittest discover -s tests -p test_probe.py -v
+          python3 -m unittest discover -s tests -p test_transport_wrapper.py -v
+          bash -n shell/bin/revealui-mcp-smoke.sh
+
   test-secrets:
     name: tests/test-secrets.sh
     runs-on: ubuntu-latest
