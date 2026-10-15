@@ -13,7 +13,8 @@ secrets/
 id_ed25519*
 !*.pub
 
-# Operator-local client-name watchlist (Layer B). Never commit real terms.
+# Operator-local client-name watchlist (Layer B) and the local fallback
+# for scripts/check-client-leaks.sh (tag|literal|reason). Never commit.
 .client-name-watchlist.local
 
 # Passage store (its own git repo)

@@ -1,8 +1,12 @@
 name: Issue + PR Body Leak Scan
 
-# Thin caller — logic in org-shared reusable workflow:
+# Thin caller. Logic for non-name rules is in the org-shared reusable workflow:
 #   RevealUIStudio/.github/.github/workflows/issue-leak-scan-reusable.yml
 # Requires .gitleaks.issues.toml on this repo's default branch.
+#
+# Name rules are not in that toml. The client-name-bodies job runs
+# scripts/check-client-leaks.sh against the event body with the org secret
+# CLIENT_LEAK_PATTERNS. Match text is not printed. A missing secret fails closed.
 
 on:
   issues:
@@ -23,5 +27,103 @@ concurrency:
 
 jobs:
   scan:
-    uses: RevealUIStudio/.github/.github/workflows/issue-leak-scan-reusable.yml@8ea1ca5697dfc1f2041aac1368a9dd6d241121ab
-    secrets: inherit
+    uses: revealui-studio/.github/.github/workflows/issue-leak-scan-reusable.yml@ed893dec79c02c60604d566a03ddfb305e9358fe
+    secrets:
+      client_leak_patterns: ${{ secrets.CLIENT_LEAK_PATTERNS }}
+
+  client-name-bodies:
+    name: Client-leak scan of issue and PR bodies
+    # Same bot skip as the shared reusable workflow.
+    if: >-
+      github.actor != 'github-actions[bot]'
+      && github.actor != 'dependabot[bot]'
+      && github.actor != 'chatgpt-codex-connector[bot]'
+      && (github.event.comment == null || github.event.comment.user.type != 'Bot')
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      # pull_request_target: default checkout is the base ref, not the PR head.
+      # Do not check out untrusted head code while this job holds the secret.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Write event body outside the checkout
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('node:fs');
+            const body =
+              context.payload.comment?.body
+              ?? context.payload.issue?.body
+              ?? context.payload.pull_request?.body
+              ?? '';
+            fs.mkdirSync('/tmp/scan-payload', { recursive: true });
+            fs.writeFileSync('/tmp/scan-payload/body.txt', body, { encoding: 'utf8', mode: 0o600 });
+
+      - name: Scan body with secret-backed patterns
+        id: scan
+        env:
+          CLIENT_LEAK_PATTERNS: ${{ secrets.CLIENT_LEAK_PATTERNS }}
+        run: |
+          set -uo pipefail
+          # Discard stdout. A hit line would contain the matched text.
+          set +e
+          bash scripts/check-client-leaks.sh /tmp/scan-payload/body.txt >/dev/null
+          code=$?
+          set -e
+          case "$code" in
+            0|1|2) ;;
+            *) code=2 ;;
+          esac
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          if [[ "$code" -eq 0 ]]; then
+            echo "[client-leak] body scan clean"
+          elif [[ "$code" -eq 1 ]]; then
+            echo "[client-leak] body matched the secret pattern list (match text withheld)"
+          else
+            echo "[client-leak] body scan failed closed (exit $code). CLIENT_LEAK_PATTERNS must be set."
+          fi
+
+      - name: Comment when the body matches
+        if: steps.scan.outputs.code == '1'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const issueNumber =
+              context.payload.issue?.number
+              ?? context.payload.pull_request?.number;
+            if (!issueNumber) {
+              core.setFailed('Client-leak scan matched, but no issue number was available.');
+              return;
+            }
+            const commentBody = [
+              '> [!CAUTION]',
+              '> **Possible client or prospect name detected.**',
+              '',
+              'The secret-backed client-leak scanner matched this body.',
+              'Edit the body and remove the name. Do not paste the matched text back into the thread.',
+              '',
+              'The pattern list lives in the org secret `CLIENT_LEAK_PATTERNS`. It is not in this repo.',
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body: commentBody,
+            });
+            try {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                labels: ['contains-sensitive-content'],
+              });
+            } catch (err) {
+              core.warning(`addLabels failed: ${err.message}`);
+            }
+
+      - name: Fail when the scan is not clean
+        if: steps.scan.outputs.code != '0'
+        run: exit "${{ steps.scan.outputs.code }}"

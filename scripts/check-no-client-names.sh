@@ -4,7 +4,7 @@
 # Watchlist gate for client / buyer / end-client terms that must not appear
 # in public artifacts. Companion to:
 #   scripts/check-no-private-leaks.sh  paths, hostnames, machine homes
-#   scripts/check-client-leaks.sh      long-lived literals kept in this script
+#   scripts/check-client-leaks.sh      secret-backed literals (CLIENT_LEAK_PATTERNS)
 #
 # This file never embeds watchlist terms. Load from (first found):
 #   1. $CLIENT_NAME_WATCHLIST_FILE
@@ -15,8 +15,10 @@
 # does not false-fail. Layer A (bot daily org audit) still runs. Set
 # CLIENT_NAME_WATCHLIST_REQUIRED=1 to exit 2 when the watchlist is missing.
 #
-# The hardcoded scanner (check-client-leaks.sh) stays. Use this gate for
-# operator-local or CI-secret terms that must not live in git.
+# The client-leak scanner stays. It loads CLIENT_LEAK_PATTERNS (local
+# fallback: tag|literal|reason lines in .client-name-watchlist.local) and
+# fails closed in CI when that secret is missing. Use this gate for a
+# separate operator term list. Never commit either list.
 #
 # Exit 0 on clean (or inactive). Exit 1 on any violation. Exit 2 on setup error.
 #

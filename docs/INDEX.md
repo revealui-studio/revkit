@@ -21,7 +21,7 @@ optimization, editor configs.
 
 ## Reference
 
-- [`client-name-public-github.md`](./client-name-public-github.md). Public client-name defense: hardcoded scanner plus watchlist gate.
+- [`client-name-public-github.md`](./client-name-public-github.md). Public client-name defense: secret-backed scanner plus watchlist gate.
 - [`rfc-launcher.md`](./rfc-launcher.md). The `rfc` secure Claude launcher
 - [`rfx-launcher.md`](./rfx-launcher.md). The `rfx` Codex launcher, and the audit-storm sweeper's agent-ancestor skip.
 - [`tier-capabilities.md`](./tier-capabilities.md). T0/T1 (sandbox-drive) capabilities
