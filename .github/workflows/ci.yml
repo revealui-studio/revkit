@@ -192,6 +192,8 @@ jobs:
           persist-credentials: false
       - name: Scan for private paths and credentials
         run: bash scripts/check-no-private-leaks.sh
+      - name: Test literal-path admission in isolated repositories
+        run: bash scripts/check-no-private-leaks.test.sh
       - name: Fail on tracked binary archives
         run: |
           # Binary archives evade leak scanning (check-no-private-leaks.sh

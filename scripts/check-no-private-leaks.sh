@@ -47,7 +47,9 @@ PATTERNS=(
   # match this scanner's own source. \b keeps it from matching the full
   # joshua[-]v-dev form caught by lit-username above.
   "bare-username|j""oshu\\b|bare developer account-name token; use a placeholder"
-  "abs-home-path|/home/[A-Za-z0-9_][A-Za-z0-9_.-]*|absolute user home path (/home/<username>/...)"
+  # Require a literal path boundary. A variable or command substitution followed
+  # by /home/... is a parameterized fixture path, not an operator home path.
+  "abs-home-path|(^|file://|[^[:alnum:]_}/)])/home/[A-Za-z0-9_][A-Za-z0-9_.-]*|absolute user home path (/home/<username>/...)"
   "abs-windows-user|[Cc]:[\\\\/]Users[\\\\/][A-Za-z0-9_-]+|absolute Windows user path (C:\\\\Users\\\\<name>)"
   "abs-wsl-windows-user|/mnt/[a-z]/Users/[A-Za-z0-9_-]+|WSL mount of a Windows user path (/mnt/c/Users/<name>)"
   "private-jv-repo|[~/][A-Za-z][A-Za-z0-9._-]*/\\.jv|private planning checkout under a named fleet directory"
