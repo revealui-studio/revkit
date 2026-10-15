@@ -6,7 +6,27 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BOOT="$ROOT/bootstrap.sh"
+# Isolate source discovery as well as HOME. A source checkout under .wt can
+# otherwise resolve the operator's fleet and run its real revcon/link.sh.
+# Use /tmp explicitly: an inherited TMPDIR may itself be inside a fleet.
+TEST_ROOT="$(mktemp -d /tmp/revkit-bootstrap-test.XXXXXX)"
+trap 'rm -rf -- "$TEST_ROOT"' EXIT
+FIXTURE_FLEET="$TEST_ROOT/revealfleet"
+FIXTURE_SOURCE="$FIXTURE_FLEET/.wt/source"
+mkdir -p "$FIXTURE_SOURCE" "$FIXTURE_FLEET/revcon" "$TEST_ROOT/home"
+cp -R "$ROOT/bootstrap.sh" "$ROOT/lib" "$ROOT/shell" "$ROOT/templates" "$FIXTURE_SOURCE/"
+BOOT="$FIXTURE_SOURCE/bootstrap.sh"
+INFER_LOG="$TEST_ROOT/inferred-link.log"
+cat > "$FIXTURE_FLEET/revcon/link.sh" << 'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "${INFER_LOG:?}"
+EOF
+
+# Fixture repositories must not load operator Git config, hooks, or GIT_*.
+fixture_git() {
+  env -i HOME="$TEST_ROOT/home" PATH="$PATH" GIT_CONFIG_NOSYSTEM=1 \
+    git -c core.hooksPath=/dev/null -c commit.gpgsign=false "$@"
+}
 
 PASS=0
 FAIL=0
@@ -46,7 +66,7 @@ fi
 
 new_home() {
   local dir
-  dir="$(mktemp -d)"
+  dir="$(mktemp -d "$TEST_ROOT/home.XXXXXX")"
   mkdir -p "$dir/home" "$dir/bin"
   cat > "$dir/bin/claude" << 'EOF'
 #!/bin/sh
@@ -66,19 +86,22 @@ run_boot() {
   local home="$1"
   shift
   local log rc
-  log="$(mktemp)"
+  log="$(mktemp "$TEST_ROOT/bootstrap.XXXXXX")"
   set +e
-  HOME="$home" \
+  (cd "$home" && env -i HOME="$home" \
     CLAUDE_LOG="${CLAUDE_LOG:?}" \
     SUDO_LOG="${SUDO_LOG:?}" \
     PATH="${BIN:?}:$PATH" \
+    TMPDIR="$TEST_ROOT" \
+    INFER_LOG="$INFER_LOG" \
+    LINK_LOG="${LINK_LOG:-}" \
     REVEALFLEET_ROOT="${REVEALFLEET_ROOT:-}" \
     REVEALUI_ROOT="" \
-    GROK_HOME="${GROK_HOME:-$home/.grok}" \
+    GROK_HOME="$home/.grok" \
     REVKIT_CLAUDE_ADAPTER="${REVKIT_CLAUDE_ADAPTER:-0}" \
     REVKIT_BOOTSTRAP_ONLY="${REVKIT_BOOTSTRAP_ONLY:-}" \
     REVKIT_LINK_EDITORS="${REVKIT_LINK_EDITORS:-}" \
-    bash "$BOOT" "$@" >"$log" 2>&1
+    bash "$BOOT" "$@") >"$log" 2>&1
   rc=$?
   set -e
   printf '%s\n' "$rc"
@@ -97,9 +120,30 @@ printf 'marker\n' > "$BASE/home/.claude/marker"
 unset REVEALFLEET_ROOT || true
 export REVKIT_CLAUDE_ADAPTER=0
 export REVKIT_BOOTSTRAP_ONLY=control
-out="$(run_boot "$BASE/home")"
+# Poison supported host overrides and shell startup with synthetic paths. None
+# may survive the bootstrap child's environment allowlist.
+cat > "$TEST_ROOT/startup.sh" << EOF
+printf 'startup leaked\n' > "$TEST_ROOT/startup.log"
+EOF
+out="$(REVKIT_ROOT="$TEST_ROOT/forbidden/source" \
+  REVEALUI_NATIVE_HOME="$TEST_ROOT/forbidden/native" \
+  REVKIT_CLAUDE_HOME="$TEST_ROOT/forbidden/claude" \
+  GROK_HOME="$TEST_ROOT/forbidden/grok" \
+  XDG_CONFIG_HOME="$TEST_ROOT/forbidden/config" \
+  BASH_ENV="$TEST_ROOT/startup.sh" run_boot "$BASE/home")"
 rc="${out%%$'\n'*}"
 body="${out#*$'\n'}"
+if [ ! -e "$TEST_ROOT/forbidden" ] && [ ! -e "$TEST_ROOT/startup.log" ]; then
+  pass "host path overrides and shell startup do not reach bootstrap fixtures"
+else
+  fail "bootstrap fixture inherited host path overrides or shell startup"
+fi
+if [ -s "$INFER_LOG" ] \
+  && grep -q -- "--target $FIXTURE_FLEET/revcon --editor revealui" "$INFER_LOG"; then
+  pass "worktree source discovery invokes only the synthetic fleet linker"
+else
+  fail "worktree fixture did not exercise synthetic fleet discovery"
+fi
 if [ "$rc" = "0" ]; then
   pass "default control-layer run exits 0"
 else
@@ -126,6 +170,13 @@ if [ -f "$BASE/home/.revealui/hooks/m4-sudoers-fs-scanner.js" ] \
   pass "M-4 scanner and session-start install under ~/.revealui/hooks"
 else
   fail "native hooks missing"
+fi
+# Validate deployed bytes, after the projection marker has been inserted.
+if node --check "$BASE/home/.revealui/hooks/m4-sudoers-fs-scanner.js" \
+  && node --check "$BASE/home/.revealui/hooks/session-start.js"; then
+  pass "projected native hooks retain valid JavaScript syntax"
+else
+  fail "projection stamping broke native hook syntax"
 fi
 if [ ! -f "$BASE/home/.claude/hooks/m4-sudoers-fs-scanner.js" ]; then
   pass "scanner is not copied into ~/.claude/hooks"
@@ -450,28 +501,28 @@ mkdir -p "$native/shell/lib" "$CHECKOUT/home/.grok/hooks"
 printf '#!/bin/bash\n' > "$native/bootstrap.sh"
 printf '# stub\n' > "$native/shell/lib/native-home.sh"
 printf 'USER grok hook\n' > "$CHECKOUT/home/.grok/hooks/m4-sudoers-fs-scan.json"
-git -C "$native" init -q
-git -C "$native" -c user.email=tester@example.com -c user.name=tester -c commit.gpgsign=false add -A
-git -C "$native" -c user.email=tester@example.com -c user.name=tester -c commit.gpgsign=false commit -q -m 'init'
+fixture_git -C "$native" init -q
+fixture_git -C "$native" -c user.email=tester@example.com -c user.name=tester -c commit.gpgsign=false add -A
+fixture_git -C "$native" -c user.email=tester@example.com -c user.name=tester -c commit.gpgsign=false commit -q -m 'init'
 out="$(run_boot "$CHECKOUT/home")"
 rc="${out%%$'\n'*}"
 body="${out#*$'\n'}"
 if [ "$rc" = "0" ] \
-  && [ -z "$(git -C "$native" status --porcelain)" ] \
+  && [ -z "$(fixture_git -C "$native" status --porcelain)" ] \
   && [ ! -e "$native/adapters" ] && [ ! -e "$native/hooks" ] \
   && printf '%s\n' "$body" | grep -q 'is a revkit checkout' \
   && exact_backup "$CHECKOUT/home/.grok/hooks/m4-sudoers-fs-scan.json" "USER grok hook" \
   && live_is_projection "$CHECKOUT/home/.grok/hooks/m4-sudoers-fs-scan.json" "USER grok hook"; then
   pass "a revkit checkout at ~/.revealui is left clean and grok still projects"
 else
-  fail "checkout case rc=$rc status=$(git -C "$native" status --porcelain) body=$body"
+  fail "checkout case rc=$rc status=$(fixture_git -C "$native" status --porcelain) body=$body"
 fi
 out="$(run_boot "$CHECKOUT/home")"
 rc="${out%%$'\n'*}"
-if [ "$rc" = "0" ] && [ -z "$(git -C "$native" status --porcelain)" ]; then
+if [ "$rc" = "0" ] && [ -z "$(fixture_git -C "$native" status --porcelain)" ]; then
   pass "second run still does not dirty a revkit checkout"
 else
-  fail "checkout re-run dirty rc=$rc status=$(git -C "$native" status --porcelain)"
+  fail "checkout re-run dirty rc=$rc status=$(fixture_git -C "$native" status --porcelain)"
 fi
 
 # --- header marker, not a mid-file mention ---
@@ -615,8 +666,8 @@ else
   fail "repo lockstep failed"
 fi
 
-FIX="$(mktemp -d)"
-git -C "$FIX" init -q
+FIX="$(mktemp -d "$TEST_ROOT/lockstep.XXXXXX")"
+fixture_git -C "$FIX" init -q
 mkdir -p "$FIX/.revealui/content/rules" "$FIX/.claude/rules"
 printf 'native\n' > "$FIX/.revealui/content/rules/a.md"
 printf 'native\n' > "$FIX/.claude/rules/a.md"
@@ -634,7 +685,7 @@ cat > "$FIX/.revealui/.revcon-manifest.json" << EOF
   }
 }
 EOF
-git -C "$FIX" add -A
+fixture_git -C "$FIX" add -A
 if bash "$ROOT/scripts/verify-copy-lockstep.sh" --target "$FIX" --dot .claude >/dev/null; then
   pass "matching vendor projection passes lockstep"
 else
@@ -654,7 +705,6 @@ else
   pass "drifted vendor projection fails against .revealui/content"
 fi
 
-rm -rf "$BASE" "$OPT" "$DRY" "$LINK" "$FIX" "$PRESERVE" "$PRESERVE_OPT" "$CHECKOUT" "$HEADER" "$BAKSYNC" "$SYMLINK"
 unset CLAUDE_LOG SUDO_LOG BIN LINK_LOG REVKIT_BOOTSTRAP_ONLY REVKIT_CLAUDE_ADAPTER GROK_HOME || true
 
 echo

@@ -184,7 +184,16 @@ revkit_stamp_projection() {
       ' "$tmp" > "$stamped"
       ;;
     *.js)
-      { printf '%s\n' '// generated-by-revkit'; cat "$tmp"; } > "$stamped"
+      # Node recognizes a shebang only on the first line.
+      if head -n 1 -- "$tmp" | grep -q '^#!'; then
+        {
+          head -n 1 -- "$tmp"
+          printf '%s\n' '// generated-by-revkit'
+          tail -n +2 -- "$tmp"
+        } > "$stamped"
+      else
+        { printf '%s\n' '// generated-by-revkit'; cat "$tmp"; } > "$stamped"
+      fi
       ;;
     *.md)
       { printf '%s\n' '<!-- generated-by-revkit -->'; cat "$tmp"; } > "$stamped"
