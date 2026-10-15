@@ -169,3 +169,20 @@ Future Level 2 (`GrokAdapter` in `@revealui/harnesses`) extends the same data pl
 | `RFG_STORM_PREFLIGHT_SKIP=1` | do not clear audit du/find storms before launch |
 | `RFG_STORM_MIN_AGE_SEC` | preflight min age in seconds (default 120) |
 | `AUDIT_STORM_MIN_AGE_SEC` | standalone `kill-audit-storms` min age in seconds (default 600) |
+
+# Worktree lifecycle records
+
+`rfg open <repo> <label> [--claim surface] [--pr number] --no-agent` creates a
+feature worktree and records its owner, Git common directory, path, branch, and
+purpose in the existing claims store. `--pr` is an advisory lookup hint; it is
+not verified against GitHub and must never be used as review or merge evidence.
+If bootstrap fails after Git creation, the command fails and prints the partial
+worktree path for recovery. An existing unregistered worktree is not adopted.
+
+`rfg worktree retire <repo> <label>` removes only that registered worktree after
+it is clean, its branch head is an ancestor of `origin/test`, generated ignored
+environment matches its mirror, and no claim or visible process uses it. It
+does not retire squash-merged branches without ancestry proof and never prunes
+other worktrees. The process scan is a best-effort Linux check; a process may
+start after the scan, so retirement remains an explicit operation and Git's
+final cleanliness check is authoritative.

@@ -21,7 +21,8 @@
 #   rfc env              # non-secret MCP URL + vault path (never the token)
 #   rfc bootstrap [path] # Rift-inspired: write .env.worktree (hash ports)
 #   rfc claim …          # claim acquire|release|list|check|sweep
-#   rfc open <repo> <label> [--claim surface] [--no-agent]
+#   rfc worktree retire <repo> <label>  # exact owned, merged, idle checkout
+#   rfc open <repo> <label> [--claim surface] [--pr number] [--no-agent]
 #                        # create ~/revealfleet/.wt/<label> from integration ref,
 #                        # bootstrap env, optional claim, optional claude
 #
@@ -260,6 +261,13 @@ case "$cmd" in
     esac
     exit 0
     ;;
+  worktree)
+    shift || true
+    _load_worktree_env_lib || die "worktree-env.sh not found (re-run revkit bootstrap)"
+    [ "${1:-}" = retire ] && [ "$#" -eq 3 ] || die "usage: rfc worktree retire <repo> <label>"
+    rfg_worktree_retire "$2" "$3" "$FLEET_ROOT/$2" || die "worktree retirement denied"
+    exit 0
+    ;;
   open)
     shift || true
     _load_worktree_env_lib || die "worktree-env.sh not found (re-run revkit bootstrap)"
@@ -268,6 +276,7 @@ case "$cmd" in
     [ -n "$open_repo" ] && [ -n "$open_label" ] || die "usage: rfc open <repo> <label> [--claim surface] [--no-agent] [claude-args…]"
     shift 2 || true
     claim_surface=""
+    open_pr=""
     no_agent=0
     open_extra=()
     while [ "$#" -gt 0 ]; do
@@ -279,6 +288,15 @@ case "$cmd" in
           ;;
         --claim=*)
           claim_surface="${1#--claim=}"
+          shift
+          ;;
+        --pr)
+          open_pr="${2:-}"
+          [ -n "$open_pr" ] || die "--pr requires a number"
+          shift 2
+          ;;
+        --pr=*)
+          open_pr="${1#--pr=}"
           shift
           ;;
         --no-agent)
@@ -293,6 +311,8 @@ case "$cmd" in
     done
 
     source_repo="$FLEET_ROOT/$open_repo"
+    _rfg_worktree_validate_name "$open_repo" || die "invalid repository name"
+    _rfg_worktree_validate_name "$open_label" || die "invalid worktree label"
     [ -d "$source_repo" ] || die "no such fleet repo: $open_repo"
     wt_root="$(rfg_wt_root)"
     wt_path="$wt_root/$open_label"
@@ -310,6 +330,7 @@ case "$cmd" in
         base="$ref"
       fi
       branch="feat/${open_label}"
+      RFG_CLAIM_AGENT="${RFG_CLAIM_AGENT:-claude}" rfg_worktree_reserve "$open_repo" "$open_label" "$wt_path" "${claim_surface:-$open_label}" "$source_repo" "$open_pr" || die "worktree lifecycle reservation failed; nothing created: $wt_path"
       if git -C "$source_repo" show-ref --verify --quiet "refs/heads/$branch"; then
         git -C "$source_repo" worktree add "$wt_path" "$branch"
       else
@@ -318,7 +339,8 @@ case "$cmd" in
       echo "rfc: created $wt_path ($branch from $base)" >&2
     fi
 
-    envf="$(rfg_write_worktree_env "$wt_path" "$open_label")"
+    rfg_worktree_register "$open_repo" "$open_label" "$wt_path" "$source_repo" || die "worktree exists but lifecycle registration failed: $wt_path"
+    envf="$(rfg_write_worktree_env "$wt_path" "$open_label")" || die "worktree exists but environment bootstrap failed: $wt_path"
     echo "rfc: bootstrap $envf" >&2
 
     if [ -n "$claim_surface" ]; then

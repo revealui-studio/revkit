@@ -100,10 +100,11 @@ rfg_write_worktree_env() {
   fi
   # If worktree is a git checkout of a named product, use that.
   if [ -d "$wt_path/.git" ] || [ -f "$wt_path/.git" ]; then
-    local top
+    local top common
     top="$(git -C "$wt_path" rev-parse --show-toplevel 2>/dev/null || true)"
     if [ -n "$top" ]; then
-      project="$(basename "$top")"
+      common="$(git -C "$wt_path" rev-parse --path-format=absolute --git-common-dir)" || return 1
+      project="$(basename "$(dirname "$common")")"
     fi
   fi
 
@@ -111,14 +112,14 @@ rfg_write_worktree_env() {
   mirror_dir="$REVEALUI_WT_ENV_DIR/$project"
   mirror_file="$mirror_dir/${label}.env"
 
-  mkdir -p "$wt_path" "$mirror_dir"
+  mkdir -p "$wt_path" "$mirror_dir" || return 1
   {
     echo "# rfg worktree env — $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "RFG_WORKTREE_NAME=$label"
     echo "RFG_WORKTREE_PATH=$wt_path"
     rfg_port_env_lines "$label"
-  } >"$env_file"
-  cp -f "$env_file" "$mirror_file"
+  } >"$env_file" || return 1
+  cp -f "$env_file" "$mirror_file" || return 1
 
   # Do not mutate product .gitignore (would dirty the tree). Mirror is SSOT backup;
   # callers should list .env.worktree in repo gitignore once (see rfg-launcher.md).
@@ -180,6 +181,10 @@ rfg_claim_acquire() {
   dir="$(dirname "$file")"
   mkdir -p "$dir"
 
+  case "$(basename "$file")" in
+    worktree-*.json) echo "worktree lifecycle namespace cannot be acquired as a surface claim" >&2; return 1 ;;
+  esac
+
   if [ -f "$file" ] && _rfg_claim_is_active "$file"; then
     if [ "${RFG_CLAIM_FORCE:-0}" != 1 ]; then
       echo "claim held: $file" >&2
@@ -222,6 +227,9 @@ rfg_claim_release() {
   local file
   file="$(_rfg_claim_path "$repo" "$surface")"
   if [ -f "$file" ]; then
+    case "$(basename "$file")" in
+      worktree-*.json) echo "worktree lifecycle records require rfg worktree retire" >&2; return 1 ;;
+    esac
     rm -f "$file"
     echo "released $repo / $surface"
   else
@@ -266,6 +274,8 @@ rfg_claim_sweep() {
   [ -d "$REVEALUI_CLAIMS_DIR" ] || return 0
   while IFS= read -r f; do
     [ -n "$f" ] || continue
+    # The filename namespace survives malformed JSON and partial recovery.
+    case "$(basename "$f")" in worktree-*.json) continue ;; esac
     if ! _rfg_claim_is_active "$f"; then
       rm -f "$f"
       n=$((n + 1))
@@ -273,4 +283,237 @@ rfg_claim_sweep() {
     fi
   done < <(find "$REVEALUI_CLAIMS_DIR" -type f -name '*.json' 2>/dev/null)
   echo "swept $n stale claim(s)"
+}
+
+# ---------------------------------------------------------------------------
+# Worktree lifecycle. These records live in the existing claims store but are
+# durable, unlike a PID/TTL surface lease. No name- or age-based reclamation.
+# ---------------------------------------------------------------------------
+_rfg_worktree_surface() { printf 'worktree-%s\n' "$1"; }
+
+_rfg_worktree_record() { _rfg_claim_path "$1" "$(_rfg_worktree_surface "$2")"; }
+
+_rfg_worktree_validate_name() {
+  case "$1" in
+    '' | . | .. | -* | *[!a-zA-Z0-9._-]*) echo "invalid worktree repo or label: $1" >&2; return 1 ;;
+  esac
+}
+
+rfg_worktree_reserve() {
+  local repo="$1" label="$2" path="$3" purpose="${4:-$2}" source="$5" pr="${6:-}"
+  _rfg_worktree_validate_name "$repo" || return 1
+  _rfg_worktree_validate_name "$label" || return 1
+  case "$pr" in '' | *[!0-9]*) [ -z "$pr" ] || { echo "PR must be numeric" >&2; return 1; } ;; esac
+  [ ! -e "$path" ] || { echo "cannot reserve an existing worktree path" >&2; return 1; }
+  local file common
+  file="$(_rfg_worktree_record "$repo" "$label")"
+  common="$(cd "$(git -C "$source" rev-parse --path-format=absolute --git-common-dir)" && pwd -P)" || return 1
+  mkdir -p "$(dirname "$file")" || return 1
+  RFG_RECORD_REPO="$repo" RFG_RECORD_LABEL="$label" RFG_RECORD_PATH="$path" \
+  RFG_RECORD_COMMON="$common" RFG_RECORD_BRANCH="feat/$label" RFG_RECORD_PURPOSE="$purpose" \
+  RFG_RECORD_PR="$pr" RFG_RECORD_OWNER="${RFG_CLAIM_AGENT:-${USER:-unknown}}" python3 - "$file" <<'PY'
+import datetime, json, os, sys, tempfile
+path = sys.argv[1]
+expected = dict(kind='worktree', state='creating', repo=os.environ['RFG_RECORD_REPO'],
+                label=os.environ['RFG_RECORD_LABEL'], worktree=os.environ['RFG_RECORD_PATH'],
+                gitCommonDir=os.environ['RFG_RECORD_COMMON'], branch=os.environ['RFG_RECORD_BRANCH'],
+                purpose=os.environ['RFG_RECORD_PURPOSE'], prHint=os.environ['RFG_RECORD_PR'],
+                agent=os.environ['RFG_RECORD_OWNER'])
+if os.path.exists(path):
+    try:
+        existing = json.load(open(path, encoding='utf-8'))
+    except (OSError, ValueError):
+        sys.exit('unreadable worktree reservation; preserve for owner recovery')
+    if all(existing.get(key) == value for key, value in expected.items()):
+        sys.exit(0)
+    sys.exit('worktree reservation conflicts with another owner or checkout')
+expected['openedAt'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+fd, temporary = tempfile.mkstemp(dir=os.path.dirname(path), prefix='.worktree-record-')
+try:
+    with os.fdopen(fd, 'w', encoding='utf-8') as output:
+        os.fchmod(output.fileno(), 0o600)
+        json.dump(expected, output, indent=2)
+        output.write('\n')
+        output.flush()
+        os.fsync(output.fileno())
+    os.link(temporary, path)  # atomic no-clobber publication
+except FileExistsError:
+    sys.exit('worktree reservation was created concurrently')
+finally:
+    if os.path.exists(temporary): os.unlink(temporary)
+PY
+}
+
+rfg_worktree_register() {
+  local repo="$1" label="$2" path="$3" source="$4"
+  _rfg_worktree_validate_name "$repo" || return 1
+  _rfg_worktree_validate_name "$label" || return 1
+  local top common branch file dir
+  top="$(git -C "$path" rev-parse --show-toplevel)" || return 1
+  [ "$top" = "$path" ] || { echo "worktree path is not checkout root" >&2; return 1; }
+  common="$(cd "$(git -C "$path" rev-parse --path-format=absolute --git-common-dir)" && pwd -P)" || return 1
+  [ "$common" = "$(cd "$(git -C "$source" rev-parse --path-format=absolute --git-common-dir)" && pwd -P)" ] || {
+    echo "worktree and source have different Git common directories" >&2; return 1;
+  }
+  branch="$(git -C "$path" symbolic-ref --quiet --short HEAD)" || return 1
+  file="$(_rfg_worktree_record "$repo" "$label")"
+  dir="$(dirname "$file")"
+  mkdir -p "$dir" || return 1
+  # The reservation must predate git worktree add. Existing unregistered paths
+  # are never adopted, even when their branch and common directory happen to fit.
+  [ -f "$file" ] || { echo "unregistered worktree cannot be adopted" >&2; return 1; }
+  RFG_EXPECT_REPO="$repo" RFG_EXPECT_LABEL="$label" RFG_EXPECT_PATH="$path" \
+  RFG_EXPECT_COMMON="$common" RFG_EXPECT_BRANCH="$branch" python3 - "$file" <<'PY'
+import json, os, sys, tempfile
+path = sys.argv[1]
+try:
+    record = json.load(open(path, encoding='utf-8'))
+    assert record['kind'] == 'worktree' and record['state'] in ('creating', 'open')
+    assert record['repo'] == os.environ['RFG_EXPECT_REPO']
+    assert record['label'] == os.environ['RFG_EXPECT_LABEL']
+    assert record['worktree'] == os.environ['RFG_EXPECT_PATH']
+    assert record['gitCommonDir'] == os.environ['RFG_EXPECT_COMMON']
+    assert record['branch'] == os.environ['RFG_EXPECT_BRANCH']
+except (OSError, ValueError, KeyError, AssertionError):
+    sys.exit('worktree lifecycle record conflicts with this checkout')
+if record['state'] == 'creating':
+    record['state'] = 'open'
+    fd, temporary = tempfile.mkstemp(dir=os.path.dirname(path), prefix='.worktree-record-')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as output:
+            os.fchmod(output.fileno(), 0o600)
+            json.dump(record, output, indent=2)
+            output.write('\n')
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary): os.unlink(temporary)
+PY
+}
+
+_rfg_worktree_clean() {
+  local path="$1" mirror="$2" status
+  status="$(git -C "$path" status --porcelain --untracked-files=all)" || return 1
+  [ -z "$status" ] || { echo "worktree has uncommitted or untracked work" >&2; return 1; }
+  # Git normally hides ignored material from status and worktree remove may
+  # discard it. Only the mirrored, unchanged generated env is disposable.
+  RFG_TARGET_PATH="$path" RFG_MIRROR_PATH="$mirror" python3 - <<'PY'
+import filecmp, os, subprocess, sys
+path = os.environ['RFG_TARGET_PATH']
+try:
+    ignored = subprocess.run(['git', '-C', path, 'ls-files', '--others', '--ignored',
+                              '--exclude-standard', '-z'], capture_output=True, check=True).stdout
+except subprocess.CalledProcessError:
+    sys.exit('cannot enumerate ignored worktree files')
+for name in filter(None, ignored.split(b'\0')):
+    if name != b'.env.worktree' or not filecmp.cmp(os.path.join(path, '.env.worktree'),
+                                                  os.environ['RFG_MIRROR_PATH'], shallow=False):
+        sys.exit('worktree has ignored or diverged local material')
+PY
+}
+
+rfg_worktree_retire() {
+  local repo="$1" label="$2" source="$3" file path common branch state target claim claim_path cwd mirror fd
+  _rfg_worktree_validate_name "$repo" || return 1
+  _rfg_worktree_validate_name "$label" || return 1
+  file="$(_rfg_worktree_record "$repo" "$label")"
+  [ -f "$file" ] || { echo "no registered worktree: $repo / $label" >&2; return 1; }
+  # This operation currently needs procfs to prove no process is using the tree.
+  [ -d /proc/1 ] || { echo "worktree retirement requires process-cwd inspection" >&2; return 1; }
+  local fields
+  fields="$(python3 - "$file" <<'PY'
+import json, sys
+record = json.load(open(sys.argv[1], encoding='utf-8'))
+if record.get('kind') != 'worktree' or record.get('state') not in ('open', 'retiring'):
+    sys.exit('worktree lifecycle record is not open')
+for key in ('worktree', 'gitCommonDir', 'branch', 'state'):
+    value = record[key]
+    if not isinstance(value, str) or '\n' in value:
+        sys.exit('invalid worktree lifecycle field')
+    print(value)
+PY
+)" || return 1
+  path="$(sed -n '1p' <<<"$fields")"
+  common="$(sed -n '2p' <<<"$fields")"
+  branch="$(sed -n '3p' <<<"$fields")"
+  state="$(sed -n '4p' <<<"$fields")"
+  [ "$state" = open ] || [ "$state" = retiring ] || return 1
+  [ -d "$path" ] || { echo "registered worktree missing; inspect Git metadata before recovery" >&2; return 1; }
+  [ "$(git -C "$path" rev-parse --show-toplevel)" = "$path" ] || return 1
+  [ "$(cd "$(git -C "$path" rev-parse --path-format=absolute --git-common-dir)" && pwd -P)" = "$common" ] || return 1
+  [ "$(cd "$(git -C "$source" rev-parse --path-format=absolute --git-common-dir)" && pwd -P)" = "$common" ] || return 1
+  [ "$(git -C "$path" symbolic-ref --quiet --short HEAD)" = "$branch" ] || return 1
+  mirror="$REVEALUI_WT_ENV_DIR/$repo/$label.env"
+  _rfg_worktree_clean "$path" "$mirror" || return 1
+  target="origin/test"
+  git -C "$source" rev-parse --verify --quiet "$target" >/dev/null || return 1
+  git -C "$path" merge-base --is-ancestor HEAD "$target" || {
+    echo "branch is not an ancestor of origin/test; retain for PR or recovery" >&2; return 1;
+  }
+  # A live surface claim on this checkout must be released by its owner first.
+  while IFS= read -r claim; do
+    [ "$claim" = "$file" ] && continue
+    claim_path="$(python3 - "$claim" <<'PY'
+import json, sys
+try:
+    record = json.load(open(sys.argv[1], encoding='utf-8'))
+    if not isinstance(record, dict) or not isinstance(record.get('worktree'), str):
+        raise ValueError('missing worktree field')
+    print(record['worktree'])
+except (OSError, ValueError):
+    sys.exit('unreadable claim retains worktree')
+PY
+)" || return 1
+    if [ "$claim_path" = "$path" ] && _rfg_claim_is_active "$claim"; then
+      echo "active claim retains worktree: $claim" >&2; return 1
+    fi
+  done < <(find "$REVEALUI_CLAIMS_DIR/$repo" -maxdepth 1 -type f -name '*.json' -print 2>/dev/null)
+  for cwd in /proc/[0-9]*/cwd; do
+    claim_path="$(readlink "$cwd" 2>/dev/null || true)"
+    case "$claim_path" in "$path" | "$path"/*)
+      echo "process cwd retains worktree: ${cwd%/cwd}" >&2; return 1 ;;
+    esac
+  done
+  for fd in /proc/[0-9]*/fd/*; do
+    claim_path="$(readlink "$fd" 2>/dev/null || true)"
+    case "$claim_path" in "$path" | "$path"/*)
+      echo "process file descriptor retains worktree: ${fd%/fd/*}" >&2; return 1 ;;
+    esac
+  done
+  # A crash after this state write can be retried against the same checkout.
+  python3 - "$file" <<'PY'
+import json, os, sys, tempfile
+path = sys.argv[1]
+record = json.load(open(path, encoding='utf-8'))
+record['state'] = 'retiring'
+fd, temporary = tempfile.mkstemp(dir=os.path.dirname(path), prefix='.worktree-')
+try:
+    with os.fdopen(fd, 'w', encoding='utf-8') as output:
+        json.dump(record, output, indent=2)
+        output.write('\n')
+    os.replace(temporary, path)
+finally:
+    if os.path.exists(temporary): os.unlink(temporary)
+PY
+  # Recheck after the process scan and state transition. Git performs its own
+  # final dirty check; this also protects ignored data that Git may omit.
+  _rfg_worktree_clean "$path" "$mirror" || return 1
+  git -C "$source" worktree remove "$path" || return 1
+  python3 - "$file" <<'PY'
+import datetime, json, os, sys, tempfile
+path = sys.argv[1]
+record = json.load(open(path, encoding='utf-8'))
+record['state'] = 'retired'
+record['retiredAt'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+fd, temporary = tempfile.mkstemp(dir=os.path.dirname(path), prefix='.worktree-')
+try:
+    with os.fdopen(fd, 'w', encoding='utf-8') as output:
+        json.dump(record, output, indent=2)
+        output.write('\n')
+    os.replace(temporary, path)
+finally:
+    if os.path.exists(temporary): os.unlink(temporary)
+PY
+  printf 'retired %s / %s\n' "$repo" "$label"
 }
