@@ -203,6 +203,57 @@ else
   fail "rfx env: rc=$env_rc out=$env_out err=$env_err"
 fi
 
+# Exercise launch-time sync with a synthetic agent, loader environment, HOME
+# and planning tool. Never run the operator's agent, vault or process sweeper.
+mkdir -p "$TMP/home" "$TMP/custom planning/scripts" "$TMP/isolated/bin"
+printf '// synthetic planning tool\n' > "$TMP/custom planning/scripts/fleet-sync-integration.js"
+cat > "$TMP/bin/node" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$TMP/sync.log"
+EOF
+chmod +x "$TMP/bin/node"
+run_synthetic_launch() {
+  env -i HOME="$TMP/home" PATH="$TMP/bin:/usr/bin:/bin" \
+    REVEALFLEET_ROOT="$TMP/fleet" REVEALFLEET_PLANNING="$1" \
+    REVEALUI_MCP_ENV_SKIP=1 RFG_STORM_PREFLIGHT_SKIP=1 \
+    RFX_MCP_ATTACH_SKIP=1 RFX_REVEALUI_POINTER_SKIP=1 \
+    bash "$RFX" revealui
+}
+: > "$TMP/sync.log"
+rc=0
+run_synthetic_launch "$TMP/custom planning" > "$TMP/launch.log" 2>&1 || rc=$?
+if [ "$rc" -eq 99 ] \
+  && grep -Fq -- "$TMP/custom planning/scripts/fleet-sync-integration.js --auto $TMP/fleet/revealui" "$TMP/sync.log"; then
+  pass "launch sync uses the configured shared planning checkout"
+else
+  fail "configured planning sync rc=$rc"
+fi
+: > "$TMP/sync.log"
+rc=0
+run_synthetic_launch "" > "$TMP/launch.log" 2>&1 || rc=$?
+if [ "$rc" -eq 99 ] && [ ! -s "$TMP/sync.log" ]; then
+  pass "unconfigured planning does not discover a parallel planning path"
+else
+  fail "missing planning configuration rc=$rc"
+fi
+: > "$CODEX_LOG"
+rc=0
+run_synthetic_launch relative > "$TMP/launch.log" 2>&1 || rc=$?
+if [ "$rc" -ne 0 ] && [ "$rc" -ne 99 ] && [ ! -s "$CODEX_LOG" ]; then
+  pass "invalid planning configuration refuses launch through the shared resolver"
+else
+  fail "invalid planning configuration rc=$rc"
+fi
+cp "$RFX" "$TMP/isolated/bin/rfx"
+rc=0
+env -i HOME="$TMP/home" PATH="$TMP/bin:/usr/bin:/bin" REVEALFLEET_ROOT="$TMP/fleet" \
+  bash "$TMP/isolated/bin/rfx" --help > "$TMP/missing-lib.log" 2>&1 || rc=$?
+if [ "$rc" -ne 0 ] && grep -q 'fleet-root.sh is missing' "$TMP/missing-lib.log"; then
+  pass "missing shared fleet resolver fails closed even with an explicit fleet root"
+else
+  fail "missing shared resolver rc=$rc"
+fi
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

@@ -27,6 +27,10 @@ revkit_repo_root() {
 
 revkit_native_home() {
   if [ -n "${REVEALUI_NATIVE_HOME:-}" ]; then
+    case "$REVEALUI_NATIVE_HOME" in
+      /*) ;;
+      *) echo "  ERROR: REVEALUI_NATIVE_HOME must be an absolute path" >&2; return 1 ;;
+    esac
     printf '%s\n' "$REVEALUI_NATIVE_HOME"
     return 0
   fi
@@ -126,6 +130,18 @@ revkit_native_home_is_revkit_checkout() {
   return 0
 }
 
+# The native checkout already owns the scanner source; managed homes own its
+# deployed copy. Projection generation uses this one path for every adapter.
+revkit_scanner_path() {
+  local native
+  native="$(revkit_native_home)"
+  if revkit_native_home_is_revkit_checkout; then
+    printf '%s/shell/bin/m4-sudoers-fs-scanner.js\n' "$native"
+  else
+    printf '%s/hooks/m4-sudoers-fs-scanner.js\n' "$native"
+  fi
+}
+
 revkit_warn_revkit_checkout_once() {
   if [ "${REVKIT_NATIVE_CHECKOUT_WARNED:-0}" = "1" ]; then
     return 0
@@ -158,6 +174,22 @@ revkit_stamp_projection() {
   local tmp="$2"
   local stamped kind
   sed 's/\r$//' "$src" > "$tmp"
+  case "$src" in
+    */hooks/m4-sudoers-fs-scan.json)
+      # Resolve at projection time so a custom native home works even when
+      # the vendor process does not inherit the bootstrap environment.
+      node - "$tmp" "$(revkit_scanner_path)" <<'JS'
+const fs = require('fs');
+const [file, scanner] = process.argv.slice(2);
+const config = JSON.parse(fs.readFileSync(file, 'utf8'));
+const quote = value => "'" + value.replace(/'/g, "'\\''") + "'";
+for (const event of config.hooks.SessionStart) {
+  for (const hook of event.hooks) hook.command = 'node ' + quote(scanner);
+}
+fs.writeFileSync(file, JSON.stringify(config, null, 2) + '\n');
+JS
+      ;;
+  esac
   case "$src" in
     *.json) kind=json ;;
     *) kind=text ;;
@@ -376,7 +408,7 @@ revkit_project_grok_adapter() {
 }
 
 revkit_project_claude_adapter() {
-  local native dest
+  local native dest tmp legacy
   if ! revkit_claude_adapter_on; then
     echo "  Claude adapter: off (pass --claude-adapter or set REVKIT_CLAUDE_ADAPTER=1)"
     return 0
@@ -389,10 +421,57 @@ revkit_project_claude_adapter() {
   fi
   echo "  Claude adapter: projecting $dest from $native"
   echo "  Projection only. Not a vendor config repo, and the claude CLI is not run."
-  revkit_sync_tree "$native" "$dest"
+  revkit_copy_file "$native/CLAUDE.md" "$dest/CLAUDE.md"
+  # Claude discovers settings.json, not arbitrary hooks/*.json files. Merge
+  # only our marked handler so user settings and unrelated hooks stay intact.
+  mkdir -p "$dest"
+  if [ -L "$dest/settings.json" ]; then
+    echo "  ERROR: refusing a symlink at the Claude adapter settings path" >&2
+    return 1
+  fi
+  tmp="$(mktemp "$dest/.revkit-settings.XXXXXX")"
+  if ! node - "$native/hooks/m4-sudoers-fs-scan.json" "$dest/settings.json" "$tmp" "$(revkit_scanner_path)" <<'JS'
+const fs = require('fs');
+const [source, target, tmp, scanner] = process.argv.slice(2);
+const tag = 'RevKit native scanner';
+const object = value => value && typeof value === 'object' && !Array.isArray(value);
+try {
+  const config = fs.existsSync(target) ? JSON.parse(fs.readFileSync(target, 'utf8')) : {};
+  if (!object(config) || (config.hooks !== undefined && !object(config.hooks))) throw Error();
+  config.hooks ??= {};
+  const events = config.hooks.SessionStart ?? [];
+  if (!Array.isArray(events) || events.some(event => !object(event) || !Array.isArray(event.hooks))) throw Error();
+  const retained = events.map(event => ({...event, hooks: event.hooks.filter(hook => hook.statusMessage !== tag)}))
+    .filter(event => event.hooks.length);
+  const quote = value => "'" + value.replace(/'/g, "'\\''") + "'";
+  const projection = JSON.parse(fs.readFileSync(source, 'utf8'));
+  const handler = projection.hooks.SessionStart[0].hooks[0];
+  retained.push({hooks: [{...handler, command: 'node ' + quote(scanner), statusMessage: tag}]});
+  config.hooks.SessionStart = retained;
+  fs.writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n');
+} catch {
+  process.stderr.write('RevKit: invalid Claude adapter settings; existing settings preserved\n');
+  process.exit(1);
+}
+JS
+  then
+    rm -f "$tmp"
+    return 1
+  fi
+  if [ -f "$dest/settings.json" ] && cmp -s "$tmp" "$dest/settings.json"; then
+    rm -f "$tmp"
+  else
+    mv "$tmp" "$dest/settings.json"
+  fi
+  # Retire only the old generated, undiscovered hook file. User files remain.
+  legacy="$dest/hooks/m4-sudoers-fs-scan.json"
+  if revkit_has_projection_marker "$legacy"; then
+    rm "$legacy"
+  fi
 }
 
 revkit_link_fleet() {
+  local preflight="${1:-}"
   local link_sh repo rest profiles_csv mode target_dir editor
   local -a profile_args editors
   if [ -z "${REVEALFLEET_ROOT:-}" ] && [ -n "${_FLEET_PIN:-}" ]; then
@@ -462,7 +541,17 @@ revkit_link_fleet() {
     done
     for editor in "${editors[@]}"; do
       printf '  [%s] editor %s profiles %s (mode %s)\n' "$repo" "$editor" "$profiles_csv" "$mode"
-      if [ "${DRY_RUN:-0}" -eq 1 ]; then
+      if [ "$preflight" = "check" ]; then
+        # Use RevCon's supported read-only admission path, with the exact
+        # editor, profiles and target that the real link will use. Older
+        # checkouts reject unsupported editors here, before bootstrap writes.
+        if ! bash "$link_sh" --dry-run --target "$target_dir" --editor "$editor" \
+          --mode "$mode" "${profile_args[@]}"; then
+          printf '  ERROR: RevCon cannot link editor %s for %s. Update the fleet to a compatible RevCon revision before bootstrap.\n' \
+            "$editor" "$repo" >&2
+          return 1
+        fi
+      elif [ "${DRY_RUN:-0}" -eq 1 ]; then
         printf '  [dry-run] would run revcon/link.sh --editor %s --mode %s for %s\n' \
           "$editor" "$mode" "$repo"
       else
@@ -474,7 +563,17 @@ revkit_link_fleet() {
   echo "  Done."
 }
 
+revkit_preflight_control_layer() {
+  revkit_native_home >/dev/null || return 1
+  if ! command -v node >/dev/null 2>&1; then
+    echo "  ERROR: node is required to validate and project native scanner hooks" >&2
+    return 1
+  fi
+  revkit_link_fleet check || return 1
+}
+
 revkit_bootstrap_control_layer() {
+  revkit_preflight_control_layer || return 1
   echo "[7] Writing native control home (~/.revealui)..."
   revkit_install_native_templates
   if revkit_claude_adapter_on; then

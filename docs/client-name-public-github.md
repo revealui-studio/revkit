@@ -141,7 +141,11 @@ Safe to commit: this design doc, the gate script (no embedded terms), the exampl
 
 The repo-owned skill is `skills/client-name-public-github-audit/SKILL.md`.
 
-`.claude/skills/` is the revcon copy-mode surface. `scripts/verify-copy-lockstep.sh` rejects a tracked file under `.claude/skills/` that is not in `.claude/.revcon-manifest.json`. This skill ships with the gate. It is not a revcon profile copy, so it does not live under `.claude/skills/`.
+`.revealui/content/skills/` is the maintained control-layer surface, owned by
+`.revealui/.revcon-manifest.json`. `scripts/verify-copy-lockstep.sh` verifies
+that native inventory and checks any local vendor projections against it.
+This audit skill ships with the gate under `skills/`; it is not a RevCon
+profile copy.
 
 ## Pointers
 

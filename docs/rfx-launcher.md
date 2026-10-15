@@ -43,6 +43,12 @@ disables the guard.
 `rfx env` prints only `REVEALUI_MCP_URL` and `REVEALUI_MCP_TOKEN_VAULT_PATH`.
 It never prints `REVEALUI_MCP_TOKEN`.
 
+Integration sync uses the shared planning resolver and the configured
+`REVEALFLEET_PLANNING` checkout, matching the other fleet launchers. An unset
+planning checkout leaves sync unconfigured; an invalid path refuses launch.
+The shared fleet resolver is required for source and installed launchers.
+MCP smoke needs GNU coreutils (`timeout` on Linux/WSL, `gtimeout` on macOS).
+
 ## Audit-storm sweeper
 
 Before a real launch, `rfx` runs the same preflight as `rfg`
@@ -82,6 +88,7 @@ cd ~/revealfleet/revkit && bash bootstrap.sh
 | Variable | Role |
 |----------|------|
 | `REVEALFLEET_ROOT` | fleet root override |
+| `REVEALFLEET_PLANNING` | configured planning checkout for integration sync |
 | `REVEALUI_MCP_ENV_SKIP=1` | do not load the MCP token |
 | `REVEALUI_MCP_ENV_STRICT=0` | launch even if the token is missing |
 | `RFX_MCP_ATTACH_SKIP=1` | do not pass RevealUI MCP `-c` overrides |

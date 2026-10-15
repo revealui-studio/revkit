@@ -125,6 +125,22 @@ class TransportWrapperTests(unittest.TestCase):
                 if child_stat.exists():
                     self.assertIn(child_stat.read_text().split()[2], ("Z", "X"))
 
+    def test_macos_coreutils_timeout_name(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "dirname").symlink_to(shutil.which("dirname"))
+            timer = root / "gtimeout"
+            timer.write_text('#!/bin/bash\nset -eu\n'
+                             'test "$1" = --kill-after=5s\ntest "$2" = 60s\n'
+                             'test "$3" = bash\nprintf "gtimeout admitted\\n"\n')
+            timer.chmod(0o755)
+            result = subprocess.run(
+                [shutil.which("bash"), str(ROOT / "shell/bin/revealui-mcp-smoke.sh")],
+                env={"PATH": str(root)}, text=True, capture_output=True, timeout=5,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("gtimeout admitted", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

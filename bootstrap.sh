@@ -44,6 +44,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/shell/lib/native-home.sh"
 
+# Admit the fleet dependency before helper installs, rc, Git or home writes.
+# The control-layer entry point also admits it for direct library callers.
+revkit_preflight_control_layer
+
 echo ""
 echo "=== RevKit Bootstrap ==="
 echo "Source:   $SCRIPT_DIR"

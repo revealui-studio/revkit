@@ -536,3 +536,19 @@ jobs:
           persist-credentials: false
       - name: Run native-home bootstrap tests
         run: bash tests/test-bootstrap-native.sh
+
+  test-revcon-contract:
+    name: Native bootstrap / RevCon contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: revealui-studio/revcon
+          ref: 47119b2b6a0661c6e11ab13ac62f108715cb1cf4
+          path: .test-deps/revcon
+          persist-credentials: false
+      - name: Exercise canonical linker in a synthetic fleet
+        run: bash tests/test-revcon-contract.sh --source .test-deps/revcon

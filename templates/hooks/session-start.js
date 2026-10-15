@@ -6,19 +6,15 @@
 // It does not continue a previous session and it does not read a vendor home.
 
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
 
-const scanner = path.join(
-  os.homedir(),
-  ".revealui",
-  "hooks",
-  "m4-sudoers-fs-scanner.js"
-);
+// Installed beside the scanner, including configured native-home locations.
+const scanner = path.join(__dirname, "m4-sudoers-fs-scanner.js");
 
 if (!fs.existsSync(scanner)) {
-  process.exit(0);
+  process.stderr.write("session-start: native scanner missing\n");
+  process.exit(1);
 }
 
 const result = spawnSync(process.execPath, [scanner], { stdio: "inherit" });

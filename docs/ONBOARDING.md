@@ -15,7 +15,8 @@ into `.revealui` when `revcon` is present. Always preview first (`--dry-run`).
 
 - `git` and `bash`.
 - macOS, native Linux, or Windows + WSL2 (Ubuntu).
-- `node` is optional. If it is absent, the M-4 scanner install is skipped with a warning (everything else still runs).
+- `node` is required to validate, project, and run native scanner hooks. Bootstrap refuses before writes when it is absent.
+- MCP smoke requires GNU coreutils: `timeout` on Linux/WSL or `gtimeout` from coreutils on macOS. Both names use the same bounded process supervision.
 - No prior RevealUI setup is assumed.
 
 ## 1. Clone

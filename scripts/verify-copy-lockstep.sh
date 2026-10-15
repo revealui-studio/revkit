@@ -61,7 +61,7 @@ if [[ ! -d "$TARGET" ]]; then
   exit 2
 fi
 
-TARGET="$(cd "$TARGET" && pwd)"
+TARGET="$(cd "$TARGET" && pwd -P)"
 NATIVE_DOT=".revealui"
 REF_ROOT="$TARGET/$NATIVE_DOT/content"
 MANIFEST="$TARGET/$NATIVE_DOT/.revcon-manifest.json"
@@ -96,6 +96,21 @@ fi
 
 hash_file() {
   sha256sum "$1" | awk '{print $1}'
+}
+
+# RevCon adds one ownership line to Markdown projections. Admit only the
+# exact native source marker and compare every remaining byte, including EOF.
+projection_matches() {
+  local native="$1" vendor="$2" native_rel="$3" marker
+  cmp -s "$native" "$vendor" && return 0
+  case "$native_rel" in
+    *.md|*.mdx)
+      marker="<!-- generated from .revealui/$native_rel -->"
+      [ "$(head -n 1 -- "$vendor")" = "$marker" ] || return 1
+      cmp -s "$native" <(tail -n +2 -- "$vendor")
+      ;;
+    *) return 1 ;;
+  esac
 }
 
 problems=0
@@ -152,10 +167,20 @@ check_vendor() {
   local dot="$1"
   local sub native_dir vendor_dir native_file rel vendor_file
   local -A native_rels=()
+  if [[ -L "$TARGET/$dot" ]]; then
+    echo "  $dot is a symlink; projections must be real files" >&2
+    problems=$((problems + 1))
+    return 0
+  fi
   [[ -d "$TARGET/$dot" ]] || return 0
   for sub in "${MATERIALIZED_SUBDIRS[@]}"; do
     native_dir="$REF_ROOT/$sub"
     vendor_dir="$TARGET/$dot/$sub"
+    if [[ -L "$TARGET/$dot" || -L "$vendor_dir" ]]; then
+      echo "  $dot/$sub is a symlink; projections must be real files" >&2
+      problems=$((problems + 1))
+      continue
+    fi
     [[ -d "$vendor_dir" ]] || continue
     native_rels=()
     if [[ -d "$native_dir" ]]; then
@@ -163,12 +188,13 @@ check_vendor() {
         rel="${native_file#"$native_dir"/}"
         native_rels["$rel"]=1
         vendor_file="$vendor_dir/$rel"
-        if [[ ! -f "$vendor_file" || -L "$vendor_file" ]]; then
+        if [[ ! -f "$vendor_file" || -L "$vendor_file" ]] \
+          || [[ "$(realpath -- "$vendor_file")" != "$vendor_file" ]]; then
           echo "  $dot/$sub/$rel is not a projection of .revealui/content/$sub/$rel" >&2
           problems=$((problems + 1))
           continue
         fi
-        if [[ "$(hash_file "$native_file")" != "$(hash_file "$vendor_file")" ]]; then
+        if ! projection_matches "$native_file" "$vendor_file" "content/$sub/$rel"; then
           echo "  $dot/$sub/$rel differs from .revealui/content/$sub/$rel" >&2
           problems=$((problems + 1))
         fi
@@ -179,11 +205,16 @@ check_vendor() {
       case "$(basename "$vendor_file")" in
         *.revkit-bak-*) continue ;;
       esac
+      if [[ -L "$vendor_file" ]]; then
+        echo "  $dot/$sub/$rel is a symlink; projections must be real files" >&2
+        problems=$((problems + 1))
+        continue
+      fi
       if [[ -z "${native_rels[$rel]+x}" ]]; then
         echo "  $dot/$sub/$rel has no native reference at .revealui/content/$sub/$rel" >&2
         problems=$((problems + 1))
       fi
-    done < <(find "$vendor_dir" -type f ! -name '*.revkit-bak-*' -print0)
+    done < <(find "$vendor_dir" \( -type f -o -type l \) ! -name '*.revkit-bak-*' -print0)
   done
 }
 
