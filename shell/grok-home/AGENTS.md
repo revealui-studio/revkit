@@ -16,7 +16,7 @@ Launch with `rfg <repo>` (cwd is the product). Then:
 3. TRACKER from the manager `tracker.path`
 4. Product I/O via RevealUI MCP. Secrets via revvault.
 
-`[compat.claude] rules = false`. Do not ingest the Claude vendor dump.
+`[compat.claude]` hooks, mcps, and sessions stay off unless opted in. skills stays off unless those skills are projections from `.revealui/content`. Do not ingest a vendor dump.
 
 Git identity is `git config user.email` (RevKit `identity.gitconfig`). Mechanical
 deny is PreToolUse hooks deployed from the product manager.

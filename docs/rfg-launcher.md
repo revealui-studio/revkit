@@ -1,4 +1,4 @@
-# `rfg` — RevealFleet Grok launcher (durable)
+# `rfg` RevealFleet Grok launcher (durable)
 
 `rfg` is the **only supported** way to start Grok against the fleet with
 RevealUI MCP attached. It is the Grok sibling of `rfc` (Claude). `rfc`
@@ -28,7 +28,7 @@ No manual `eval`, no home-directory scripts as source of truth.
 **Not durable:** one-off eval lines, secrets in chat, home-only mint scripts, operator `cp` of policy into `$HOME/.grok`, hand-edits of `$HOME/.grok/AGENTS.md` or `$HOME/.grok/rules/`.
 
 `rfg env` prints only `REVEALUI_MCP_URL` and `REVEALUI_MCP_TOKEN_VAULT_PATH`.
-It never prints `REVEALUI_MCP_TOKEN`. Do not eval a printed token — there
+It never prints `REVEALUI_MCP_TOKEN`. Do not eval a printed token. There
 is none. Load MCP by running `rfg <repo>` (or `rfg mint` then `rfg smoke`).
 Non-rfg tools should source `shell/lib/revealui-mcp-env.sh` and call
 `_revealui_mcp_env_load` in-process, or read the vault path with revvault.
@@ -38,7 +38,7 @@ Non-rfg tools should source `shell/lib/revealui-mcp-env.sh` and call
 ```bash
 rfg revealui          # load token + cd + exec grok (product session)
 rfg                   # already *inside* the fleet (root or a repo)
-# Fleet root is a valid session — rfg / rfg . there does not exit 2.
+# Fleet root is a valid session. rfg / rfg . there does not exit 2.
 # Skip Grok vendor-hook attach: RFG_GROK_ATTACH_SKIP=1
 
 # The PATH name `revealui` was a tmux workspace launcher. It is retired
@@ -67,7 +67,10 @@ The preflight signals only known orphan patterns older than
 `RFG_STORM_MIN_AGE_SEC` (default 120 seconds). A process already in
 uninterruptible disk sleep is included at that same age when its cmdline
 is one of those patterns, any `du -sh`, or a relative `find .`. rfg and
-grok are not signaled. If a matching process is still in disk sleep
+grok are not signaled. The sweeper also skips any process whose ancestor
+chain, including itself, contains codex, rfx, grok, rfg, rfc, claude, or
+cursor-agent. A `find` or `du` started inside a live agent session is left
+alone. Only orphaned storms are cleared. If a matching process is still in disk sleep
 afterward, `rfg` warns on stderr and continues.
 Skip with `RFG_STORM_PREFLIGHT_SKIP=1`. Run `kill-audit-storms` alone to
 sweep with `AUDIT_STORM_MIN_AGE_SEC` (default 600).
@@ -75,7 +78,7 @@ sweep with `AUDIT_STORM_MIN_AGE_SEC` (default 600).
 # Rift-inspired isolation (runtime ports + claim registry)
 rfg open revealui ves-fo-managed --claim marketing/ves-fo-managed
 # → git worktree at ~/revealfleet/.wt/ves-fo-managed from origin/test
-# → writes .env.worktree (hash ports 3000–9999 + multi-service offsets)
+# → writes .env.worktree (hash ports 3000-9999 + multi-service offsets)
 # → PID/TTL claim under ~/.local/share/revealui/claims/
 # → exec grok with MCP env (use --no-agent to stop after bootstrap)
 
@@ -143,7 +146,7 @@ source ~/revealfleet/revkit/shell/shellrc.d/55-rfg.sh
 | Product | Durable role |
 |---------|----------------|
 | **RevKit** | Runtime entrypoint + secrets load |
-| **RevCon** | Editor/agent *content* generators only — does not own shell launch |
+| **RevCon** | Editor/agent *content* generators only. Does not own shell launch |
 | **RevSkills** | Skills document `rfg`; no second secret store |
 
 Future Level 2 (`GrokAdapter` in `@revealui/harnesses`) extends the same data plane; it does not replace `rfg` for interactive Grok.

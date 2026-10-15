@@ -42,15 +42,15 @@ tracker() {
   fi
 }
 
-# Canonical fleet workboard (not the revealui in-repo stub)
+# Canonical fleet workboard is <planning>/.revealui/workboard.md.
 wb() {
   local _wb="${REVEALUI_WORKBOARD:-}" planning
   if [ -z "$_wb" ]; then
     planning="$(__rv_planning_root)" || return 1
-    _wb="$planning/.claude/workboard.md"
+    _wb="$planning/.revealui/workboard.md"
   fi
   if [ ! -f "$_wb" ]; then
-    echo "wb: workboard not found (set REVEALUI_WORKBOARD)" >&2
+    echo "wb: workboard not found (set REVEALUI_WORKBOARD). Expected .revealui/workboard.md" >&2
     return 1
   fi
   if [ "${1:-}" = "once" ]; then

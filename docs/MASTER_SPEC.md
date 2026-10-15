@@ -6,10 +6,10 @@ owner: RevealUI Studio
 staleness-status: FRESH
 ---
 
-# RevKit — Master Spec
+# RevKit master spec
 
 **Last Updated:** 2026-09-13
-**Status:** Pre-1.0 — cross-platform foundation shipped (macOS + Linux + WSL2); surface stable for daily use, external-contributor onboarding is Phase C (see MASTER_PLAN)
+**Status:** Pre-1.0. Cross-platform foundation shipped (macOS + Linux + WSL2); surface stable for daily use, external-contributor onboarding is Phase C (see MASTER_PLAN)
 **Repo:** [RevealUIStudio/revkit](https://github.com/RevealUIStudio/revkit) (product name: RevealUI DevKit)
 
 > Surface area, architecture, configuration model. Companion to [`MASTER_PLAN.md`](./MASTER_PLAN.md) (status + roadmap).
@@ -42,13 +42,14 @@ revkit/
 │   ├── bin/                         # helper scripts → /usr/local/bin (or ~/.local/bin on macOS)
 │   │   ├── rfc.sh                   # WSL-native (and macOS/Linux) Claude launcher
 │   │   ├── rfg.sh                   # Grok launcher (MCP token from revvault)
+│   │   ├── rfx.sh                   # Codex launcher (same MCP env as rfg)
 │   │   ├── revkit-mode.sh           # print/set shell mode (fleet|vibe|bare)
 │   │   ├── revealui.sh              # GAP-351 retire shim (overwrites ~/.local/bin/revealui)
 │   │   ├── mount-sandbox-drive.sh   # WSL-only sandbox-drive mount helper
 │   │   ├── sandbox-services.sh      # WSL-only sandbox service control
 │   │   ├── sandbox-validate.sh      # WSL-only tier consistency check
 │   │   ├── wsl-status.sh            # WSL-only status banner
-│   │   └── m4-sudoers-fs-scanner.js # M-4 Claude Code PreToolUse scanner
+│   │   └── m4-sudoers-fs-scanner.js # M-4 scanner; bootstrap installs it to ~/.revealui/hooks
 │   ├── config/                      # neutral tracked configs (no per-user identity)
 │   │   ├── wsl.conf                 # WSL distro config
 │   │   ├── wslconfig                # Windows-host WSL global config (.wslconfig)
@@ -61,7 +62,7 @@ revkit/
 ├── scripts/
 │   ├── check-no-private-leaks.sh    # private-path / credential scan (CI)
 │   ├── check-backup-staleness.ps1   # weekly-backup staleness guard
-│   ├── weekly-wsl-backup.ps1        # scheduled task — exports Ubuntu distro
+│   ├── weekly-wsl-backup.ps1        # scheduled task. Exports Ubuntu distro
 │   ├── Register-WeeklyBackupTask.ps1 # conhost --headless + WakeToRun (Sunday 03:00)
 │   ├── Move-WslVhdx.ps1             # wsl --manage --move C:\WSL -> E:\WSL
 │   └── Apply-WslHostFix.ps1         # elevated: register backup wrap, then move VHD
@@ -84,7 +85,7 @@ tracked configs + per-user `include.path` model below.
 ## Configuration model
 
 RevKit ships **neutral, committable configs** and keeps every per-machine /
-per-user value machine-local — nothing committed carries personal identity.
+per-user value machine-local. Nothing committed carries personal identity.
 
 | Layer | Location | Committed? | Purpose |
 |---|---|---|---|
@@ -170,7 +171,8 @@ writing.
 
 A default run is privileged. It writes WSL sudoers, installs helpers to
 `/usr/local/bin` on Linux/WSL, sets `git config --global core.hooksPath`, and
-wires fleet Claude rules when `revcon` is present.
+wires fleet rules into `.revealui` when `revcon` is present. The Claude
+adapter is off unless `--claude-adapter` or `REVKIT_CLAUDE_ADAPTER=1`.
 
 | Step | What | Platform |
 |---|---|---|
@@ -182,12 +184,12 @@ wires fleet Claude rules when `revcon` is present.
 | 4 | Git + SSH includes (neutral configs + per-user `~/.config/revkit/`) | all |
 | 5 | WSL boot optimization (`shell/setup-wsl-boot.sh`) | WSL |
 | 6 | Sandbox directory init (if `/mnt/sandbox` mounted) | WSL |
-| 7 | Clone/wire `claude-config` into `~/.claude` + revskills marketplace | all |
-| 8 | Deploy M-4 Claude Code scanner hook | all |
-| 9 | Wire RevealFleet Claude rules via `revcon/link.sh` | all |
+| 7 | Write the native control home `~/.revealui`. Claude adapter off by default (`--claude-adapter` or `REVKIT_CLAUDE_ADAPTER=1` projects `~/.claude` from that home; no vendor config repo, no `claude` CLI) | all |
+| 8 | Deploy the M-4 scanner to `~/.revealui/hooks` and attach it per enabled adapter | all |
+| 9 | Wire fleet rules via `revcon/link.sh`: `--editor revealui` first, then vendor projections | all |
 | 10 | Fleet-wide M-11 pre-push hook. `core.hooksPath` at `~/.config/revkit/git-hooks` (Linux/WSL, LF-normalized copy) or `<repo>/git-hooks` (Windows, in-repo) | all |
 
-`bootstrap-wsl.sh` is a thin deprecation shim that execs `bootstrap.sh` — it
+`bootstrap-wsl.sh` is a thin deprecation shim that execs `bootstrap.sh`. It
 exists only to keep the legacy `bash ~/.revealui/bootstrap-wsl.sh` invocation
 path (deployed clones, handoff instructions) working. `bootstrap.ps1` is the
 Windows-host prep entrypoint.
@@ -208,7 +210,7 @@ consistency (no env-var drift between expected + actual).
 The sandbox drive's role changed 2026-04-24 from "primary dev infra" to
 "product-demo + security-research use." The T1 capabilities above remain
 documented for completeness but are NOT the recommended deployment for daily
-dev infra —
+dev infra.
 `pnpm store`, Docker data-root, Ollama models, build caches, and active ext4
 working trees should stay on the primary WSL ext4 vhdx, not the sandbox drive
 (NTFS/9p hostile + USB unplugability).
@@ -220,6 +222,7 @@ working trees should stay on the primary WSL ext4 vhdx, not the sandbox drive
 | `REVKIT_OS` | set | set | Detected OS (`wsl`/`linux`/`macos`) |
 | `DEVKIT_TIER` | `T0` | `T1` | Shell-detectable tier signal |
 | `REVEALUI_ROOT` | set | set | RevKit repo root (pinned at bootstrap) |
+| `REVKIT_CLAUDE_ADAPTER` | unset | unset | Set to `1` to project `~/.claude` from `~/.revealui`. Default off. |
 | `REVEALUI_MODE` | `fleet`/`vibe`/`bare` | `fleet`/`vibe`/`bare` | Workflow fragment set. `managed` is a deprecated silent alias for `fleet`. When unset, `~/.config/revkit/mode` then `fleet`. Not a stream flag. |
 | `STREAM_SAFE` / `REVVAULT_STREAM_SAFE` | overlay | overlay | Stream overlay ON (orthogonal). Also `RV_STREAM=1` from a terminal profile. |
 | `REVVAULT_ALLOW_PRINT` | overlay | overlay | Vault-private overlay (full get/clip; keep window out of capture). |
@@ -230,8 +233,8 @@ working trees should stay on the primary WSL ext4 vhdx, not the sandbox drive
 
 **Drift note:** Joshua's deployed WSL still uses the legacy `forge` names
 (`/mnt/forge`, `REVEALUI_FORGE`, `mount-forge-drive.sh`). Source repo
-post-revkit#13 uses `sandbox` names. Re-bootstrap pending (no functional impact)
-— tracked in MASTER_PLAN's Owner Action Queue.
+post-revkit#13 uses `sandbox` names. Re-bootstrap pending (no functional impact).
+Tracked in MASTER_PLAN's Owner Action Queue.
 
 ---
 
@@ -265,7 +268,7 @@ connected. The VHDx helpers ship at `shell/compact-vhdx.ps1` +
 
 ## Backup model
 
-**Weekly WSL `.tar` snapshot** — `scripts/weekly-wsl-backup.ps1` runs Sunday
+**Weekly WSL `.tar` snapshot**. `scripts/weekly-wsl-backup.ps1` runs Sunday
 03:00 via scheduled task `RevealUI-WSL-Weekly-Backup`; exports Ubuntu distro to
 `E:\backups\wsl-snapshots\current\Ubuntu-<date>.tar`; keeps 2 most recent.
 Task action is `conhost.exe --headless pwsh.exe ...` (bare `pwsh.exe` flashes
@@ -298,20 +301,20 @@ Pre-1.0. RevKit is a config/shell repo (no `package.json`, no changeset). See
 
 | Other product | Relationship |
 |---|---|
-| **RevealUI** | Independent — RevealUI runs anywhere with Node 24 + pnpm + Postgres; RevKit is one provisioning option |
+| **RevealUI** | Independent. RevealUI runs anywhere with Node 24 + pnpm + Postgres; RevKit is one provisioning option |
 | **RevVault** | RevKit sets up the age-identity mount path RevVault expects |
-| **RevDev** | Independent — RevDev's harness daemon runs on whatever workstation RevKit (or any other tool) provisioned |
-| **RevCon** | Pairs cleanly — RevKit wires RevealFleet Claude rules via `revcon/link.sh` (bootstrap step 9) |
-| **RevForge** | Independent — RevForge runs on a workstation; RevKit can provision that workstation |
-| **RevSkills** | Independent — skills are markdown, work in any RevKit-provisioned env |
+| **RevDev** | Independent. RevDev's harness daemon runs on whatever workstation RevKit (or any other tool) provisioned |
+| **RevCon** | Pairs cleanly. RevKit wires fleet rules via `revcon/link.sh` native mode first, then vendor projections (bootstrap step 9) |
+| **RevForge** | Independent. RevForge runs on a workstation; RevKit can provision that workstation |
+| **RevSkills** | Independent. Skills are markdown, work in any RevKit-provisioned env |
 
 ---
 
 ## See also
 
-- [`docs/MASTER_PLAN.md`](./MASTER_PLAN.md) — current status, A/B/C/D phases, owner actions
-- [`docs/rfc-launcher.md`](./rfc-launcher.md) — the `rfc` secure Claude launcher
-- [`docs/tier-capabilities.md`](./tier-capabilities.md) — full T0/T1 capability matrix
+- [`docs/MASTER_PLAN.md`](./MASTER_PLAN.md). Current status, A/B/C/D phases, owner actions
+- [`docs/rfc-launcher.md`](./rfc-launcher.md). The `rfc` secure Claude launcher
+- [`docs/tier-capabilities.md`](./tier-capabilities.md). Full T0/T1 capability matrix
 - [`docs/WSL-CheatSheet.txt`](./WSL-CheatSheet.txt), [`docs/WSL-QuickReference.md`](./WSL-QuickReference.md)
-- [`README.md`](../README.md) — quick start
+- [`README.md`](../README.md). Quick start
 - Fleet-level navigation lives in RevealUI Studio's separate private planning repository

@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # GAP-372: materialized .claude rules must match .revcon-manifest.json
+  # Native .revealui/content is the reference. Vendor trees are projections.
   copy-lockstep:
     name: Copy lockstep
     runs-on: ubuntu-latest
@@ -63,7 +63,7 @@ jobs:
           set -euo pipefail
           fail=0
           if [ ! -d git-hooks ]; then
-            echo "git-hooks/ directory missing — M-11 bootstrap will skip wiring"
+            echo "git-hooks/ directory missing. M-11 bootstrap will skip wiring"
             exit 1
           fi
           while IFS= read -r -d '' f; do
@@ -124,7 +124,7 @@ jobs:
           ignore_names: ""
 
   no-hardcoded-user:
-    name: GAP-116 anti-regression — no hardcoded "joshu"
+    name: GAP-116 anti-regression. No hardcoded "joshu"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -133,7 +133,7 @@ jobs:
       - name: Grep for hardcoded "joshu" in scripted files
         run: |
           set -euo pipefail
-          # Acceptance test from gaps/GAP-116.yml — must be 0.
+          # Acceptance test from gaps/GAP-116.yml. Must be 0.
           # Limited to scripted file types so this workflow file (which has
           # to mention the literal patterns to scan for them) doesn't
           # match itself.
@@ -150,7 +150,7 @@ jobs:
             echo "$mnt_hits"
             exit 1
           fi
-          echo "ok — no hardcoded user paths in scripted files"
+          echo "ok. No hardcoded user paths in scripted files"
 
   gitleaks:
     name: Gitleaks (full history)
@@ -204,6 +204,22 @@ jobs:
             exit 1
           fi
 
+  test-mcp-smoke:
+    name: MCP smoke protocol and deadlines
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Run synthetic MCP transport and process regressions
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python3 -m unittest discover -s tests -p test_probe.py -v
+          python3 -m unittest discover -s tests -p test_transport_wrapper.py -v
+          bash -n shell/bin/revealui-mcp-smoke.sh
+
   test-secrets:
     name: tests/test-secrets.sh
     runs-on: ubuntu-latest
@@ -238,6 +254,17 @@ jobs:
       - name: Run audit-storm preflight tests
         run: bash tests/test-audit-storm.sh
 
+  test-rfx:
+    # Codex launcher parity. Dry-run and env only. Does not exec codex.
+    name: tests/test-rfx.sh
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Run rfx launcher tests
+        run: bash tests/test-rfx.sh
+
   test-rfc:
     name: tests/test-rfc.sh
     runs-on: ubuntu-latest
@@ -269,7 +296,7 @@ jobs:
         run: bash tests/test-revkit-mode.sh
 
   test-revealui-retired:
-    # GAP-351 — retire shim must not start tmux; must name rfg/rfc.
+    # GAP-351. Retire shim must not start tmux; must name rfg/rfc.
     name: tests/test-revealui-retired.sh
     runs-on: ubuntu-latest
     steps:
@@ -300,7 +327,7 @@ jobs:
         run: bash tests/test-fleet-root.sh
 
   test-fleet-workflow-health:
-    # GAP-420 — regression guard for the consecutive-failure predicate that
+    # GAP-420. Regression guard for the consecutive-failure predicate that
     # backs scripts/fleet-workflow-health.sh (see fleet-workflow-health.yml).
     # Network-free: exercises the --self-test canned fixture only.
     name: tests/test-fleet-workflow-health.sh
@@ -326,12 +353,24 @@ jobs:
       - name: Run pre-push hook tests
         run: bash tests/test-pre-push-hook.sh
 
+  test-check-no-client-names:
+    # Layer B watchlist gate: file scan stays the default, commit-message
+    # mode and the commit-msg helper use placeholder patterns only.
+    name: tests/test-check-no-client-names.sh
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Run client-name watchlist gate tests
+        run: bash tests/test-check-no-client-names.sh
+
   bootstrap-m11-wiring:
     # Sanity-check that bootstrap.sh (the canonical cross-platform entry point)
     # still references the M-11 hook dir + sets core.hooksPath; that the
     # bootstrap-wsl.sh deprecation shim still execs bootstrap.sh; and that
     # bootstrap.ps1 (Windows host) is intact. Catches accidental removal of the
-    # wiring during unrelated refactors. Read-only — does not execute any
+    # wiring during unrelated refactors. Read-only. Does not execute any
     # bootstrap script.
     name: bootstrap M-11 wiring intact
     runs-on: ubuntu-latest
@@ -355,7 +394,7 @@ jobs:
             echo "::error file=bootstrap.sh::M-11 wiring lost: no pre-push hook deploy"
             fail=1
           fi
-          # The deprecation shim is optional — only assert the exec chain if it
+          # The deprecation shim is optional. Only assert the exec chain if it
           # still exists, so deleting the shim doesn't hard-fail this job.
           if [ -f bootstrap-wsl.sh ]; then
             if ! grep -qF 'bootstrap.sh' bootstrap-wsl.sh; then
@@ -406,7 +445,7 @@ jobs:
         run: bash tests/test-platform-detect.sh
 
   bootstrap-dry-run:
-    # Phase C — real-OS smoke of the cross-platform bootstrap. The
+    # Phase C. Real-OS smoke of the cross-platform bootstrap. The
     # platform-detect job above only exercises lib/platform.sh against
     # fixtures; this actually RUNS bootstrap.sh on real Linux (every PR) + macOS (main + dispatch) runners
     # (detect-then-dispatch from #68), proving the dispatch executes per-OS,
@@ -441,10 +480,10 @@ jobs:
     # runner. The dry-run matrix above proves the dispatch executes; this proves
     # bootstrap.sh actually PRODUCES a working managed environment (rc hook,
     # helpers, git/ssh includes, M-4 scanner, M-11 hooksPath). The ephemeral
-    # runner is the safe sandbox — these steps mutate $HOME + /usr/local/bin +
+    # runner is the safe sandbox. These steps mutate $HOME + /usr/local/bin +
     # global git config. WSL-only steps (sudoers, boot-opt, sandbox init) are
-    # skipped (REVKIT_OS auto-detects as linux here). revcon/link.sh (step 8) is
-    # absent on the runner and warns-and-skips by design.
+    # skipped (REVKIT_OS auto-detects as linux here). revcon/link.sh (step 9)
+    # is absent on the runner and warns-and-skips by design.
     name: bootstrap real-run smoke (linux)
     runs-on: ubuntu-latest
     steps:
@@ -462,13 +501,21 @@ jobs:
           }
           grep -qF '# --- RevealUI environment mode ---' "$HOME/.bashrc"; assert "rc hook installed in ~/.bashrc" $?
           test -x /usr/local/bin/rfc.sh; assert "helper rfc.sh installed + executable" $?
+          test -x /usr/local/bin/rfx.sh; assert "helper rfx.sh installed + executable" $?
+          test -L /usr/local/bin/rfx; assert "rfx symlink installed next to rfg.sh" $?
+          test "$(readlink /usr/local/bin/rfx)" = "rfx.sh"; assert "rfx symlink target is rfx.sh" $?
+          test -x /usr/local/bin/rfx; assert "rfx symlink is executable" $?
           test -f /usr/local/lib/revkit/kill-audit-storms.sh; assert "audit sweeper lib installed" $?
           test -f /usr/local/lib/revkit/rfg-storm-preflight.sh; assert "rfg storm preflight lib installed" $?
           test -x /usr/local/bin/kill-audit-storms; assert "kill-audit-storms wrapper installed + executable" $?
           git config --global --get-all include.path | grep -qF 'shell/config/gitconfig'; assert "git include.path -> shell/config/gitconfig" $?
           test -f "$HOME/.config/revkit/identity.gitconfig"; assert "per-user identity.gitconfig seeded" $?
           git config --global --get core.hooksPath | grep -qF 'git-hooks'; assert "M-11 core.hooksPath -> repo git-hooks" $?
-          test -f "$HOME/.claude/hooks/m4-sudoers-fs-scanner.js"; assert "M-4 scanner deployed" $?
+          test -f "$HOME/.revealui/hooks/m4-sudoers-fs-scanner.js"; assert "M-4 scanner deployed to ~/.revealui/hooks" $?
+          test ! -e "$HOME/.claude"; assert "default run does not create ~/.claude" $?
+          grep -q 'hooks = false' "$HOME/.grok/config.toml"; assert "grok compat.claude hooks off by default" $?
+          grep -q 'mcps = false' "$HOME/.grok/config.toml"; assert "grok compat.claude mcps off by default" $?
+          grep -q 'sessions = false' "$HOME/.grok/config.toml"; assert "grok compat.claude sessions off by default" $?
           exit "$fail"
       - name: Re-run is idempotent (self-healing hook, no duplicate)
         run: |
@@ -477,3 +524,15 @@ jobs:
           count="$(grep -cF '# --- RevealUI environment mode ---' "$HOME/.bashrc")"
           test "$count" -eq 1 || { echo "::error::rc hook duplicated on re-run (count=$count)"; exit 1; }
           echo "ok   idempotent re-run (single rc hook block)"
+          test ! -e "$HOME/.claude"
+          test -f "$HOME/.revealui/hooks/m4-sudoers-fs-scanner.js"
+
+  test-bootstrap-native:
+    name: tests/test-bootstrap-native.sh
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Run native-home bootstrap tests
+        run: bash tests/test-bootstrap-native.sh

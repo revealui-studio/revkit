@@ -43,3 +43,6 @@ docs/MASTER_PLAN.md                     lts-drive-win   # documents the weekly b
 
 # Materialized planning hardline may mention private TRACKER; not a path leak.
 .claude/rules/planning.md               internal-coord-hub
+
+# By-design: the code owners file must name the GitHub review accounts.
+.github/CODEOWNERS                      lit-username

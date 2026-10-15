@@ -22,7 +22,7 @@ Pair with `docs/client-name-public-github.md` and `scripts/check-no-client-names
 | Layer | What | Owner |
 | --- | --- | --- |
 | A | Org-wide GitHub API audit, scrub editable, inventory residuals | CEO + daily routine; private box `/workspace/client-name-github-audit/` |
-| B | Local/CI watchlist gate, plus the hardcoded literal scanner that stays in git | revkit `scripts/check-no-client-names.sh` and `scripts/check-client-leaks.sh` |
+| B | Local/CI watchlist gate for files, commit messages, and an opt-in commit-msg hook, plus the hardcoded literal scanner that stays in git | revkit `scripts/check-no-client-names.sh` and `scripts/check-client-leaks.sh` |
 | C | Soft locks: Build pastes, cloud-agent prompts, PR templates use generic labels only | **Every bot**; REV enforces |
 | D | Rolling inventory + guardrail-gap loop until public hits stay 0 | CEO inventory |
 
@@ -68,6 +68,9 @@ bash scripts/check-no-client-names.sh
 cp templates/client-name-watchlist.example .client-name-watchlist.local
 # edit local file with real terms (never commit)
 bash scripts/check-no-client-names.sh
+# Forward-only commit messages (does not rewrite accepted history):
+bash scripts/check-no-client-names.sh --commits 'origin/test..HEAD'
+# Opt-in commit-msg hook: bash scripts/hooks/commit-msg-client-names.sh "$1"
 # CI: CLIENT_NAME_WATCHLIST_FILE + optional CLIENT_NAME_WATCHLIST_REQUIRED=1
 # Hardcoded companion (always on in public CI): bash scripts/check-client-leaks.sh
 ```

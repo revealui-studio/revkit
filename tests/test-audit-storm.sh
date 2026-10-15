@@ -189,14 +189,14 @@ fi
 
 echo "--- standalone none ---"
 none_out="$(AUDIT_STORM_MIN_AGE_SEC=99999 bash "$SWEEP")" && none_rc=0 || none_rc=$?
-if [ "$none_rc" -eq 0 ] && [[ "$none_out" == *"kill-audit-storms: none (min_age=99999s)"* ]]; then
+if [ "$none_rc" -eq 0 ] && [[ "$none_out" == *"kill-audit-storms: none (min_age=99999s protected=0)"* ]]; then
   pass "sweeper exits 0 and reports none"
 else
   fail "sweeper none: rc=$none_rc out=$none_out"
 fi
 
 wrap_out="$(AUDIT_STORM_MIN_AGE_SEC=99999 bash "$WRAP")" && wrap_rc=0 || wrap_rc=$?
-if [ "$wrap_rc" -eq 0 ] && [[ "$wrap_out" == *"kill-audit-storms: none (min_age=99999s)"* ]]; then
+if [ "$wrap_rc" -eq 0 ] && [[ "$wrap_out" == *"kill-audit-storms: none (min_age=99999s protected=0)"* ]]; then
   pass "bin wrapper reaches the lib"
 else
   fail "wrapper: rc=$wrap_rc out=$wrap_out"
@@ -220,7 +220,7 @@ else
 fi
 
 old_out="$(AUDIT_STORM_MIN_AGE_SEC=600 bash "$SWEEP")" && old_rc=0 || old_rc=$?
-if [ "$old_rc" -eq 0 ] && [[ "$old_out" == *"none (min_age=600s)"* ]] \
+if [ "$old_rc" -eq 0 ] && [[ "$old_out" == *"none (min_age=600s protected=0)"* ]] \
   && alive "$du_pid" && alive "$grok_pid" && alive "$rfg_pid" && alive "$keep_pid"; then
   pass "younger than min age is left alone"
 else
@@ -253,6 +253,84 @@ fi
 cleanup
 victims=()
 
+echo "--- agent ancestor skip ---"
+name_yes() {
+  if audit_storm_agent_name_match "$1"; then
+    pass "agent name: $1"
+  else
+    fail "agent name should match: $1"
+  fi
+}
+name_no() {
+  if audit_storm_agent_name_match "$1"; then
+    fail "agent name should not match: $1"
+  else
+    pass "not an agent name: $1"
+  fi
+}
+name_yes "codex"
+name_yes "codex-cli"
+name_yes "rfx"
+name_yes "rfx.sh"
+name_yes "/usr/local/bin/rfg"
+name_yes "rfc.sh"
+name_yes "claude"
+name_yes "cursor-agent"
+name_yes "/opt/cursor-agent/index.js"
+name_no "find"
+name_no "sleep"
+name_no "node"
+name_no "/usr/bin/node"
+
+agent_dir="$(mktemp -d)"
+pidfile="$agent_dir/child.pid"
+cat >"$agent_dir/parent.py" <<'PY'
+import os, sys, time
+home, pidfile = sys.argv[1], sys.argv[2]
+child = os.fork()
+if child == 0:
+    os.execv("/bin/sleep", ["du -sh " + home, "120"])
+else:
+    with open(pidfile, "w", encoding="utf-8") as fh:
+        fh.write(str(child) + "\n")
+    time.sleep(120)
+PY
+set -m
+bash -c 'exec -a codex python3 "$1" "$2" "$3"' _ "$agent_dir/parent.py" "$home" "$pidfile" >/dev/null 2>&1 &
+agent_parent=$!
+disown "$agent_parent" 2>/dev/null || true
+set +m
+victims+=("$agent_parent")
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  [ -s "$pidfile" ] && break
+  sleep 0.1
+done
+agent_child="$(tr -d '[:space:]' <"$pidfile" 2>/dev/null || true)"
+if [ -n "$agent_child" ]; then
+  victims+=("$agent_child")
+fi
+spawn_as "du -sh $home"
+orphan_pid="$last_pid"
+sleep 0.3
+if [ -n "$agent_child" ] && alive "$agent_child" && alive "$orphan_pid" \
+  && audit_storm_has_agent_ancestor "$agent_child"; then
+  pass "du under codex has an agent ancestor ($AUDIT_STORM_AGENT_ANCESTOR)"
+else
+  fail "ancestor walk missed the codex parent (child=$agent_child)"
+fi
+agent_out="$(AUDIT_STORM_MIN_AGE_SEC=0 bash "$SWEEP")" || true
+sleep 0.2
+if alive "$agent_child" && ! alive "$orphan_pid" \
+  && [[ "$agent_out" == *"skip pid=$agent_child"* ]] \
+  && [[ "$agent_out" == *"pid=$orphan_pid"* ]]; then
+  pass "sweeper skips the codex child and still clears the orphan du"
+else
+  fail "ancestor kill: out=$agent_out child=$(alive "$agent_child" && echo up || echo down) orphan=$(alive "$orphan_pid" && echo up || echo down)"
+fi
+cleanup
+victims=()
+rm -rf "$agent_dir"
+
 echo "--- preflight does not hard-fail ---"
 skip_out="$(RFG_STORM_PREFLIGHT_SKIP=1 bash "$PRE" 2>&1)" && skip_rc=0 || skip_rc=$?
 if [ "$skip_rc" -eq 0 ] && [ -z "$skip_out" ]; then
@@ -262,7 +340,7 @@ else
 fi
 
 pre_err="$(bash "$PRE" 2>&1 >/dev/null)" && pre_rc=0 || pre_rc=$?
-if [ "$pre_rc" -eq 0 ] && [[ "$pre_err" == *"kill-audit-storms: none (min_age=120s)"* ]]; then
+if [ "$pre_rc" -eq 0 ] && [[ "$pre_err" == *"kill-audit-storms: none (min_age=120s protected=0)"* ]]; then
   pass "preflight default age is 120 and exits 0"
 else
   fail "preflight: rc=$pre_rc err=$pre_err"
@@ -292,7 +370,7 @@ cd "$TMP/fleet"
 launch_out="$(bash "$RFG" 2>"$TMP/launch.err")" && launch_rc=0 || launch_rc=$?
 launch_err="$(cat "$TMP/launch.err")"
 if [ "$launch_rc" -eq 0 ] && [[ "$launch_out" == *"GROK_STUB cwd="* ]] \
-  && [[ "$launch_err" == *"kill-audit-storms: none (min_age=120s)"* ]]; then
+  && [[ "$launch_err" == *"kill-audit-storms: none (min_age=120s protected=0)"* ]]; then
   pass "rfg launch runs preflight then execs grok"
 else
   fail "rfg launch: rc=$launch_rc out=$launch_out err=$launch_err"
@@ -389,6 +467,15 @@ if bash -n "$SWEEP" && grep -F '*bin/grok*)' "$SWEEP" >/dev/null \
   pass "rfg/grok skips are separate case arms and bash -n clean"
 else
   fail "grok case pattern is not the corrected form"
+fi
+
+if grep -q 'audit_storm_has_agent_ancestor' "$SWEEP" \
+  && grep -q 'cursor-agent' "$SWEEP" \
+  && grep -q 'codex' "$SWEEP" \
+  && grep -q 'rfx.sh' "$SWEEP"; then
+  pass "sweeper walks ancestors for codex, rfx, and cursor-agent"
+else
+  fail "sweeper missing the agent-ancestor guard"
 fi
 
 if grep -q 'RFG_STORM_PREFLIGHT_SKIP' "$DOCS" && grep -q 'RFG_STORM_MIN_AGE_SEC' "$DOCS" \

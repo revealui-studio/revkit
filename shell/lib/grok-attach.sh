@@ -29,6 +29,66 @@ rfg_grok_home_src() {
   return 1
 }
 
+# Shipped Grok config. Native home copy wins when bootstrap has installed it.
+rfg_grok_config_template() {
+  local here f native
+  here="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+  native="${REVEALUI_NATIVE_HOME:-${HOME:-}/.revealui}/adapters/grok/config.toml"
+  for f in \
+    "$native" \
+    "${REVEALUI_ROOT:-}/templates/grok/config.toml" \
+    "$here/../../templates/grok/config.toml"
+  do
+    if [ -n "$f" ] && [ -f "$f" ]; then
+      printf '%s\n' "$f"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Seed [compat.claude] when the section is absent. Do not overwrite an
+# explicit opt-in. hooks, mcps, and sessions ship off. skills ships off
+# unless the operator turns it on for native projections.
+rfg_append_grok_compat() {
+  local tmpl="$1"
+  local dest="$2"
+  local line start=0
+  [ -s "$dest" ] || return 0
+  if [ -n "$(tail -c 1 "$dest")" ]; then
+    printf '\n' >> "$dest"
+  fi
+  printf '\n' >> "$dest"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "[compat.claude]") start=1 ;;
+      \[*)
+        if [ "$start" -eq 1 ]; then
+          break
+        fi
+        ;;
+    esac
+    if [ "$start" -eq 1 ]; then
+      printf '%s\n' "$line" >> "$dest"
+    fi
+  done < "$tmpl"
+}
+
+rfg_seed_grok_compat() {
+  local tmpl dest
+  tmpl="$(rfg_grok_config_template)" || return 0
+  dest="$(rfg_grok_home)/config.toml"
+  mkdir -p "$(dirname "$dest")"
+  if [ ! -s "$dest" ]; then
+    cp "$tmpl" "$dest"
+    return 0
+  fi
+  if grep -q '^\[compat\.claude\]' "$dest"; then
+    return 0
+  fi
+  rfg_append_grok_compat "$tmpl" "$dest"
+}
+
 # Copy the public stub AGENTS.md only. Never copy prose rules into HOME.
 rfg_attach_grok_constitution() {
   local src dest
@@ -39,6 +99,7 @@ rfg_attach_grok_constitution() {
   if [ ! -f "$dest/AGENTS.md" ] || ! cmp -s "$src/AGENTS.md" "$dest/AGENTS.md"; then
     cp "$src/AGENTS.md" "$dest/AGENTS.md"
   fi
+  rfg_seed_grok_compat
 }
 
 # True when path is exactly the fleet root (not a product repo under it).
@@ -216,6 +277,7 @@ rfg_attach_grok_hooks() {
   local src dest f name
   [ "${RFG_GROK_ATTACH_SKIP:-0}" = "1" ] && return 0
   [ -n "$root" ] || return 0
+  rfg_seed_grok_compat
   rfg_install_grok_budget_scripts "$root"
   src="$root/.revealui/adapters/grok/hooks"
   if [ -d "$src" ]; then

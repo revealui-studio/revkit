@@ -1,0 +1,9 @@
+# Workflow and sensitive-path owners. Either account satisfies review.
+/.github/CODEOWNERS @joshua-v-dev @RevealUIStudio
+/.github/workflows/ @joshua-v-dev @RevealUIStudio
+
+# Security and license paths present in this tree.
+/LICENSE @joshua-v-dev @RevealUIStudio
+/SECURITY.md @joshua-v-dev @RevealUIStudio
+/scripts/security-review-eval/ @joshua-v-dev @RevealUIStudio
+/shell/shellrc.d/60-license.sh @joshua-v-dev @RevealUIStudio

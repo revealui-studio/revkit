@@ -4,12 +4,21 @@ name: Client-name watchlist gate
 #
 # This job runs with no watchlist mounted, so scripts/check-no-client-names.sh
 # warns and exits 0 (gate inactive). Public CI must not embed real terms.
+# Do not set CLIENT_NAME_WATCHLIST_REQUIRED=1 here. That would fail the job
+# until a secret is mounted.
+#
+# pull_request also runs the commit-message scan (subjects, bodies, and the
+# pull request title). The range is base_sha..HEAD. Checkout leaves HEAD on
+# GitHub's merge commit, so the range is the pull request commits plus that
+# merge commit. Accepted history that exists only on the base is outside
+# that range. Fetch the full history during checkout because
+# persist-credentials is false and a later git fetch cannot authenticate.
 #
 # To activate later, without committing terms:
 #   1. Store the watchlist in a GitHub Actions secret. Do not invent a value here.
 #   2. Write that secret to a file outside the checkout (for example
 #      $RUNNER_TEMP/client-name-watchlist) with mode 0600.
-#   3. Export CLIENT_NAME_WATCHLIST_FILE to that path.
+#   3. Export CLIENT_NAME_WATCHLIST_FILE to that path on both scan steps.
 #   4. Optionally export CLIENT_NAME_WATCHLIST_REQUIRED=1 so a missing file
 #      fails the job (exit 2) instead of staying inactive.
 
@@ -31,5 +40,19 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      - name: Run watchlist gate with no watchlist
+          # Full history so a pull_request commit scan can resolve base..HEAD.
+          # Checkout's pull_request HEAD is the merge commit, so that range
+          # is the pull request commits plus the merge commit. Push events
+          # still only file-scan. This repo's pack is small.
+          fetch-depth: 0
+      - name: Run watchlist file scan with no watchlist
         run: bash scripts/check-no-client-names.sh
+      - name: Scan pull request commit messages with no watchlist
+        if: github.event_name == 'pull_request'
+        env:
+          CLIENT_NAME_PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          base_sha="${{ github.event.pull_request.base.sha }}"
+          git rev-parse --verify "${base_sha}^{commit}"
+          bash scripts/check-no-client-names.sh --commits "${base_sha}..HEAD"

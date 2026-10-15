@@ -2,6 +2,8 @@
 # rfg-storm-preflight: called from rfg before sync, MCP load, and grok.
 # Clears known audit du/find storms. Warns on stderr if a matching process
 # is still in uninterruptible disk sleep, then continues. Never hard-fails launch.
+# The sweeper skips a process whose ancestor chain includes codex, rfx, grok,
+# rfg, rfc, claude, or cursor-agent. A live agent scan is not an orphan.
 #
 # Skip: RFG_STORM_PREFLIGHT_SKIP=1
 # Min age seconds (default 120): RFG_STORM_MIN_AGE_SEC

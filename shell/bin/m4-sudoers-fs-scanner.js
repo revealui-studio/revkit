@@ -5,9 +5,10 @@
 // Companion designs: sprint-tier-0.md T0-1, T0-2, T0-3
 //
 // Source of truth: revkit/shell/bin/m4-sudoers-fs-scanner.js (this file).
-// Runtime location: ~/.claude/hooks/m4-sudoers-fs-scanner.js (copied by
+// Runtime location: ~/.revealui/hooks/m4-sudoers-fs-scanner.js (copied by
 //   bootstrap.sh).
-// Invoked from: ~/.claude/hooks/session-start.js (M-4 scan block).
+// Invoked from adapter hooks and templates/hooks/session-start.js.
+//   Those callers point at this native path.
 //
 // Read-only. No mutations. Pure stat + read + parse.
 //

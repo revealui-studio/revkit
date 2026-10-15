@@ -1,7 +1,9 @@
 # Copy to .client-name-watchlist.local (gitignored) or set CLIENT_NAME_WATCHLIST_FILE.
 # Never commit the real file to a public repo.
 # One term per line. Lines starting with # are comments. Blank lines are skipped.
-# scripts/check-no-client-names.sh matches each term case-insensitively.
+# scripts/check-no-client-names.sh matches each term case-insensitively
+# in scanned files. --commits and scripts/hooks/commit-msg-client-names.sh
+# use the same list for commit messages. Never commit real terms.
 #
 # Placeholders only. In the gitignored copy, replace these with operator-local
 # terms and remove the leading #. Do not commit that copy.
