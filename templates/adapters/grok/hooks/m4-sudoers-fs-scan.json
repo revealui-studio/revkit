@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$HOME/.revealui/hooks/m4-sudoers-fs-scanner.js\""
+            "command": "node @REVKIT_SCANNER@"
           }
         ]
       }

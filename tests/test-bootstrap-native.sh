@@ -17,8 +17,10 @@ mkdir -p "$FIXTURE_SOURCE" "$FIXTURE_FLEET/revcon" "$TEST_ROOT/home"
 cp -R "$ROOT/bootstrap.sh" "$ROOT/lib" "$ROOT/shell" "$ROOT/templates" "$FIXTURE_SOURCE/"
 BOOT="$FIXTURE_SOURCE/bootstrap.sh"
 INFER_LOG="$TEST_ROOT/inferred-link.log"
+NATIVE_OVERRIDE=""
 cat > "$FIXTURE_FLEET/revcon/link.sh" << 'EOF'
 #!/bin/sh
+[ "${1:-}" = "--dry-run" ] && exit 0
 printf '%s\n' "$*" >> "${INFER_LOG:?}"
 EOF
 
@@ -97,6 +99,7 @@ run_boot() {
     LINK_LOG="${LINK_LOG:-}" \
     REVEALFLEET_ROOT="${REVEALFLEET_ROOT:-}" \
     REVEALUI_ROOT="" \
+    REVEALUI_NATIVE_HOME="$NATIVE_OVERRIDE" \
     GROK_HOME="$home/.grok" \
     REVKIT_CLAUDE_ADAPTER="${REVKIT_CLAUDE_ADAPTER:-0}" \
     REVKIT_BOOTSTRAP_ONLY="${REVKIT_BOOTSTRAP_ONLY:-}" \
@@ -106,6 +109,32 @@ run_boot() {
   set -e
   printf '%s\n' "$rc"
   cat "$log"
+}
+
+# Execute the projected command against the real scanner with only synthetic
+# filesystem inputs. Its expected violation proves invocation, not file presence.
+check_projected_scanner() {
+  local home="$1" hook="$2" expected="$3" output rc
+  mkdir -p "$home/sudoers-fixture"
+  set +e
+  output="$(env -i HOME="$home" PATH="$PATH" \
+    M4_SUDOERS_DIR_OVERRIDE="$home/sudoers-fixture" \
+    M4_FS_OVERRIDE_HOME="$home" M4_FS_OVERRIDE_SUDOLOG="$home/missing-sudo.log" \
+    node - "$hook" "$expected" 2>&1 <<'JS'
+const fs = require('fs');
+const {spawnSync} = require('child_process');
+const [file, expected] = process.argv.slice(2);
+const config = JSON.parse(fs.readFileSync(file, 'utf8'));
+const command = config.hooks.SessionStart.flatMap(event => event.hooks)
+  .find(hook => hook.command.includes(expected))?.command;
+if (!command) process.exit(1);
+const result = spawnSync('/bin/sh', ['-c', command], {stdio: 'inherit'});
+process.exit(result.status === null ? 1 : result.status);
+JS
+  )"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] && [[ "$output" == *"[M-4]"* ]]
 }
 
 # --- default control-layer run ---
@@ -200,6 +229,11 @@ if [ -f "$hook" ] && grep -q '.revealui/hooks/m4-sudoers-fs-scanner.js' "$hook" 
 else
   fail "Grok adapter hook is missing or points at a vendor copy"
 fi
+if check_projected_scanner "$BASE/home" "$hook" "$BASE/home/.revealui/hooks/m4-sudoers-fs-scanner.js"; then
+  pass "projected Grok hook invokes the real native scanner on synthetic inputs"
+else
+  fail "projected Grok hook cannot invoke its scanner"
+fi
 if printf '%s\n' "$body" | grep -q 'Claude adapter: off'; then
   pass "default run reports the claude adapter off"
 else
@@ -246,8 +280,8 @@ if [ -f "$OPT/home/.claude/CLAUDE.md" ] \
 else
   fail "opt-in projection pointer missing"
 fi
-if [ -f "$OPT/home/.claude/hooks/m4-sudoers-fs-scan.json" ] \
-  && grep -q '.revealui/hooks/m4-sudoers-fs-scanner.js' "$OPT/home/.claude/hooks/m4-sudoers-fs-scan.json" \
+if [ -f "$OPT/home/.claude/settings.json" ] \
+  && check_projected_scanner "$OPT/home" "$OPT/home/.claude/settings.json" "$OPT/home/.revealui/hooks/m4-sudoers-fs-scanner.js" \
   && [ ! -f "$OPT/home/.claude/hooks/m4-sudoers-fs-scanner.js" ] \
   && [ ! -d "$OPT/home/.claude/.git" ]; then
   pass "opt-in attaches the native scanner and does not clone a repo"
@@ -259,6 +293,16 @@ if [ -f "$OPT/home/.revealui/adapters/claude/CLAUDE.md" ] \
   pass "vendor projection matches the native adapter tree"
 else
   fail "projection was not generated from the native tree"
+fi
+mkdir -p "$OPT/home/.claude/hooks"
+printf '{"generated-by-revkit":true}\n' > "$OPT/home/.claude/hooks/m4-sudoers-fs-scan.json"
+out="$(run_boot "$OPT/home" --claude-adapter)"
+rc="${out%%$'\n'*}"
+if [ "$rc" = 0 ] && [ ! -e "$OPT/home/.claude/hooks/m4-sudoers-fs-scan.json" ] \
+  && check_projected_scanner "$OPT/home" "$OPT/home/.claude/settings.json" "m4-sudoers-fs-scanner.js"; then
+  pass "opt-in registration retires the old generated undiscovered hook file"
+else
+  fail "legacy generated hook migration rc=$rc"
 fi
 
 # --- dry-run writes nothing ---
@@ -282,6 +326,43 @@ else
 fi
 
 # --- native link before vendor projection ---
+BAD="$(new_home)"
+export CLAUDE_LOG="$BAD/claude.log" SUDO_LOG="$BAD/sudo.log" BIN="$BAD/bin"
+: > "$CLAUDE_LOG"
+: > "$SUDO_LOG"
+mkdir -p "$BAD/fleet/revcon"
+cat > "$BAD/fleet/revcon/link.sh" <<'EOF'
+#!/bin/sh
+echo 'unsupported editor revealui' >&2
+exit 1
+EOF
+export REVEALFLEET_ROOT="$BAD/fleet"
+for scope in control full; do
+  export REVKIT_BOOTSTRAP_ONLY="${scope/full/}"
+  out="$(run_boot "$BAD/home")"
+  rc="${out%%$'\n'*}"
+  if [ "$rc" != 0 ] && [[ "$out" == *"RevCon cannot link editor revealui"* ]] \
+    && [ ! -e "$BAD/home/.revealui" ] && [ ! -e "$BAD/home/.grok" ] \
+    && [ ! -e "$BAD/home/.claude" ] && [ ! -s "$SUDO_LOG" ] \
+    && [ -z "$(find "$BAD/home" -mindepth 1 -print -quit)" ]; then
+    pass "$scope bootstrap refuses incompatible RevCon before any home or privileged writes"
+  else
+    fail "$scope capability admission rc=$rc out=$out"
+  fi
+done
+
+NO_NODE="$(new_home)"
+rc=0
+env -i HOME="$NO_NODE/home" PATH=/nonexistent /bin/bash -c \
+  '. "$1"; revkit_preflight_control_layer' _ "$ROOT/shell/lib/native-home.sh" \
+  > "$NO_NODE/preflight.log" 2>&1 || rc=$?
+if [ "$rc" -ne 0 ] && grep -q 'node is required' "$NO_NODE/preflight.log" \
+  && [ -z "$(find "$NO_NODE/home" -mindepth 1 -print -quit)" ]; then
+  pass "missing Node refuses native control setup before writes"
+else
+  fail "missing Node admission rc=$rc"
+fi
+
 LINK="$(new_home)"
 export CLAUDE_LOG="$LINK/claude.log"
 export SUDO_LOG="$LINK/sudo.log"
@@ -293,6 +374,7 @@ export LINK_LOG="$LINK/link.log"
 mkdir -p "$LINK/fleet/revkit" "$LINK/fleet/revcon"
 cat > "$LINK/fleet/revcon/link.sh" << 'EOF'
 #!/bin/bash
+[ "${1:-}" = "--dry-run" ] && exit 0
 printf '%s\n' "$*" >> "${LINK_LOG:?}"
 exit 0
 EOF
@@ -344,6 +426,7 @@ plant_user_files() {
   printf 'owner = "user-keep"\n' > "$home/.grok/config.toml"
   printf 'USER claude md\n' > "$home/.claude/CLAUDE.md"
   printf 'USER claude hook\n' > "$home/.claude/hooks/m4-sudoers-fs-scan.json"
+  printf '%s\n' '{"theme":"user-keep","hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo user-hook"}]}]}}' > "$home/.claude/settings.json"
   printf 'KEEP revealui\n' > "$home/.revealui/KEEP.txt"
   printf 'KEEP grok\n' > "$home/.grok/KEEP.txt"
   printf 'KEEP claude\n' > "$home/.claude/KEEP.txt"
@@ -463,12 +546,13 @@ out="$(run_boot "$PRESERVE_OPT/home" --claude-adapter)"
 rc="${out%%$'\n'*}"
 if [ "$rc" = "0" ] && [ ! -s "$CLAUDE_LOG" ] \
   && exact_backup "$PRESERVE_OPT/home/.claude/CLAUDE.md" "USER claude md" \
-  && exact_backup "$PRESERVE_OPT/home/.claude/hooks/m4-sudoers-fs-scan.json" "USER claude hook" \
+  && [ "$(cat "$PRESERVE_OPT/home/.claude/hooks/m4-sudoers-fs-scan.json")" = "USER claude hook" ] \
   && exact_backup "$PRESERVE_OPT/home/.grok/hooks/m4-sudoers-fs-scan.json" "USER grok hook" \
   && exact_backup "$PRESERVE_OPT/home/.revealui/hooks/m4-sudoers-fs-scanner.js" "USER native scanner" \
   && exact_backup "$PRESERVE_OPT/home/.revealui/adapters/claude/CLAUDE.md" "USER native claude md" \
   && live_is_projection "$PRESERVE_OPT/home/.claude/CLAUDE.md" "USER claude md" \
-  && live_is_projection "$PRESERVE_OPT/home/.claude/hooks/m4-sudoers-fs-scan.json" "USER claude hook" \
+  && grep -q 'user-keep' "$PRESERVE_OPT/home/.claude/settings.json" \
+  && grep -q 'echo user-hook' "$PRESERVE_OPT/home/.claude/settings.json" \
   && grep -q '.revealui' "$PRESERVE_OPT/home/.claude/CLAUDE.md" \
   && keep_untouched "$PRESERVE_OPT/home"; then
   pass "claude adapter backs up unmarked files in revealui, claude, and grok homes"
@@ -485,6 +569,19 @@ if [ "$rc" = "0" ] && [ "$(list_baks "$PRESERVE_OPT/home")" = "$baks" ] \
 else
   fail "adapter re-run was not idempotent rc=$rc"
 fi
+if node - "$PRESERVE_OPT/home/.claude/settings.json" <<'JS'
+const fs = require('fs');
+const config = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const hooks = config.hooks.SessionStart.flatMap(event => event.hooks);
+if (config.theme !== 'user-keep' || hooks.length !== 2 ||
+    hooks.filter(hook => hook.statusMessage === 'RevKit native scanner').length !== 1 ||
+    !hooks.some(hook => hook.command === 'echo user-hook')) process.exit(1);
+JS
+then
+  pass "opt-in registration preserves user settings and hooks with one managed scanner after rerun"
+else
+  fail "opt-in registration changed user settings or duplicated the managed scanner"
+fi
 
 # ~/.revealui that is a revkit checkout must not gain untracked adapters or hooks.
 CHECKOUT="$(new_home)"
@@ -500,6 +597,8 @@ native="$CHECKOUT/home/.revealui"
 mkdir -p "$native/shell/lib" "$CHECKOUT/home/.grok/hooks"
 printf '#!/bin/bash\n' > "$native/bootstrap.sh"
 printf '# stub\n' > "$native/shell/lib/native-home.sh"
+mkdir -p "$native/shell/bin"
+cp "$ROOT/shell/bin/m4-sudoers-fs-scanner.js" "$native/shell/bin/"
 printf 'USER grok hook\n' > "$CHECKOUT/home/.grok/hooks/m4-sudoers-fs-scan.json"
 fixture_git -C "$native" init -q
 fixture_git -C "$native" -c user.email=tester@example.com -c user.name=tester -c commit.gpgsign=false add -A
@@ -517,12 +616,73 @@ if [ "$rc" = "0" ] \
 else
   fail "checkout case rc=$rc status=$(fixture_git -C "$native" status --porcelain) body=$body"
 fi
+if check_projected_scanner "$CHECKOUT/home" "$CHECKOUT/home/.grok/hooks/m4-sudoers-fs-scan.json" \
+  "$native/shell/bin/m4-sudoers-fs-scanner.js"; then
+  pass "native checkout projection invokes its tracked scanner without dirtying the checkout"
+else
+  fail "native checkout projection cannot invoke its scanner"
+fi
 out="$(run_boot "$CHECKOUT/home")"
 rc="${out%%$'\n'*}"
 if [ "$rc" = "0" ] && [ -z "$(fixture_git -C "$native" status --porcelain)" ]; then
   pass "second run still does not dirty a revkit checkout"
 else
   fail "checkout re-run dirty rc=$rc status=$(fixture_git -C "$native" status --porcelain)"
+fi
+
+CUSTOM="$(new_home)"
+export CLAUDE_LOG="$CUSTOM/claude.log" SUDO_LOG="$CUSTOM/sudo.log" BIN="$CUSTOM/bin"
+: > "$CLAUDE_LOG"
+: > "$SUDO_LOG"
+NATIVE_OVERRIDE="$CUSTOM/operator's native home"
+out="$(run_boot "$CUSTOM/home" --claude-adapter)"
+rc="${out%%$'\n'*}"
+if [ "$rc" = 0 ] \
+  && check_projected_scanner "$CUSTOM/home" "$CUSTOM/home/.grok/hooks/m4-sudoers-fs-scan.json" "m4-sudoers-fs-scanner.js" \
+  && check_projected_scanner "$CUSTOM/home" "$CUSTOM/home/.claude/settings.json" "m4-sudoers-fs-scanner.js"; then
+  pass "custom native home with spaces and quotes works without inherited configuration"
+else
+  fail "custom native home hooks rc=$rc out=$out"
+fi
+set +e
+env -i HOME="$CUSTOM/home" PATH="$PATH" \
+  M4_SUDOERS_DIR_OVERRIDE="$CUSTOM/home/sudoers-fixture" \
+  M4_FS_OVERRIDE_HOME="$CUSTOM/home" M4_FS_OVERRIDE_SUDOLOG="$CUSTOM/home/missing-sudo.log" \
+  node "$NATIVE_OVERRIDE/hooks/session-start.js" >"$CUSTOM/session.log" 2>&1
+rc=$?
+set -e
+if [ "$rc" -eq 2 ] && grep -q '\[M-4\]' "$CUSTOM/session.log"; then
+  pass "session-start invokes its adjacent scanner in a custom native home"
+else
+  fail "session-start did not invoke its adjacent scanner rc=$rc"
+fi
+NATIVE_OVERRIDE=""
+
+NATIVE_OVERRIDE=relative-native-home
+out="$(run_boot "$CUSTOM/home")"
+rc="${out%%$'\n'*}"
+if [ "$rc" != 0 ] && [[ "$out" == *"REVEALUI_NATIVE_HOME must be an absolute path"* ]] \
+  && [ ! -e "$CUSTOM/home/relative-native-home" ]; then
+  pass "relative native-home configuration is refused before writes"
+else
+  fail "relative native-home admission rc=$rc"
+fi
+NATIVE_OVERRIDE=""
+
+INVALID="$(new_home)"
+export CLAUDE_LOG="$INVALID/claude.log" SUDO_LOG="$INVALID/sudo.log" BIN="$INVALID/bin"
+: > "$CLAUDE_LOG"
+: > "$SUDO_LOG"
+mkdir -p "$INVALID/home/.claude"
+printf 'invalid user settings\n' > "$INVALID/home/.claude/settings.json"
+out="$(run_boot "$INVALID/home" --claude-adapter)"
+rc="${out%%$'\n'*}"
+if [ "$rc" != 0 ] && [[ "$out" == *"existing settings preserved"* ]] \
+  && [ "$(cat "$INVALID/home/.claude/settings.json")" = 'invalid user settings' ] \
+  && [ -z "$(find "$INVALID/home/.claude" -name '.revkit-settings.*' -print)" ]; then
+  pass "invalid opt-in settings are preserved and failed merge leaves no temporary files"
+else
+  fail "invalid settings handling rc=$rc out=$out"
 fi
 
 # --- header marker, not a mid-file mention ---
@@ -691,6 +851,32 @@ if bash "$ROOT/scripts/verify-copy-lockstep.sh" --target "$FIX" --dot .claude >/
 else
   fail "matching projection should pass"
 fi
+printf '<!-- generated from .revealui/content/rules/a.md -->\nnative\n' > "$FIX/.claude/rules/a.md"
+if bash "$ROOT/scripts/verify-copy-lockstep.sh" --target "$FIX" --dot .claude >/dev/null; then
+  pass "canonical RevCon Markdown projection passes lockstep"
+else
+  fail "canonical RevCon projection should pass"
+fi
+printf '<!-- generated from .revealui/content/rules/other.md -->\nnative\n' > "$FIX/.claude/rules/a.md"
+if bash "$ROOT/scripts/verify-copy-lockstep.sh" --target "$FIX" --dot .claude >/dev/null 2>&1; then
+  fail "wrong native ownership header should fail lockstep"
+else
+  pass "wrong native ownership header fails lockstep"
+fi
+printf '<!-- generated from .revealui/content/rules/a.md -->\nnative' > "$FIX/.claude/rules/a.md"
+if bash "$ROOT/scripts/verify-copy-lockstep.sh" --target "$FIX" --dot .claude >/dev/null 2>&1; then
+  fail "changed final newline should fail lockstep"
+else
+  pass "changed final newline fails lockstep"
+fi
+printf '<!-- generated from .revealui/content/rules/a.md -->\nnative\n' > "$FIX/.claude/rules/a.md"
+ln -s "$FIX/.revealui/content/rules/a.md" "$FIX/.claude/rules/extra.md"
+if bash "$ROOT/scripts/verify-copy-lockstep.sh" --target "$FIX" --dot .claude >/dev/null 2>&1; then
+  fail "extra vendor symlink should fail lockstep"
+else
+  pass "extra vendor symlink fails lockstep"
+fi
+rm "$FIX/.claude/rules/extra.md"
 printf 'native bak\n' > "$FIX/.revealui/content/rules/a.md.revkit-bak-20000101010101"
 printf 'vendor bak\n' > "$FIX/.claude/rules/a.md.revkit-bak-20000101010101"
 if bash "$ROOT/scripts/verify-copy-lockstep.sh" --target "$FIX" --dot .claude >/dev/null; then

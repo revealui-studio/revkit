@@ -33,14 +33,11 @@ shell/docker/.env
 .idea/
 .vscode/
 
-# Claude Code per-developer state (settings.local.json, session caches,
-# worktrees). Materialized rules/agents/skills are tracked (GAP-372 copy-mode);
-# keep local state ignored so it cannot bypass the Private Leak Scan gate.
-.claude/*
-!.claude/rules/
-!.claude/agents/
-!.claude/skills/
-!.claude/.revcon-manifest.json
+# Vendor caches and projections are local. Maintained policy and its
+# ownership manifest live under .revealui/content and .revealui/.
+.claude/
+.test-deps/
+__pycache__/
 
 # Backups / binary archives — never track snapshots. check-no-private-leaks.sh
 # excludes *.tar.gz and gitleaks does not unpack archives, so a tracked archive

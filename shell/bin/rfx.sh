@@ -57,10 +57,7 @@ _rfx_source_lib() {
   return 1
 }
 
-_rfx_source_lib fleet-root.sh || rfg_resolve_fleet_root() {
-  if [ -n "${REVEALFLEET_ROOT:-}" ]; then printf '%s\n' "$REVEALFLEET_ROOT"; return 0; fi
-  return 1
-}
+_rfx_source_lib fleet-root.sh || die "fleet-root.sh is missing; reinstall revkit with bootstrap.sh"
 FLEET_ROOT="$(rfg_resolve_fleet_root)" || true
 
 case "$(uname -s 2>/dev/null)" in
@@ -100,7 +97,10 @@ PY
 # Fast-forward idle local integration refs (test/main). Never switches branches.
 _sync_integration() {
   local repo="${1:-}"
-  local script="$FLEET_ROOT/.jv/scripts/fleet-sync-integration.js"
+  local planning script
+  [ -n "${REVEALFLEET_PLANNING:-}" ] || return 0
+  planning="$(__rv_planning_root)" || return 1
+  script="$planning/scripts/fleet-sync-integration.js"
   [ -f "$script" ] || return 0
   if [ -n "$repo" ]; then
     node "$script" --auto "$repo" >/dev/null || true

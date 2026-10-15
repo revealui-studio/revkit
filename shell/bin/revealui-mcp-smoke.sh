@@ -5,9 +5,12 @@
 # GNU timeout exits 124 or 137 on deadline. Cleanup may be skipped on termination;
 # abandoned sessions rely on the server TTL. Tokens remain private process data.
 set -euo pipefail
-command -v timeout >/dev/null || { echo "FAIL  timeout required" >&2; exit 2; }
+_timeout="$(command -v timeout || command -v gtimeout)" || {
+  echo "FAIL  GNU timeout required (timeout or gtimeout from coreutils)" >&2
+  exit 2
+}
 # Bound loader/vault lookup as well as HTTP, with forced group termination.
-exec timeout --kill-after=5s 60s bash -s -- "$(dirname "${BASH_SOURCE[0]}")" <<'SH_MCP'
+exec "$_timeout" --kill-after=5s 60s bash -s -- "$(dirname "${BASH_SOURCE[0]}")" <<'SH_MCP'
 set -euo pipefail
 # Keep the supervised shell alive through TERM so timeout kills its entire group
 # after the grace period, including any vault child that ignores TERM.
