@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# rfg — RevealFleet Grok launcher (WSL / native Linux / macOS)
+# rfg, the RevealFleet Grok launcher (WSL / native Linux / macOS)
 #
 # Starts a Grok session rooted in a RevealFleet repo with Level 1 RevealUI MCP
 # env preloaded from revvault (REVEALUI_MCP_TOKEN + URL). Same fleet-root
@@ -476,6 +476,12 @@ case "$cmd" in
       esac
     done
 
+    case "$open_repo" in
+      . | .. | */* | -*) die "repo name must be a single fleet checkout (got '$open_repo')" ;;
+    esac
+    case "$open_label" in
+      . | .. | */* | -*) die "label must be a single path segment (got '$open_label')" ;;
+    esac
     source_repo="$FLEET_ROOT/$open_repo"
     [ -d "$source_repo" ] || die "no such fleet repo: $open_repo"
     _rfg_storm_preflight

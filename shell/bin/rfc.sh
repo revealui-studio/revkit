@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# rfc — RevealFleet Claude launcher (WSL / native Linux / macOS)
+# rfc, the RevealFleet Claude launcher (WSL / native Linux / macOS)
 #
 # Starts a `claude` session rooted in a RevealFleet repo, running in the current
 # POSIX shell. On WSL this is the entire point: claude's Bash tool-calls run
-# native (`git status`, not `wsl.exe -d Ubuntu -- bash -lc '... git status'`) —
-# the wsl.exe wrapper is (a) un-allowlistable (the payload is an opaque string,
+# native (`git status`, not `wsl.exe -d Ubuntu -- bash -lc '... git status'`).
+# The wsl.exe wrapper is (a) un-allowlistable (the payload is an opaque string,
 # so only `Bash(wsl.exe *)` covers it, equivalent to bypassPermissions) and
 # (b) slips past the PreToolUse deny-list hook; launching in WSL instead means
 # commands allowlist by real prefix AND the deny-list + hooks fire. On native
@@ -292,6 +292,12 @@ case "$cmd" in
       esac
     done
 
+    case "$open_repo" in
+      . | .. | */* | -*) die "repo name must be a single fleet checkout (got '$open_repo')" ;;
+    esac
+    case "$open_label" in
+      . | .. | */* | -*) die "label must be a single path segment (got '$open_label')" ;;
+    esac
     source_repo="$FLEET_ROOT/$open_repo"
     [ -d "$source_repo" ] || die "no such fleet repo: $open_repo"
     wt_root="$(rfg_wt_root)"

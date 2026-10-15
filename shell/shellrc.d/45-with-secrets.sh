@@ -3,7 +3,7 @@
 #
 # Runs <cmd> with revvault secrets from the given revealui/env/<ns> namespaces
 # loaded into the child process environment only. Nothing leaks back to the
-# calling shell. Prefer this (or `revvault run`) on stream — never
+# calling shell. Prefer this (or `revvault run`) on stream, never
 # $(revvault get) inside CLI flags (pnpm prints argv).
 #
 # Usage examples:
@@ -52,6 +52,18 @@ with-secrets() {
         return 1
     fi
 
+    local ns
+    for ns in "${nses[@]}"; do
+        # One vault path segment. A slash or ".." would select a different
+        # store entry, and that entry's export is eval'd below.
+        case "$ns" in
+            ''|-*|*[!A-Za-z0-9_-]*)
+                printf 'with-secrets: namespace must be one identifier of letters, digits, underscore, or hyphen (got %s)\n' "$ns" >&2
+                return 1
+                ;;
+        esac
+    done
+
     local rv
     rv="$(command -v revvault 2>/dev/null)"
     if [[ -z "$rv" ]]; then
@@ -75,7 +87,7 @@ with-secrets() {
             # Fail closed. A nonexistent/typo'd namespace, a locked age key, or
             # any other revvault error exits nonzero here. Do NOT swallow it
             # (no 2>/dev/null, no `|| true`): swallowing would let exec run the
-            # command with NO secrets loaded, silently — a prod-shaped command
+            # command with NO secrets loaded, silently. A prod-shaped command
             # stripped of its credentials. Abort the subshell so the caller
             # sees a nonzero status and the command never runs.
             case "$ns" in

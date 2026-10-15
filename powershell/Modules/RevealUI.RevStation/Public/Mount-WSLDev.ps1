@@ -6,7 +6,7 @@ function Mount-WSLDev {
     .SYNOPSIS
         Finds the Sandbox SSD by serial number, attaches it to WSL, and mounts at /mnt/sandbox.
     .DESCRIPTION
-        All mount logic is inline — no external script dependency. When run without elevation,
+        All mount logic is inline. No external script dependency. When run without elevation,
         self-elevates via pwsh.exe with module discovery. Includes WSL readiness polling,
         retry loop for wsl --mount, and block device wait.
     .ALIASES
@@ -98,11 +98,17 @@ function Mount-WSLDev {
     }
 
     # --- Find the Sandbox drive by serial number ---
-    $devDisk = Get-Disk | Where-Object { $_.SerialNumber -match $DevDriveSerial }
+    # Exact match after trim. -match would treat the serial as a regex and
+    # could attach a different disk whose serial merely contains this string.
+    $wantedSerial = $DevDriveSerial.Trim()
+    $devDisk = Get-Disk | Where-Object {
+        -not [string]::IsNullOrWhiteSpace($_.SerialNumber) -and
+        $_.SerialNumber.Trim() -eq $wantedSerial
+    } | Select-Object -First 1
 
     if (-not $devDisk) {
         Write-DevLog "Sandbox drive not found (serial: $DevDriveSerial). Is it plugged in?" -Level WARN -Source 'Mount' -LogFile $logFile
-        return  # Not an error — drive simply not connected
+        return  # Not an error. The drive is simply not connected
     }
 
     $driveNumber = $devDisk.Number
@@ -160,15 +166,14 @@ function Mount-WSLDev {
     }
 
     if (-not $deviceReady) {
-        # The Sandbox-labeled partition never showed up. Do NOT run the mount
-        # helper anyway: with no "Sandbox" label present, the helper's own
-        # label lookup fails too and it drops to the unlabeled-ext4 fallback —
-        # exactly the path that can attach the wrong drive. Abort instead; a
-        # genuinely-present drive that was just slow is recovered on the next
-        # trigger (logon/usb/periodic) once its label settles.
-        Write-DevLog 'Sandbox-labeled block device did not appear after 10s — aborting rather than risk a wrong-drive fallback mount.' -Level ERROR -Source 'Mount' -LogFile $logFile
+        # The Sandbox-labeled partition never showed up. Do not run the mount
+        # helper anyway. The helper also refuses when the Sandbox label is
+        # missing, and a bare WSL attach with no label is not a mount. Abort.
+        # A drive that was only slow to publish its label is recovered on the
+        # next trigger (logon/usb/periodic) once the label settles.
+        Write-DevLog 'Sandbox-labeled block device did not appear after 10s. Refusing to run the mount helper.' -Level ERROR -Source 'Mount' -LogFile $logFile
         $err = [System.Management.Automation.ErrorRecord]::new(
-            [System.Exception]::new('Sandbox-labeled block device (blkid -L Sandbox) did not appear after 10s; refusing to run the mount helper to avoid an unlabeled-ext4 fallback mount.'),
+            [System.Exception]::new('Sandbox-labeled block device (blkid -L Sandbox) did not appear after 10s. Refusing to run the mount helper.'),
             'SandboxDeviceMissing', [System.Management.Automation.ErrorCategory]::ResourceUnavailable, $null)
         $PSCmdlet.ThrowTerminatingError($err)
     }
@@ -196,7 +201,7 @@ function Mount-WSLDev {
     } else {
         Write-DevLog 'Mount verification failed' -Level ERROR -Source 'Mount' -LogFile $logFile
         $err = [System.Management.Automation.ErrorRecord]::new(
-            [System.Exception]::new('Mount verification failed — /mnt/sandbox not mounted'),
+            [System.Exception]::new('Mount verification failed. /mnt/sandbox not mounted'),
             'VerifyFailed', [System.Management.Automation.ErrorCategory]::InvalidResult, $null)
         $PSCmdlet.ThrowTerminatingError($err)
     }
