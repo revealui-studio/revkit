@@ -89,7 +89,11 @@ else
 fi
 
 echo "--- pre-push content gate ---"
-if bash "$ROOT/scripts/ci/green-checks.sh" --scope=range --base=abc --head=def --allow-skip; then
+# Placeholder only. The real list lives in the Actions secret, not in git.
+gate_a=zz9audit
+gate_b=gate
+if CLIENT_LEAK_PATTERNS="audit-gate|${gate_a}${gate_b}|content gate placeholder" \
+  bash "$ROOT/scripts/ci/green-checks.sh" --scope=range --base=abc --head=def --allow-skip; then
   pass "green-checks.sh is clean on this tree"
 else
   fail "green-checks.sh failed"
