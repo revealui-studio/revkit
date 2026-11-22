@@ -8,14 +8,14 @@ Do not run the bootstrap on a customer host.
 
 `bootstrap.sh` is a privileged installer. A default run writes WSL sudoers
 (`/etc/sudoers.d/wsl-revealui`), sets `git config --global core.hooksPath`,
-installs helpers to `/usr/local/bin` on Linux/WSL, and wires fleet Claude
-rules when `revcon` is present. Always preview first (`--dry-run`).
+installs helpers to `/usr/local/bin` on Linux/WSL, and wires fleet rules
+into `.revealui` when `revcon` is present. Always preview first (`--dry-run`).
 
 ## Prerequisites
 
 - `git` and `bash`.
 - macOS, native Linux, or Windows + WSL2 (Ubuntu).
-- `node` is optional — if absent, the Claude-scanner step is skipped with a warning (everything else still runs).
+- `node` is optional. If it is absent, the M-4 scanner install is skipped with a warning (everything else still runs).
 - No prior RevealUI setup is assumed.
 
 ## 1. Clone
@@ -52,9 +52,9 @@ bash bootstrap.sh               # apply
 | 4 | Git + SSH config includes (see below) | all |
 | 5 | WSL boot optimization | WSL only |
 | 6 | Sandbox directory init (if `/mnt/sandbox` mounted) | WSL only |
-| 7 | Clone/wire `claude-config` into `~/.claude` + revskills marketplace | all |
-| 8 | Deploy the M-4 Claude Code scanner hook | all |
-| 9 | Wire RevealFleet Claude rules via `revcon/link.sh` (skipped if absent) | all |
+| 7 | Write the native control home `~/.revealui`. The Claude adapter is off unless `--claude-adapter` or `REVKIT_CLAUDE_ADAPTER=1`. When on, it projects `~/.claude` from that home. It does not clone a vendor config repo and it does not run the `claude` CLI. | all |
+| 8 | Deploy the M-4 scanner to `~/.revealui/hooks` and attach it from each enabled adapter | all |
+| 9 | Wire fleet rules via `revcon/link.sh`: `--editor revealui` first, then project vendor editors (skipped if revcon is absent) | all |
 | 10 | Fleet-wide M-11 pre-push hook (`git config --global core.hooksPath`) | all |
 
 ## 4. Configuration model — neutral configs, machine-local identity
@@ -121,7 +121,8 @@ migrates in place.
 
 ## More
 
-- [`MASTER_SPEC.md`](./MASTER_SPEC.md) — full surface area + configuration model
+- [`MASTER_SPEC.md`](./MASTER_SPEC.md). Full surface area and configuration model.
+- [`agent-coordination.md`](./agent-coordination.md). Native `.revealui` paths and `.revealui/workboard.md`
 - [`MASTER_PLAN.md`](./MASTER_PLAN.md) — status + roadmap
 - [`tier-capabilities.md`](./tier-capabilities.md) — T0/T1 (sandbox-drive) capabilities
 - [`rfc-launcher.md`](./rfc-launcher.md) — the `rfc` secure Claude launcher

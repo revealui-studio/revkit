@@ -99,6 +99,14 @@ if grep -q 'auto_compact_threshold_percent = 32' "$HOME/.grok/config.toml" \
 else
   fail "token budget did not merge into grok config.toml"
 fi
+if grep -q 'hooks = false' "$HOME/.grok/config.toml" \
+  && grep -q 'mcps = false' "$HOME/.grok/config.toml" \
+  && grep -q 'sessions = false' "$HOME/.grok/config.toml" \
+  && grep -q 'skills = false' "$HOME/.grok/config.toml"; then
+  pass "missing compat.claude section is seeded off"
+else
+  fail "compat.claude defaults were not seeded into an existing config"
+fi
 
 mkdir -p "$SRC/packages/harnesses/scripts"
 printf '%s\n' 'module.exports = {};' >"$SRC/packages/harnesses/scripts/public-security-comment-pretool.cjs"
@@ -149,6 +157,34 @@ if [ -f "$GROK_HOME/AGENTS.md" ] && [ ! -d "$GROK_HOME/rules" ]; then
   pass "stub respects GROK_HOME and does not copy rules"
 else
   fail "constitution wrote rules into GROK_HOME or skipped AGENTS.md"
+fi
+unset GROK_HOME
+
+export GROK_HOME="$TMP/grok-fresh"
+rfg_seed_grok_compat
+if grep -q 'hooks = false' "$GROK_HOME/config.toml" \
+  && grep -q 'mcps = false' "$GROK_HOME/config.toml" \
+  && grep -q 'sessions = false' "$GROK_HOME/config.toml"; then
+  pass "fresh Grok config ships compat.claude off"
+else
+  fail "fresh Grok config did not ship compat.claude off"
+fi
+unset GROK_HOME
+
+export GROK_HOME="$TMP/grok-optin"
+mkdir -p "$GROK_HOME"
+printf '%s\n' '[compat.claude]
+hooks = true
+mcps = true
+sessions = true
+skills = true
+' > "$GROK_HOME/config.toml"
+rfg_seed_grok_compat
+if grep -q 'hooks = true' "$GROK_HOME/config.toml" \
+  && grep -q 'mcps = true' "$GROK_HOME/config.toml"; then
+  pass "explicit compat.claude opt-in is left in place"
+else
+  fail "seed overwrote an explicit compat.claude section"
 fi
 unset GROK_HOME
 

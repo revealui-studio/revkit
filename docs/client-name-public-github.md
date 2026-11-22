@@ -27,7 +27,7 @@ Layer B is two gates that stay side by side. Neither replaces the other.
 | Scanner | What it matches | Where the terms live |
 |---------|-----------------|----------------------|
 | `scripts/check-client-leaks.sh` | Long-lived literal denylist | Hardcoded in that script. Stays in git. CI: `.github/workflows/check-client-leaks.yml` |
-| `scripts/check-no-client-names.sh` | Operator watchlist terms | Gitignored local file, or a CI secret file path, or `CLIENT_NAME_PATTERNS`. Never committed |
+| `scripts/check-no-client-names.sh` | Operator watchlist terms in files, and in commit messages when `--commits` or the commit-msg hook runs | Gitignored local file, or a CI secret file path, or `CLIENT_NAME_PATTERNS`. Never committed |
 
 `scripts/check-no-private-leaks.sh` is a different companion. It catches paths, hostnames, license-shaped strings, and machine homes. It does not catch people or business identifiers.
 
@@ -39,17 +39,55 @@ Public repos must never contain the real watchlist. The watchlist gate loads pat
 2. `.client-name-watchlist.local` under the repo root
 3. `$CLIENT_NAME_PATTERNS` (newline or `|` separated)
 
-If no watchlist is present, the script prints a WARN and exits 0 (gate inactive) so public CI without a secret does not false-fail. Layer A still runs daily. Set `CLIENT_NAME_WATCHLIST_REQUIRED=1` to force exit 2 when the watchlist is missing (strict laptop or private CI).
+If no watchlist is present, the script prints a WARN and exits 0 (gate inactive) so public CI without a secret does not false-fail. Layer A still runs daily. Set `CLIENT_NAME_WATCHLIST_REQUIRED=1` to force exit 2 when the watchlist is missing (strict laptop or private CI). That short-circuit happens before any commit scan, so a missing watchlist does not fail on a bad rev-range.
 
 Exit codes: 0 clean or inactive, 1 violation, 2 setup error. `LEAK_JSON=1` prints a one-line JSON object.
 
+File scan is the default (`bash scripts/check-no-client-names.sh` or explicit paths). Commit messages are a separate mode. Scrubbing a pull request title does not change a commit message already written, and it does not stop the next commit from copying a buyer or company slug into the subject or body.
+
+```bash
+bash scripts/check-no-client-names.sh --commits 'origin/test..HEAD'
+SCAN_COMMIT_MESSAGES=1 bash scripts/check-no-client-names.sh
+CLIENT_NAME_PR_TITLE="$title" bash scripts/check-no-client-names.sh --commits 'origin/test..HEAD'
+```
+
+Default range when `--commits` has no argument: `origin/$GITHUB_BASE_REF..HEAD` when `GITHUB_BASE_REF` is set and that remote-tracking ref exists (or `$GITHUB_BASE_REF..HEAD` when only the local ref exists). A set but unresolvable `GITHUB_BASE_REF` exits 2. It does not fall through to another base. When `GITHUB_BASE_REF` is unset, the default is `origin/test..HEAD`, and a missing `origin/test` also exits 2. `CLIENT_NAME_COMMIT_RANGE` overrides that default. An explicit `--commits <range>` wins over both. Two-dot (`base..HEAD`) is commits reachable from HEAD that are not on the base (the pull request commit list). A three-dot range also selects commits that exist only on the base. Pass one only if you mean to. R-003 class residuals (a buyer or company slug already in merged history) are forward-only. Do not rewrite them. This gate blocks new messages. It does not scan accepted history on the base.
+
+In `--commits` mode, `CLIENT_NAME_PR_TITLE` is also matched (the subject a squash or merge would use). File-only mode ignores that variable. Hits look like `commit:<sha>:subject`, `commit:<sha>:body`, or `pr:title`.
+
+Dry run with placeholders. Do not substitute real terms:
+
+```bash
+CLIENT_NAME_PATTERNS='buyer_example|agency_client_example' \
+  bash scripts/check-no-client-names.sh --commits 'origin/test..HEAD'
+```
+
+`scripts/hooks/commit-msg-client-names.sh` reads the proposed message file and uses the same matcher. Inactive without a local watchlist. Bootstrap and `git-hooks/` do not install it.
+
+```bash
+ln -sfn ../../scripts/hooks/commit-msg-client-names.sh .git/hooks/commit-msg
+```
+
+Husky (`.husky/commit-msg`): `bash scripts/hooks/commit-msg-client-names.sh "$1"`
+
+Lefthook (`lefthook.yml`):
+
+```yaml
+commit-msg:
+  commands:
+    client-names:
+      run: bash scripts/hooks/commit-msg-client-names.sh {1}
+```
+
+A proposed-message hit looks like `commit:proposed:subject` or `commit:proposed:body`. Lines that start with `#` are ignored, same as git. Never put real watchlist terms in a commit message, this hook, CI, or any other git object.
+
 Example template (placeholders only, such as `buyer_example` and `agency_client_example`): `templates/client-name-watchlist.example`. The `templates/` directory here is that sample. It is not the old config-render templates tree.
 
-`.github/workflows/check-no-client-names.yml` runs the watchlist gate with no secret mounted, so the job is inactive and exits 0. To require a watchlist later, without committing terms:
+`.github/workflows/check-no-client-names.yml` runs the file scan with no secret mounted, and on `pull_request` it also runs `--commits` for `base..HEAD` plus the pull request title. Both steps stay inactive and exit 0 until a watchlist is injected. `CLIENT_NAME_WATCHLIST_REQUIRED` stays unset. To require a watchlist later, without committing terms:
 
 1. Store the watchlist text in a GitHub Actions secret. This repo does not name or create that secret.
 2. In the job, write the secret to a file outside the checkout (for example under `$RUNNER_TEMP`) with mode `0600`.
-3. Export `CLIENT_NAME_WATCHLIST_FILE` to that path.
+3. Export `CLIENT_NAME_WATCHLIST_FILE` to that path on the file-scan step and the pull-request commit-scan step.
 4. Optionally export `CLIENT_NAME_WATCHLIST_REQUIRED=1` so a missing file fails the job (exit 2) instead of staying inactive.
 
 Do not put term text in the workflow YAML.
@@ -94,9 +132,9 @@ Safe to commit: this design doc, the gate script (no embedded terms), the exampl
 | Actor | Role |
 |-------|------|
 | Grok Bot (Layer A) | Daily org scan; scrub editable; write private inventory and report on the box |
-| Laptop checkout | Local run can load `.client-name-watchlist.local` (gitignored) |
+| Laptop checkout | Local run can load `.client-name-watchlist.local` (gitignored). Optional commit-msg hook scans the proposed message |
 | Public CI, hardcoded scanner | `check-client-leaks.sh` always runs. No secret. Fails closed on its in-script literals |
-| Public CI, watchlist gate | Inactive (warn, exit 0) unless `CLIENT_NAME_WATCHLIST_FILE` or `CLIENT_NAME_PATTERNS` is injected. Optional strict mode: `CLIENT_NAME_WATCHLIST_REQUIRED=1` |
+| Public CI, watchlist gate | File scan, and on pull request the commit-message scan, stay inactive (warn, exit 0) unless `CLIENT_NAME_WATCHLIST_FILE` or `CLIENT_NAME_PATTERNS` is injected. Optional strict mode: `CLIENT_NAME_WATCHLIST_REQUIRED=1` |
 | Soft locks (Layer C) | Templates and prompts stay generic so Layer A and Layer B see fewer new hits |
 
 ## Skill home
@@ -111,7 +149,9 @@ The repo-owned skill is `skills/client-name-public-github-audit/SKILL.md`.
 |------|------|
 | Design (this file) | `docs/client-name-public-github.md` |
 | Watchlist gate | `scripts/check-no-client-names.sh` |
-| Watchlist gate CI (inactive without a secret) | `.github/workflows/check-no-client-names.yml` |
+| Commit-msg hook helper (opt-in) | `scripts/hooks/commit-msg-client-names.sh` |
+| Watchlist gate CI (inactive without a secret; pull request also scans commits) | `.github/workflows/check-no-client-names.yml` |
+| Gate tests (placeholder patterns only) | `tests/test-check-no-client-names.sh` |
 | Hardcoded scanner (stays) | `scripts/check-client-leaks.sh` |
 | Hardcoded scanner CI | `.github/workflows/check-client-leaks.yml` |
 | Path / private-leak companion | `scripts/check-no-private-leaks.sh` |

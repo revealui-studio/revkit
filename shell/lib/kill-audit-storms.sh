@@ -4,6 +4,11 @@
 # (default 600). Never kills live grok, the current rfg process, this sweeper,
 # or unrelated user work.
 #
+# Never kills a process whose ancestor chain (PPID walk up to init), including
+# the process itself, contains an agent session or launcher: codex, rfx, grok,
+# rfg, rfc, claude, or cursor-agent. Those scans belong to a live session.
+# Only orphaned storms are cleared.
+#
 # AUDIT_STORM_MIN_AGE_SEC   default 600 (standalone). rfg preflight passes 120.
 # AUDIT_STORM_DRY_RUN=1     print candidates, do not signal them.
 # AUDIT_STORM_REPORT_ONLY=1 same as dry-run.
@@ -187,10 +192,79 @@ audit_storm_already_listed() {
   return 1
 }
 
+# Agent-session name. Matched on the basename of comm, argv[0], and argv[1]
+# (argv[1] covers `bash rfg.sh` and `node .../cursor-agent`). A path that
+# contains /cursor-agent/ matches before the basename check.
+audit_storm_agent_name_match() {
+  local raw="$1" b
+  [ -n "$raw" ] || return 1
+  case "$raw" in
+    */cursor-agent/*) return 0 ;;
+  esac
+  b="${raw##*/}"
+  case "$b" in
+    codex | codex-* | rfx | rfx.sh | grok | grok-* | rfg | rfg.sh | rfc | rfc.sh | \
+    claude | claude-* | cursor-agent | cursor-agent-*)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+# Print the PPID of $1 (empty when the process is gone).
+audit_storm_ppid_of() {
+  local stat rest
+  if [ -r "/proc/$1/stat" ]; then
+    stat="$(cat "/proc/$1/stat" 2>/dev/null)" || return 0
+    # comm may contain spaces or parens; fields after the last ") " are fixed.
+    rest="${stat##*) }"
+    # shellcheck disable=SC2086
+    set -- $rest
+    printf '%s\n' "${2:-}"
+    return 0
+  fi
+  ps -o ppid= -p "$1" 2>/dev/null | tr -d ' '
+}
+
+# Status 0 and sets AUDIT_STORM_AGENT_ANCESTOR="<name> pid=<n>" when $1 itself
+# or any ancestor is an agent session (self covers `codex exec "<prompt naming find>"`).
+# Walks at most 64 hops and stops at pid 1.
+AUDIT_STORM_AGENT_ANCESTOR=""
+audit_storm_has_agent_ancestor() {
+  local p comm a0 a1 hit hops=0
+  AUDIT_STORM_AGENT_ANCESTOR=""
+  p="$1"
+  while [ -n "$p" ] && [ "$p" -gt 1 ] 2>/dev/null && [ "$hops" -lt 64 ]; do
+    comm="$(cat "/proc/$p/comm" 2>/dev/null || ps -o comm= -p "$p" 2>/dev/null || true)"
+    a0=""; a1=""
+    if [ -r "/proc/$p/cmdline" ]; then
+      { IFS= read -r -d '' a0 && IFS= read -r -d '' a1; } < "/proc/$p/cmdline" 2>/dev/null || true
+    fi
+    hit=""
+    if audit_storm_agent_name_match "$comm"; then hit="$comm"
+    elif audit_storm_agent_name_match "$a0"; then hit="$a0"
+    elif audit_storm_agent_name_match "$a1"; then hit="$a1"
+    fi
+    if [ -n "$hit" ]; then
+      AUDIT_STORM_AGENT_ANCESTOR="${hit##*/} pid=$p"
+      return 0
+    fi
+    p="$(audit_storm_ppid_of "$p")"
+    hops=$((hops + 1))
+  done
+  return 1
+}
+
 audit_storm_add_cand() {
   local pid="$1" et="$2" cmd="$3"
   [ -n "$pid" ] || return 0
   audit_storm_already_listed "$pid" && return 0
+  if audit_storm_has_agent_ancestor "$pid"; then
+    audit_storm_uniq_pids+=("$pid")
+    audit_storm_protected=$(( ${audit_storm_protected:-0} + 1 ))
+    echo "kill-audit-storms: skip pid=$pid (agent session: $AUDIT_STORM_AGENT_ANCESTOR) cmd=$cmd"
+    return 0
+  fi
   audit_storm_uniq_pids+=("$pid")
   audit_storm_uniq_lines+=("$pid|$et|$cmd")
 }
@@ -203,6 +277,7 @@ audit_storm_main() {
   report="${AUDIT_STORM_REPORT_ONLY:-0}"
   killed=0
   warned_d=0
+  audit_storm_protected=0
   audit_storm_uniq_pids=()
   audit_storm_uniq_lines=()
 
@@ -231,7 +306,7 @@ audit_storm_main() {
   done < <(audit_storm_rows_d)
 
   if [ "${#audit_storm_uniq_lines[@]}" -eq 0 ]; then
-    echo "kill-audit-storms: none (min_age=${min}s)"
+    echo "kill-audit-storms: none (min_age=${min}s protected=${audit_storm_protected})"
     return 0
   fi
 
@@ -253,7 +328,7 @@ audit_storm_main() {
     killed=$((killed + 1))
   done
 
-  echo "kill-audit-storms: killed=$killed dry_run=$dry report_only=$report other_D_warned=$warned_d"
+  echo "kill-audit-storms: killed=$killed protected=${audit_storm_protected} dry_run=$dry report_only=$report other_D_warned=$warned_d"
   return 0
 }
 

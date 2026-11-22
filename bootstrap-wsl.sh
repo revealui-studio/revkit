@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
 #
-# bootstrap-wsl.sh — deprecation shim.
+# bootstrap-wsl.sh: deprecation shim.
 #
 # Existing deployed clones and handoff instructions invoke this path directly
 # (e.g. `bash ~/.revealui/bootstrap-wsl.sh`). This shim preserves that path
-# while routing all execution to the cross-platform bootstrap.sh — the single
+# while routing all execution to the cross-platform bootstrap.sh, the single
 # maintained entry point, which auto-detects WSL via lib/platform.sh.
+#
+# This shim does not install a vendor policy home. bootstrap.sh writes the
+# native control home at ~/.revealui. The workboard path is
+# .revealui/workboard.md. Vendor homes are projections.
 
 set -euo pipefail
 

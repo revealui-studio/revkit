@@ -1,0 +1,14 @@
+# Grok user config projection.
+# Policy lives in .revealui/content. This file is not the policy source.
+# [compat.claude] is opt-in. hooks, mcps, and sessions stay off unless set
+# true. Set skills true only when those skills are projections generated
+# from .revealui/content. MCP servers are opt-in: add one under
+# .revealui/adapters only when that projection should load, and leave it
+# disabled until then.
+
+[compat.claude]
+hooks = false
+mcps = false
+sessions = false
+skills = false
+rules = false

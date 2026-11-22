@@ -1,5 +1,5 @@
 #!/bin/bash
-# mount-sandbox-drive.sh — Mounts the Sandbox infrastructure drive by filesystem label.
+# mount-sandbox-drive.sh mounts the Sandbox infrastructure drive by filesystem label.
 # Called by Windows mount script (Mount-WSLDev.ps1) after wsl --mount --bare.
 #
 # Defense-in-depth checks (GAP-118 + GAP-119, 2026-04-24):
@@ -11,9 +11,8 @@
 #
 #  2. After mount, $MOUNT_POINT/.sandbox-marker MUST exist (placed during one-
 #     time `--init` setup). If it's missing, the script unmounts immediately
-#     and exits 1 — this catches the case where the label-fallback path
-#     accidentally mounted some other ext4 drive (Forge, external backup, etc.)
-#     and prevents downstream tools from reading the wrong filesystem.
+#     and exits 1. The device is chosen only by the Sandbox filesystem label.
+#     There is no unlabeled-ext4 fallback.
 #
 #  3. Every mount attempt is logged to /var/log/revealui-mount.log (timestamp,
 #     mode, source, device, outcome).
@@ -92,8 +91,8 @@ log_mount() {
 if mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
     if [[ "$INIT_MARKER" == "true" ]]; then
         if [[ ! -f "$MARKER_FILE" ]]; then
-            echo "Sandbox drive already mounted but marker missing — creating $MARKER_FILE."
-            printf 'Sandbox drive marker — created %s\n' \
+            echo "Sandbox drive already mounted but marker missing. Creating $MARKER_FILE."
+            printf 'Sandbox drive marker created %s\n' \
                 "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$MARKER_FILE"
             chmod 644 "$MARKER_FILE"
             log_mount "init=created-marker-on-already-mounted"
@@ -105,7 +104,7 @@ if mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
     fi
     if [[ ! -f "$MARKER_FILE" ]]; then
         echo "ERROR: $MOUNT_POINT is mounted but $MARKER_FILE is missing." >&2
-        echo "       Refusing to proceed — mounted device may be wrong drive." >&2
+        echo "       Refusing to proceed. The mounted device may be the wrong drive." >&2
         echo "       Unmount manually + run with --init if this is the correct drive." >&2
         log_mount "rejected=already-mounted-no-marker"
         exit 1
@@ -115,58 +114,39 @@ if mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
     exit 0
 fi
 
-mkdir -p "$MOUNT_POINT"
-
-# --- Primary: find by filesystem label, with a short retry ---
+# --- Find by filesystem label, with a short retry ---
 # `wsl --mount --bare` can return before udev/blkid has indexed the partition
-# label, so a single lookup can miss a Sandbox drive that is in fact present and
-# fall through to the riskier unlabeled scan below. Retry briefly first so a
-# slow-to-appear label does not push us onto the fallback path unnecessarily.
+# label. Retry briefly. If the label never appears, stop. Do not mount some
+# other unlabeled ext4 just because it is the first free partition. A disk
+# that carries a .sandbox-marker is not proof it is the Sandbox drive.
 EXTDEV=""
 SOURCE="label"
-for _attempt in 1 2 3 4 5; do
+LABEL_RETRIES="${SANDBOX_LABEL_RETRIES:-5}"
+LABEL_RETRY_SLEEP="${SANDBOX_LABEL_RETRY_SLEEP:-1}"
+case "$LABEL_RETRIES" in
+    ''|*[!0-9]*) LABEL_RETRIES=5 ;;
+esac
+case "$LABEL_RETRY_SLEEP" in
+    ''|*[!0-9]*) LABEL_RETRY_SLEEP=1 ;;
+esac
+_attempt=1
+while [ "$_attempt" -le "$LABEL_RETRIES" ]; do
     EXTDEV=$(blkid -L "$DRIVE_LABEL" 2>/dev/null || true)
     [ -n "$EXTDEV" ] && break
-    sleep 1
+    if [ "$_attempt" -lt "$LABEL_RETRIES" ] && [ "$LABEL_RETRY_SLEEP" -gt 0 ]; then
+        sleep "$LABEL_RETRY_SLEEP"
+    fi
+    _attempt=$((_attempt + 1))
 done
 
-# --- Fallback: first unmounted ext4 partition that is unlabeled or "Sandbox" ---
-# Only ever consider a partition whose label is EMPTY or already "$DRIVE_LABEL".
-# A partition carrying a different non-empty label (LTS, Forge, an external
-# backup) is never the Sandbox drive and must not be grabbed here — the old code
-# mounted the first unmounted ext4 regardless of label, so when the Sandbox label
-# was merely slow to appear it could attach the wrong drive. The downstream
-# marker check is the final guard, but skipping foreign-labeled devices avoids
-# ever mounting them in the first place.
 if [ -z "$EXTDEV" ]; then
-    SOURCE="fallback"
-    echo "WARN: Label '$DRIVE_LABEL' not found after retries, scanning for an unlabeled ext4 partition."
-    log_mount "fallback=label-not-found"
-    ROOT_DEV=$(mount | grep " / " | awk '{print $1}')
-    for dev in /dev/sd[a-z]1; do
-        [ -b "$dev" ] || continue
-        if mount | grep -q "^$dev "; then
-            continue
-        fi
-        [ "$dev" = "$ROOT_DEV" ] && continue
-        FSTYPE=$(blkid -s TYPE -o value "$dev" 2>/dev/null || true)
-        [ "$FSTYPE" = "ext4" ] || continue
-        DEV_LABEL=$(blkid -s LABEL -o value "$dev" 2>/dev/null || true)
-        if [ -n "$DEV_LABEL" ] && [ "$DEV_LABEL" != "$DRIVE_LABEL" ]; then
-            echo "  skipping $dev — labeled '$DEV_LABEL' (not the Sandbox drive)."
-            log_mount "fallback-skip=labeled-other dev=$dev label=$DEV_LABEL"
-            continue
-        fi
-        EXTDEV="$dev"
-        break
-    done
-fi
-
-if [ -z "$EXTDEV" ]; then
-    echo "ERROR: No partition with label '$DRIVE_LABEL' or unmounted ext4 found." >&2
-    log_mount "failed=no-candidate-device"
+    echo "ERROR: No partition with label '$DRIVE_LABEL' found after retries." >&2
+    echo "       Refusing to guess an unlabeled ext4 device." >&2
+    log_mount "failed=label-not-found"
     exit 1
 fi
+
+mkdir -p "$MOUNT_POINT"
 
 echo "Mounting $EXTDEV (source=$SOURCE) at $MOUNT_POINT..."
 mount -t ext4 -o defaults,noatime "$EXTDEV" "$MOUNT_POINT"
@@ -180,7 +160,7 @@ fi
 # --- Marker verification (or creation) ---
 if [[ "$INIT_MARKER" == "true" ]]; then
     if [[ ! -f "$MARKER_FILE" ]]; then
-        printf 'Sandbox drive marker — created %s\n' \
+        printf 'Sandbox drive marker created %s\n' \
             "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$MARKER_FILE"
         chmod 644 "$MARKER_FILE"
         echo "Created $MARKER_FILE."
@@ -195,7 +175,7 @@ fi
 # --mount-only: marker MUST be present
 if [[ ! -f "$MARKER_FILE" ]]; then
     echo "ERROR: Mounted device $EXTDEV (source=$SOURCE) has no $MARKER_FILE." >&2
-    echo "       Unmounting — wrong drive, or never initialized with --init." >&2
+    echo "       Unmounting. This is the wrong drive, or it was never initialized with --init." >&2
     log_mount "rejected=no-marker device=$EXTDEV source=$SOURCE"
     umount "$MOUNT_POINT" 2>/dev/null || true
     exit 1
