@@ -26,12 +26,12 @@ Layer B is two gates that stay side by side. Neither replaces the other.
 
 | Scanner | What it matches | Where the terms live |
 |---------|-----------------|----------------------|
-| `scripts/check-client-leaks.sh` | Long-lived literal denylist | Hardcoded in that script. Stays in git. CI: `.github/workflows/check-client-leaks.yml` |
+| `scripts/check-client-leaks.sh` | Literal denylist (`tag\|literal\|reason`) | Org Actions secret `CLIENT_LEAK_PATTERNS`. Local fallback: gitignored `.client-name-watchlist.local` in that same line format. CI: `.github/workflows/check-client-leaks.yml` |
 | `scripts/check-no-client-names.sh` | Operator watchlist terms in files, and in commit messages when `--commits` or the commit-msg hook runs | Gitignored local file, or a CI secret file path, or `CLIENT_NAME_PATTERNS`. Never committed |
 
 `scripts/check-no-private-leaks.sh` is a different companion. It catches paths, hostnames, license-shaped strings, and machine homes. It does not catch people or business identifiers.
 
-Use the hardcoded scanner for literals that must keep failing closed on every public CI run, with no secret mounted. Use the watchlist gate for terms that must not appear in this public repo at all, including inside a script. Do not move watchlist terms into `check-client-leaks.sh` just to "activate" them, and do not delete the hardcoded `PATTERNS` array because the watchlist gate exists.
+`check-client-leaks.sh` does not keep its literal pattern list in git. Public CI passes `CLIENT_LEAK_PATTERNS` into the shared scanner action. An empty or missing secret fails closed (exit 2). Locally, export that variable or add `tag|literal|reason` lines to `.client-name-watchlist.local`. If neither source is present, the script prints a warning and exits 2. Add new lines to the org secret, never to a committed file. The watchlist gate is a separate list and stays inactive in public CI until its own secret is mounted. Do not delete either scanner.
 
 Public repos must never contain the real watchlist. The watchlist gate loads patterns from the first found of:
 
@@ -125,7 +125,7 @@ Rolling `INVENTORY.md` under the private box audit home, severity P0-P3, guardra
 - The live watchlist file under the private box audit home
 - Desk or CRM dumps destined for public remotes
 
-Safe to commit: this design doc, the gate script (no embedded terms), the example watchlist template with placeholders only, and the skill markdown that refers to watchlist terms generically.
+Safe to commit: this design doc, the gate script (no embedded terms), the client-leak scanner (no embedded pattern list), the example watchlist template with placeholders only, and the skill markdown that refers to watchlist terms generically.
 
 ## How bot, laptop, and CI cooperate
 
@@ -133,7 +133,7 @@ Safe to commit: this design doc, the gate script (no embedded terms), the exampl
 |-------|------|
 | Grok Bot (Layer A) | Daily org scan; scrub editable; write private inventory and report on the box |
 | Laptop checkout | Local run can load `.client-name-watchlist.local` (gitignored). Optional commit-msg hook scans the proposed message |
-| Public CI, hardcoded scanner | `check-client-leaks.sh` always runs. No secret. Fails closed on its in-script literals |
+| Public CI, client-leak scanner | `check-client-leaks.sh` runs with the org secret `CLIENT_LEAK_PATTERNS`. A missing secret fails closed |
 | Public CI, watchlist gate | File scan, and on pull request the commit-message scan, stay inactive (warn, exit 0) unless `CLIENT_NAME_WATCHLIST_FILE` or `CLIENT_NAME_PATTERNS` is injected. Optional strict mode: `CLIENT_NAME_WATCHLIST_REQUIRED=1` |
 | Soft locks (Layer C) | Templates and prompts stay generic so Layer A and Layer B see fewer new hits |
 
@@ -152,8 +152,9 @@ The repo-owned skill is `skills/client-name-public-github-audit/SKILL.md`.
 | Commit-msg hook helper (opt-in) | `scripts/hooks/commit-msg-client-names.sh` |
 | Watchlist gate CI (inactive without a secret; pull request also scans commits) | `.github/workflows/check-no-client-names.yml` |
 | Gate tests (placeholder patterns only) | `tests/test-check-no-client-names.sh` |
-| Hardcoded scanner (stays) | `scripts/check-client-leaks.sh` |
-| Hardcoded scanner CI | `.github/workflows/check-client-leaks.yml` |
+| Client-leak scanner | `scripts/check-client-leaks.sh` |
+| Client-leak scanner CI | `.github/workflows/check-client-leaks.yml` |
+| Client-leak scanner tests (placeholder patterns only) | `tests/test-check-client-leaks.sh` |
 | Path / private-leak companion | `scripts/check-no-private-leaks.sh` |
 | Example watchlist | `templates/client-name-watchlist.example` |
 | Skill | `skills/client-name-public-github-audit/SKILL.md` |

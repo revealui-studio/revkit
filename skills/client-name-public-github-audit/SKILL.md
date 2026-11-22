@@ -22,13 +22,13 @@ Pair with `docs/client-name-public-github.md` and `scripts/check-no-client-names
 | Layer | What | Owner |
 | --- | --- | --- |
 | A | Org-wide GitHub API audit, scrub editable, inventory residuals | CEO + daily routine; private box `/workspace/client-name-github-audit/` |
-| B | Local/CI watchlist gate for files, commit messages, and an opt-in commit-msg hook, plus the hardcoded literal scanner that stays in git | revkit `scripts/check-no-client-names.sh` and `scripts/check-client-leaks.sh` |
+| B | Local/CI watchlist gate for files, commit messages, and an opt-in commit-msg hook, plus the secret-backed literal scanner | revkit `scripts/check-no-client-names.sh` and `scripts/check-client-leaks.sh` |
 | C | Soft locks: Build pastes, cloud-agent prompts, PR templates use generic labels only | **Every bot**; REV enforces |
 | D | Rolling inventory + guardrail-gap loop until public hits stay 0 | CEO inventory |
 
 Related but different: `scripts/check-no-private-leaks.sh` catches **private paths / machine paths**. This skill and `check-no-client-names.sh` catch **people and business identifiers**.
 
-`scripts/check-client-leaks.sh` stays. Its `PATTERNS` are long-lived literals that public CI must keep enforcing with no secret. The watchlist gate is for operator-local or CI-secret terms that must not be committed. Do not delete either scanner.
+`scripts/check-client-leaks.sh` stays. Its pattern list is the org secret `CLIENT_LEAK_PATTERNS` (`tag|literal|reason`), never a committed file. Public CI fails closed when that secret is missing. The watchlist gate is a separate operator list. Do not delete either scanner, and do not commit the literal pattern list.
 
 ## Severity
 - **P0** Editable public PR/issue title, body, or comment
@@ -72,7 +72,8 @@ bash scripts/check-no-client-names.sh
 bash scripts/check-no-client-names.sh --commits 'origin/test..HEAD'
 # Opt-in commit-msg hook: bash scripts/hooks/commit-msg-client-names.sh "$1"
 # CI: CLIENT_NAME_WATCHLIST_FILE + optional CLIENT_NAME_WATCHLIST_REQUIRED=1
-# Hardcoded companion (always on in public CI): bash scripts/check-client-leaks.sh
+# Secret-backed companion (fails closed in CI without CLIENT_LEAK_PATTERNS):
+# bash scripts/check-client-leaks.sh
 ```
 
 ## Soft locks (Layer C) - every bot
@@ -91,5 +92,6 @@ bash scripts/check-no-client-names.sh --commits 'origin/test..HEAD'
 - Treating this as CEO-only
 - Putting watchlist terms into public revkit docs, scripts, or CI YAML
 - Deleting `check-client-leaks.sh` because the watchlist gate exists
+- Committing the literal pattern list into the scanner, a workflow, or a gitleaks config
 - Trusting code search alone
 - History rewrite without owner confirmation
