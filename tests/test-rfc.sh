@@ -149,6 +149,21 @@ else
   pass "rfc claim free after release"
 fi
 
+echo "--- rfc open rejects path segments ---"
+export RFG_WT_ROOT="$TMP/wt"
+out="$(bash "$RFC" open '../outside' rfc-open-label --no-agent 2>&1)" && rc=0 || rc=$?
+if [ "$rc" -ne 0 ] && [[ "$out" == *"single fleet checkout"* ]]; then
+  pass "rfc open rejects a repo path that leaves the fleet root"
+else
+  fail "rfc open repo traversal: rc=$rc out=$out"
+fi
+out="$(bash "$RFC" open revealui '../outside' --no-agent 2>&1)" && rc=0 || rc=$?
+if [ "$rc" -ne 0 ] && [[ "$out" == *"single path segment"* ]] && [ ! -e "$TMP/outside" ]; then
+  pass "rfc open rejects a label that leaves the worktree root"
+else
+  fail "rfc open label traversal: rc=$rc out=$out"
+fi
+
 echo "--- rfc open --no-agent ---"
 git -C "$TMP/fleet/revealui" init -q
 git -C "$TMP/fleet/revealui" checkout -q -b test

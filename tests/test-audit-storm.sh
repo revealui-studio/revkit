@@ -358,6 +358,19 @@ chmod +x "$TMP/bin/grok"
 export PATH="$TMP/bin:/usr/bin:/bin"
 export REVEALFLEET_ROOT="$TMP/fleet"
 export REVEALUI_MCP_ENV_SKIP=1
+
+open_bad="$(bash "$RFG" open '../outside' storm-open --no-agent 2>&1)" && open_bad_rc=0 || open_bad_rc=$?
+if [ "$open_bad_rc" -ne 0 ] && [[ "$open_bad" == *"single fleet checkout"* ]]; then
+  pass "rfg open rejects a repo path that leaves the fleet root"
+else
+  fail "rfg open repo traversal: rc=$open_bad_rc out=$open_bad"
+fi
+open_bad="$(bash "$RFG" open revealui '../outside' --no-agent 2>&1)" && open_bad_rc=0 || open_bad_rc=$?
+if [ "$open_bad_rc" -ne 0 ] && [[ "$open_bad" == *"single path segment"* ]]; then
+  pass "rfg open rejects a label that leaves the worktree root"
+else
+  fail "rfg open label traversal: rc=$open_bad_rc out=$open_bad"
+fi
 export RFG_GROK_ATTACH_SKIP=1
 export GROK_HOME="$TMP/grok-home"
 export GIT_AUTHOR_NAME='audit-storm-test'

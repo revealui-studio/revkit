@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-COMPOSE_DIR="${REVEALUI_ROOT:?REVEALUI_ROOT not set — run bootstrap.sh, then source ~/.bashrc, or set explicitly}/shell/docker"
+COMPOSE_DIR="${REVEALUI_ROOT:?REVEALUI_ROOT not set. Run bootstrap.sh, then source ~/.bashrc, or set explicitly}/shell/docker"
 COMPOSE_FILE="$COMPOSE_DIR/compose.yml"
 
 # --- Helpers ---
@@ -130,7 +130,13 @@ cmd_psql() {
     # POSTGRES_USER/DB are exported by the sandbox() wrapper from shell/docker/.env
     # (point-of-use scoping); forward the password into the container so a
     # password-auth Postgres accepts the connection (ignored under trust auth).
-    docker exec -e PGPASSWORD="${PGPASSWORD:-sandbox}" -it sandbox-postgres psql -U "${POSTGRES_USER:-sandbox}" -d "${POSTGRES_DB:-sandbox}" "$@"
+    # Password comes from the caller (the sandbox() wrapper reads shell/docker/.env).
+    # Do not invent a well-known password when it is unset.
+    if [ -n "${PGPASSWORD:-}" ]; then
+        docker exec -e PGPASSWORD="$PGPASSWORD" -it sandbox-postgres psql -U "${POSTGRES_USER:-sandbox}" -d "${POSTGRES_DB:-sandbox}" "$@"
+    else
+        docker exec -it sandbox-postgres psql -U "${POSTGRES_USER:-sandbox}" -d "${POSTGRES_DB:-sandbox}" "$@"
+    fi
 }
 
 cmd_redis_cli() {

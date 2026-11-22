@@ -76,9 +76,11 @@ revkit/
 └── tests/                           # bash + Pester + platform-fixture suites
 ```
 
-The TOML-profile + `scripts/render.sh` rendering subsystem (and the `profiles/`
-and `templates/` directories) was removed in #64/#65 in favor of the neutral
-tracked configs + per-user `include.path` model below.
+The TOML-profile + `scripts/render.sh` rendering subsystem and the old
+`profiles/` directory were removed in #64/#65 in favor of the neutral
+tracked configs + per-user `include.path` model below. `templates/` is in
+use again for the client-name watchlist sample and adapter hooks. It is
+not the old config-render tree.
 
 ---
 

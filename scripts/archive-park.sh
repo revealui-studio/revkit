@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# archive-park.sh — move a path into ~/revealfleet/archive/cold/<bucket>/ with a dated name.
+# archive-park.sh moves a path into ~/revealfleet/archive/cold/<bucket>/ with a dated name.
 #
 # Usage:
 #   archive-park.sh <source-path> <bucket> [slug]
@@ -30,6 +30,17 @@ case "$BUCKET" in
   handoffs|workboard|audits|sessions|worktrees|repos/revealui|repos/jv|repos/revdev|repos/misc) ;;
   *) echo "unknown bucket: $BUCKET" >&2; usage ;;
 esac
+
+# Slug becomes one path segment under the bucket. A slash or ".." would
+# leave the archive root. Empty slug keeps the source basename.
+if [[ -n "$SLUG" ]]; then
+  case "$SLUG" in
+    . | .. | */* | -*)
+      echo "slug must be a single path segment: $SLUG" >&2
+      exit 1
+      ;;
+  esac
+fi
 
 BASE="$(basename "$SRC")"
 DATE="$(date -u +%Y-%m-%d)"

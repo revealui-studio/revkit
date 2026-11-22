@@ -1,6 +1,6 @@
 # DevKit Tier Capabilities
 
-## T0 — Base (Sandbox drive not mounted)
+## T0. Base (Sandbox drive not mounted)
 
 Everything on the C: drive works without the external drive.
 
@@ -16,17 +16,17 @@ Everything on the C: drive works without the external drive.
 | Postgres / Redis | Blocked | Require T1 |
 | Ollama | Blocked | Model weights stored on Sandbox drive |
 
-## T1 — Full (Sandbox drive mounted at `/mnt/sandbox`)
+## T1. Full (Sandbox drive mounted at `/mnt/sandbox`)
 
 Everything in T0, plus persistent infrastructure services.
 
 | Capability | Status | Notes |
 |------------|--------|-------|
-| All T0 capabilities | Available | — |
+| All T0 capabilities | Available | included above |
 | `sandbox up/down` | Available | Starts/stops Docker Compose services |
-| Postgres (port 5433) | Available | Data in `/mnt/sandbox/databases/postgres` |
-| Redis (port 6380) | Available | Data in `/mnt/sandbox/databases/redis` |
-| Ollama (port 11434) | Available | `sandbox up --ai`; models in `/mnt/sandbox/models` |
+| Postgres (port 5433) | Available | Bound to `127.0.0.1`. Data in `/mnt/sandbox/databases/postgres` |
+| Redis (port 6380) | Available | Bound to `127.0.0.1`. No password. Data in `/mnt/sandbox/databases/redis` |
+| Ollama (port 11434) | Available | Bound to `127.0.0.1`. `sandbox up --ai`; models in `/mnt/sandbox/models` |
 | Build/package caches | Available | `/mnt/sandbox/cache` |
 | `sandbox validate` | Full | Runs up to 18 checks (9 universal + 9 T1-specific, `shell/bin/sandbox-validate.sh`) including container health |
 

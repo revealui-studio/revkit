@@ -339,6 +339,51 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 5. with-secrets namespaces are one path segment
+# ---------------------------------------------------------------------------
+
+echo ""
+echo "--- with-secrets namespace guard ---"
+
+WITH_SECRETS_SH="$PROJECT_ROOT/shell/shellrc.d/45-with-secrets.sh"
+
+run_with_secrets() {
+  (
+    # shellcheck disable=SC1090
+    source "$WITH_SECRETS_SH"
+    revvault() {
+      echo "revvault-called" >&2
+      printf 'export PWNED=1\n'
+    }
+    export -f revvault
+    with-secrets "$@"
+  )
+}
+
+assert_fail "rejects namespace with a slash" run_with_secrets '../vault' -- true
+trav_err="$(run_with_secrets '../vault' -- true 2>&1 || true)"
+assert_contains "traversal error names the rule" "$trav_err" "namespace must be one identifier"
+if [[ "$trav_err" == *"revvault-called"* ]]; then
+  echo "FAIL: traversal namespace still called revvault"
+  FAIL=$((FAIL + 1))
+else
+  echo "PASS: traversal namespace does not call revvault"
+  PASS=$((PASS + 1))
+fi
+assert_fail "rejects namespace that starts with a dash" run_with_secrets '-namespace' -- true
+# license-signing is a legal identifier. Without the private-key opt-in it
+# must fail that gate, not the shape gate.
+shape_err="$(run_with_secrets license-signing -- true 2>&1 || true)"
+assert_contains "license-signing still hits the private-key gate" "$shape_err" "REVVAULT_ALLOW_PRIVATE"
+if [[ "$shape_err" == *"namespace must be one identifier"* ]]; then
+  echo "FAIL: license-signing was rejected as a bad identifier"
+  FAIL=$((FAIL + 1))
+else
+  echo "PASS: license-signing is an accepted identifier"
+  PASS=$((PASS + 1))
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 
