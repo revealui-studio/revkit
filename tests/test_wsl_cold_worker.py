@@ -18,6 +18,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -136,6 +137,78 @@ class ContractTests(unittest.TestCase):
             with self.assertRaises(cold.Refused):
                 session.tool()
             self.assertEqual(list(state.iterdir()), [])
+
+
+class LifetimeFaultTests(unittest.TestCase):
+    def exercise(self, fault, confirmed):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); repo=root/'repository'; repo.mkdir(mode=0o700)
+            state=root/'state'; state.mkdir(mode=0o700)
+            session=cold.Session(root/'never-execute',repo,state,'a'*64,timeout=4,idle=1)
+            a,b=socket.socketpair(); a.settimeout(5); stream=a.makefile('rb',buffering=0)
+            real_popen=subprocess.Popen
+            children=[]
+            def launch(*args,**kwargs):
+                child=real_popen([sys.executable,'-I','-c','import time; time.sleep(20)'],
+                    stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+                children.append(child)
+                if fault=='wait': child.wait=mock.Mock(side_effect=OSError('injected wait failure'))
+                return child
+            real_blocking=cold.os.set_blocking
+            def blocking(fd,value):
+                # The initial receiver/output setup must still work. Fault only
+                # after a real owned child exists.
+                if children: raise OSError('injected pipe setup failure')
+                return real_blocking(fd,value)
+            stack=__import__('contextlib').ExitStack()
+            stack.enter_context(mock.patch.object(session,'tool',return_value=None))
+            stack.enter_context(mock.patch.object(cold.subprocess,'Popen',side_effect=launch))
+            if fault in ('pipe','kill','wait','reap'):
+                stack.enter_context(mock.patch.object(cold.os,'set_blocking',side_effect=blocking))
+            if fault=='selector': stack.enter_context(mock.patch.object(cold.selectors,'DefaultSelector',side_effect=OSError('injected selector setup')))
+            if fault=='register':
+                selector=cold.selectors.DefaultSelector()
+                stack.enter_context(mock.patch.object(cold.selectors,'DefaultSelector',return_value=selector))
+                stack.enter_context(mock.patch.object(selector,'register',side_effect=OSError('injected registration')))
+            if fault=='kill': stack.enter_context(mock.patch.object(cold.os,'killpg',side_effect=PermissionError('injected kill refusal')))
+            if fault=='reap': stack.enter_context(mock.patch.object(session,'_group_absent',side_effect=OSError('injected reap failure')))
+            def serve():
+                try: session.serve(b.fileno(),b.fileno())
+                except cold.Refused: pass
+            thread=threading.Thread(target=serve)
+            try:
+                thread.start()
+                a.sendall(cold.encode(b'R',cold.document(req(b'x')))+cold.encode(b'S',b'synthetic-only'))
+                kind,payload=read_frame(stream)
+                self.assertEqual(kind,b'F')
+                self.assertEqual(cold.parse(payload)['linuxChildrenExited'],confirmed)
+                thread.join(3); self.assertFalse(thread.is_alive())
+                self.assertEqual(len(children),1)
+                if confirmed:
+                    self.assertIsNotNone(children[0].returncode)
+                    with self.assertRaises(ProcessLookupError): os.killpg(children[0].pid,0)
+                else:
+                    self.assertFalse(session.group_gone)
+                    if fault=='kill':
+                        self.assertIsNone(children[0].poll(), 'owned child still exists BEFORE defensive test cleanup')
+                self.assertTrue(any(state.glob('*/*failed.json')))
+            finally:
+                # Never supplies evidence: every assertion above precedes cleanup.
+                stack.close()
+                for child in children:
+                    if 'wait' in child.__dict__: del child.__dict__['wait']
+                    if child.poll() is None:
+                        try: os.killpg(child.pid,9)
+                        except ProcessLookupError: pass
+                    child.wait(timeout=3)
+                a.close(); stream.close(); b.close(); thread.join(3)
+
+    def test_pipe_setup_is_owned_and_confirmed_before_failure_ack(self): self.exercise('pipe',True)
+    def test_selector_creation_is_owned_and_confirmed_before_failure_ack(self): self.exercise('selector',True)
+    def test_selector_registration_is_owned_and_confirmed_before_failure_ack(self): self.exercise('register',True)
+    def test_kill_refusal_never_claims_child_gone(self): self.exercise('kill',False)
+    def test_wait_failure_never_claims_child_gone(self): self.exercise('wait',False)
+    def test_reap_failure_never_claims_child_gone(self): self.exercise('reap',False)
 
 
 class RealWorkerTests(unittest.TestCase):

@@ -10,6 +10,18 @@ Describe 'Physical disk identity is exact before any Linux probe' {
     It 'rediscovers the approved hardware without pinning a disk number' {
         (Assert-WslDiskHardwareIdentity -Identity $script:Identity -Disks @($script:Disk) -Partitions @($script:Partition)).Number | Should -Be 7
     }
+    It 'accepts only canonical absent letters including the actual Windows Char NUL' {
+        foreach($value in @($null,'',[char]0)) {
+            $script:Partition.DriveLetter=$value
+            (Assert-WslDiskHardwareIdentity -Identity $script:Identity -Disks @($script:Disk) -Partitions @($script:Partition)).Number|Should -Be 7
+        }
+    }
+    It 'rejects assigned letters and malformed values without coercion' {
+        foreach($value in @('D',[char]'E',' ',"`0",0,$false,@(''),[pscustomobject]@{Letter=''})) {
+            $script:Partition.DriveLetter=$value
+            {Assert-WslDiskHardwareIdentity -Identity $script:Identity -Disks @($script:Disk) -Partitions @($script:Partition)}|Should -Throw
+        }
+    }
     It 'rejects serial substrings, wrong geometry and duplicate hardware matches' {
         $script:Disk.SerialNumber = 'other-serial-1'
         { Assert-WslDiskHardwareIdentity -Identity $script:Identity -Disks @($script:Disk) -Partitions @($script:Partition) } | Should -Throw

@@ -235,6 +235,9 @@ class Session:
             try:
                 os.killpg(child.pid, 0)
             except ProcessLookupError:
+                if child.returncode is None:
+                    raise Refused('linux-parent-exit-unconfirmed')
+                self.group_gone = True
                 return
             if time.monotonic() >= deadline:
                 self.group_gone = False
@@ -265,18 +268,21 @@ class Session:
         libc = ctypes.CDLL(None, use_errno=True)
         if libc.prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
             raise Refused('linux-subreaper-unavailable')
-        child = subprocess.Popen([str(self.binary), '--lock-wait=1', *args],
-                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                 cwd=self.tx, env=env, pass_fds=(secret_fd,), start_new_session=True)
-        self.children.append(child.pid)
-        pending = b''
-        source_done = source is None
-        diagnostics = 0
-        selector = selectors.DefaultSelector()
-        for pipe, label in ((child.stdin, 'in'), (child.stdout, 'out'), (child.stderr, 'err')):
-            os.set_blocking(pipe.fileno(), False)
-            selector.register(pipe, selectors.EVENT_WRITE if label == 'in' else selectors.EVENT_READ, label)
+        # Unconfirmed BEFORE launch: a launch/setup exception cannot certify absence.
+        self.group_gone = False
+        child = selector = None
         try:
+            child = subprocess.Popen([str(self.binary), '--lock-wait=1', *args],
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                     cwd=self.tx, env=env, pass_fds=(secret_fd,), start_new_session=True)
+            self.children.append(child.pid)
+            pending = b''
+            source_done = source is None
+            diagnostics = 0
+            selector = selectors.DefaultSelector()
+            for pipe, label in ((child.stdin, 'in'), (child.stdout, 'out'), (child.stderr, 'err')):
+                os.set_blocking(pipe.fileno(), False)
+                selector.register(pipe, selectors.EVENT_WRITE if label == 'in' else selectors.EVENT_READ, label)
             while selector.get_map() or child.poll() is None:
                 if time.monotonic() > self.deadline:
                     raise Refused('transaction-timeout')
@@ -321,12 +327,15 @@ class Session:
             if child.returncode != 0 or diagnostics:
                 raise Refused('borg-exit-or-diagnostics')
         except BaseException:
-            self._stop_child(child)
+            if child is not None:
+                self._stop_child(child)
             raise
         finally:
-            selector.close()
-            for pipe in (child.stdin, child.stdout, child.stderr):
-                pipe.close()
+            if selector is not None:
+                selector.close()
+            if child is not None:
+                for pipe in (child.stdin, child.stdout, child.stderr):
+                    pipe.close()
 
     def serve(self, incoming_fd, outgoing_fd):
         """Duplex framed binary transaction; fixed Borg commands, no shell.
@@ -429,6 +438,8 @@ class Session:
             self.run(['extract', '--stdout', archive, 'ext4.vhdx'], rx, secret_fd, output=output)
             if restored_count != req['bytes'] or restored_hash.hexdigest() != req['sha256']:
                 raise Refused('restored-length-or-digest')
+            if not self.group_gone:
+                raise Refused('linux-group-exit-unconfirmed')
             receipt = dict(protocol=PROTOCOL, profile=PROFILE, transactionId=req['transactionId'],
                            phase=req['phase'], archiveId=req['archiveId'], bindingSha256=self.binding, bytes=restored_count,
                            sha256=restored_hash.hexdigest(), toolSha256=BORG_SHA256,

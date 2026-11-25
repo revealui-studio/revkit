@@ -1,5 +1,13 @@
 #Requires -Version 7.0
 
+function Test-WslUnassignedDriveLetter {
+    param([AllowNull()]$Value)
+    # Get-Partition uses System.Char NUL for an unassigned MSFT_Partition.
+    # Do not coerce numbers, arrays, whitespace or NUL-containing strings.
+    return ($null -eq $Value -or ($Value -is [string] -and $Value.Length -eq 0) -or
+        ($Value -is [char] -and [int]$Value -eq 0))
+}
+
 function Assert-WslDiskHardwareIdentity {
     [CmdletBinding()]
     param(
@@ -27,7 +35,7 @@ function Assert-WslDiskHardwareIdentity {
     if ($partition.Size -ne $Identity.partitionBytes -or $partition.Offset -ne $Identity.partitionStartSectors * 512 -or
         [Guid]$partition.Guid -ne [Guid]$Identity.partitionUuid -or
         [Guid]$partition.GptType -ne [Guid]'0fc63daf-8483-4772-8e79-3d69d8477de4' -or
-        -not [string]::IsNullOrWhiteSpace([string]$partition.DriveLetter)) {
+        -not (Test-WslUnassignedDriveLetter $partition.DriveLetter)) {
         throw 'Windows GPT geometry or partition identity differs from the approved disk.'
     }
     return $disk
