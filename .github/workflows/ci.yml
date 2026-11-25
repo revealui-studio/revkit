@@ -546,3 +546,18 @@ jobs:
           persist-credentials: false
       - name: Run native-home bootstrap tests
         run: bash tests/test-bootstrap-native.sh
+
+  native-runtime-adapters:
+    name: Native runtime and offline migration adapters
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Verify runtime, disk and offline state adapters
+        run: |
+          python3 -B -m unittest discover -s tests -p 'test_linux_node.py'
+          python3 -B -m unittest discover -s tests -p 'test_linux_boot.py'
+          python3 -B -m unittest discover -s tests -p 'test_wsl_disk_identity.py'
+          python3 -B -m unittest discover -s tests -p 'test_windows_artifacts.py'
+          python3 -B -m unittest discover -s tests -p 'test_codex_*.py'

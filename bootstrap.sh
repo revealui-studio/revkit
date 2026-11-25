@@ -25,6 +25,7 @@ for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
     --claude-adapter) CLAUDE_ADAPTER=1 ;;
+    --control-commands) REVKIT_BOOTSTRAP_ONLY=commands ;;
     *) printf 'Unknown argument: %s\n' "$arg" >&2; exit 1 ;;
   esac
 done
@@ -52,6 +53,10 @@ echo "Platform: $REVKIT_OS"
 echo ""
 
 # Test harness: prove the control layer without sudo, rc, or git-config writes.
+if [ "${REVKIT_BOOTSTRAP_ONLY:-}" = "commands" ]; then
+  revkit_install_control_cli
+  exit 0
+fi
 if [ "${REVKIT_BOOTSTRAP_ONLY:-}" = "control" ]; then
   revkit_bootstrap_control_layer
   exit 0

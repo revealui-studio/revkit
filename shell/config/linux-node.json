@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "node": {
+    "version": "26.13.1",
+    "platform": "linux-x64",
+    "sha256": "5c063e46bab0fbc1c17cc445d7ff129cbdcd0471be6ed83b6ab864f8143bc864"
+  },
+  "nvm": {
+    "version": "0.41.0",
+    "files": {
+      "nvm.sh": "e7ffd3d192735da61e5eb04e68f1aca4a293af4cd0000864568d6de7aa8f6fc4",
+      "nvm-exec": "eda3c10d8bcff0d328d2cdd15235c7806f9797031631cfca34a2c26c64d5ed86",
+      "bash_completion": "39c3c38294e9f579f23744e9b6b023e6e530352ca0143380ebc5c1f7b6786b68"
+    }
+  }
+}
