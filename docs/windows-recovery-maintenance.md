@@ -30,7 +30,9 @@ filesystem archives, superseding the earlier Restic VHD/file-stream assessment.
 This is a source design selection, not deployment or permission to initialize
 storage. [Recurring recovery design](wsl-recurring-recovery-design.md) records the
 metadata, consistency, key recovery and separate restore-capacity rationale.
-Preserve existing images and secondary-disk data; neither tool is installed.
+Preserve existing images and secondary-disk data; neither tool is installed
+system-wide. A separately invoked private synthetic Borg fixture is available
+under the maintained design; it installs nothing globally.
 
 ## Incremental readiness and evidence only
 
@@ -46,8 +48,9 @@ The owning library adds conservative no-dedup-credit capacity evaluation,
 read-only input contracts, private evidence-journal transactions and bounded
 restore-inventory comparison. None creates a repository, key or real archive.
 Operator-supplied attempt records remain explicitly unverified and cannot enter
-the existing verified-image inventory. Complete real Borg metadata round-trip,
-independent key recovery and full WSL restore acceptance remain missing. The
+the existing verified-image inventory. The native fixture has demonstrated an
+actual unprivileged Borg1.4.5 ext4 round trip; privileged metadata, independent
+key recovery and full WSL restore acceptance remain missing. The
 controller alone owns real destination/maintenance approval and later deployment;
 this increment changes source library/adapter bytes, not the accepted Windows
 release. There is no automatic retention, repair, compaction or lock breaking.
@@ -56,6 +59,16 @@ Run `Invoke-Pester ./tests/powershell/WslBackup.Tests.ps1` for bounded behaviora
 fixtures. They cover real small-file hashing, journal contention/duplicates and
 failure retention, with modeled metadata observations. They are not a Borg
 round-trip or evidence that the detached secondary disk is approved for writes.
+
+Restore observations now distinguish explicit version2 `isolated-restore-test`
+from `third-hardware-copy`. A fresh E restore VHD could share source/protected
+image hardware while reading the independent1TB backup with the source absent;
+this would test restoration but would not add third-hardware redundancy. Legacy
+version1 evidence keeps its strict disjoint-hardware rule. No profile accepts a
+target on backup-repository hardware, reuses the source filesystem/VHD, or grants
+full restore acceptance from bounded inventory data. Freeing E does not meet a
+third-hardware guarantee. Conditional capacity and USB-port constraints remain
+in the [canonical design](wsl-recurring-recovery-design.md).
 
 ## Verified artifact contract
 

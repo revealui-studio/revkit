@@ -415,6 +415,53 @@ Describe 'Borg readiness and restore-evidence contracts, without a backend' {
             $script:RestoreObservation = $saved | ConvertFrom-Json -AsHashtable
         }
     }
+    It 'keeps legacy hardware guarantees strict and explicitly reports an E-style shared-hardware restore test' {
+        $script:Config.original.physicalDeviceId = $script:Config.source.physicalDeviceId
+        Save-RecoveryFixtureInputs
+        $record = Register-FixtureArchive
+        $script:RestoreObservation.target.physicalDeviceId = 'SOURCE-HARDWARE'
+        $null = Write-RecoveryFixtureJson $script:RestoreObservationPath $script:RestoreObservation
+        { Test-WslBorgRestoreInventory -ArchiveEvidencePath $record.EvidencePath -SourceInventoryPath $script:SourceInventory -RestoredInventoryPath $script:RestoredInventory -RestoreObservationPath $script:RestoreObservationPath } | Should -Throw
+        $script:RestoreObservation.schemaVersion = 2
+        $script:RestoreObservation.hardwareGuarantee = 'isolated-restore-test'
+        $script:RestoreObservation.freshTarget = $true
+        $null = Write-RecoveryFixtureJson $script:RestoreObservationPath $script:RestoreObservation
+        $result = Test-WslBorgRestoreInventory -ArchiveEvidencePath $record.EvidencePath -SourceInventoryPath $script:SourceInventory -RestoredInventoryPath $script:RestoredInventory -RestoreObservationPath $script:RestoreObservationPath
+        $result.InventoryComparisonPassed | Should -BeTrue
+        $result.SharesSourceHardware | Should -BeTrue
+        $result.SharesProtectedOriginalHardware | Should -BeTrue
+        $result.ThirdHardwareTopologyObserved | Should -BeFalse
+        $result.ThirdHardwareRecoveryCopyAccepted | Should -BeFalse
+        $result.FullRestoreAccepted | Should -BeFalse
+        $script:RestoreObservation.hardwareGuarantee = 'third-hardware-copy'
+        $null = Write-RecoveryFixtureJson $script:RestoreObservationPath $script:RestoreObservation
+        { Test-WslBorgRestoreInventory -ArchiveEvidencePath $record.EvidencePath -SourceInventoryPath $script:SourceInventory -RestoredInventoryPath $script:RestoredInventory -RestoreObservationPath $script:RestoreObservationPath } | Should -Throw
+        $script:RestoreObservation.target.physicalDeviceId = 'third-hardware'
+        $null = Write-RecoveryFixtureJson $script:RestoreObservationPath $script:RestoreObservation
+        $result = Test-WslBorgRestoreInventory -ArchiveEvidencePath $record.EvidencePath -SourceInventoryPath $script:SourceInventory -RestoredInventoryPath $script:RestoredInventory -RestoreObservationPath $script:RestoreObservationPath
+        $result.ThirdHardwareTopologyObserved | Should -BeTrue
+        $result.FullRestoreAccepted | Should -BeFalse
+    }
+    It 'refuses shared repository hardware, reused source paths or filesystems and ambiguous version 2 guarantees' {
+        $record = Register-FixtureArchive
+        $script:RestoreObservation.schemaVersion = 2
+        $script:RestoreObservation.hardwareGuarantee = 'isolated-restore-test'
+        $script:RestoreObservation.freshTarget = $true
+        foreach ($change in @('repository', 'sourcePath', 'filesystem', 'notFresh', 'unknownGuarantee', 'missingGuarantee')) {
+            $saved = $script:RestoreObservation | ConvertTo-Json -Depth 10
+            switch ($change) {
+                repository { $script:RestoreObservation.target.physicalDeviceId = 'REPOSITORY-HARDWARE' }
+                sourcePath { $script:RestoreObservation.target.path = $script:Config.source.vhdx }
+                filesystem { $script:RestoreObservation.target.filesystemUuid = 'SOURCE-FILESYSTEM' }
+                notFresh { $script:RestoreObservation.freshTarget = $false }
+                unknownGuarantee { $script:RestoreObservation.hardwareGuarantee = 'independent-enough' }
+                missingGuarantee { $script:RestoreObservation.Remove('hardwareGuarantee') }
+            }
+            $null = Write-RecoveryFixtureJson $script:RestoreObservationPath $script:RestoreObservation
+            { Test-WslBorgRestoreInventory -ArchiveEvidencePath $record.EvidencePath -SourceInventoryPath $script:SourceInventory -RestoredInventoryPath $script:RestoredInventory -RestoreObservationPath $script:RestoreObservationPath } | Should -Throw
+            $script:RestoreObservation = $saved | ConvertFrom-Json -AsHashtable
+        }
+    }
     It 'rejects ownership, modes, ACL/xattr, hardlink, flag, sparse and path coverage drift' {
         $record = Register-FixtureArchive
         foreach ($field in @('uid', 'gid', 'mode', 'mtimeNs', 'atimeNs', 'deviceMajor', 'deviceMinor', 'aclSha256', 'xattrsSha256', 'hardlinkGroup', 'linkTarget', 'flags', 'sparse', 'path')) {

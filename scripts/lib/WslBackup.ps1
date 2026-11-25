@@ -384,7 +384,7 @@ function Get-WslBorgReadinessPlan {
             'Approved exact disk/repository identity and independent key recovery drill',
             'Bounded cache/workspace placement and per-filesystem growth accounting',
             'Reviewed executor with held repository lock and complete source inventory',
-            'Additional approved independent full-restore target and isolated restore acceptance'
+            'Approved fresh isolated full-restore target, explicit hardware guarantee and restore acceptance'
         )
     }
     if (-not $ConfigurationPath -or -not $ObservationPath -or -not $ReviewedConfigurationSha256) {
@@ -571,7 +571,9 @@ function Register-WslBorgArchiveEvidence {
                 sourcePhysicalDeviceId = $config.source.physicalDeviceId
                 repositoryPhysicalDeviceId = $config.repository.physicalDeviceId
                 originalPhysicalDeviceId = $config.original.physicalDeviceId
-                sourceView = $config.source.view; repositoryPath = $config.repository.path
+                sourceView = $config.source.view; sourceVhdx = $config.source.vhdx
+                sourceFilesystemUuid = $config.source.filesystemUuid
+                repositoryPath = $config.repository.path
                 originalPath = $config.original.path
                 sourceInventorySha256 = $config.source.inventorySha256
                 keyRecoveryDrillSha256 = $config.keyRecovery.drillSha256
@@ -603,11 +605,13 @@ function Test-WslBorgRestoreInventory {
     if ($archive.Value.kind -cne 'revealfleet-wsl-borg-archive-evidence-v1' -or
         $archive.Value.verified -isnot [bool] -or $archive.Value.verified) { throw 'Expected unpromoted archive evidence.' }
     $restore = (Read-WslRecoveryDocument $RestoreObservationPath).Value
-    Assert-WslRecoveryFields $restore @('schemaVersion', 'scope', 'archiveEvidenceSha256', 'repositoryId',
-        'archiveId', 'toolSha256', 'keyRecoveryDrillSha256', 'sourceUnavailable', 'originalPreserved', 'target') 'bounded restore observation'
+    $restoreFields = @('schemaVersion', 'scope', 'archiveEvidenceSha256', 'repositoryId',
+        'archiveId', 'toolSha256', 'keyRecoveryDrillSha256', 'sourceUnavailable', 'originalPreserved', 'target')
+    if ($restore.schemaVersion -eq 2) { $restoreFields += @('hardwareGuarantee', 'freshTarget') }
+    Assert-WslRecoveryFields $restore $restoreFields 'bounded restore observation'
     Assert-WslRecoveryFields $restore.target @('path', 'physicalDeviceId', 'filesystemUuid') 'bounded restore target'
     Assert-WslRecoveryInteger $restore.schemaVersion 1
-    if ($restore.schemaVersion -ne 1 -or $restore.scope -cne 'bounded-fixture' -or
+    if ($restore.schemaVersion -notin @(1, 2) -or $restore.scope -cne 'bounded-fixture' -or
         $restore.archiveEvidenceSha256 -cne $archive.Sha256 -or $restore.repositoryId -cne $archive.Value.repositoryId -or
         $restore.archiveId -cne $archive.Value.archiveId -or $restore.toolSha256 -cne $archive.Value.toolSha256 -or
         $restore.keyRecoveryDrillSha256 -cne $archive.Value.keyRecoveryDrillSha256) {
@@ -619,10 +623,29 @@ function Test-WslBorgRestoreInventory {
     foreach ($value in @($restore.target.physicalDeviceId, $restore.target.filesystemUuid)) {
         if ($value -isnot [string] -or [string]::IsNullOrWhiteSpace($value) -or $value.Trim() -cne $value) { throw 'Missing independent restore identity.' }
     }
-    foreach ($identity in @($archive.Value.sourcePhysicalDeviceId, $archive.Value.repositoryPhysicalDeviceId, $archive.Value.originalPhysicalDeviceId)) {
-        if ($restore.target.physicalDeviceId -ieq $identity) { throw 'Restore target is not independent of source, repository and original.' }
+    $sharesSource = $restore.target.physicalDeviceId -ieq $archive.Value.sourcePhysicalDeviceId
+    $sharesOriginal = $restore.target.physicalDeviceId -ieq $archive.Value.originalPhysicalDeviceId
+    if ($restore.target.physicalDeviceId -ieq $archive.Value.repositoryPhysicalDeviceId) {
+        throw 'Restore target must not share backup repository hardware.'
     }
-    Assert-WslRecoveryDisjoint @($restore.target.path, $archive.Value.sourceView, $archive.Value.repositoryPath, $archive.Value.originalPath)
+    $guarantee = 'third-hardware-copy'
+    $paths = @($restore.target.path, $archive.Value.sourceView, $archive.Value.repositoryPath, $archive.Value.originalPath)
+    if ($restore.schemaVersion -eq 2) {
+        $guarantee = $restore.hardwareGuarantee
+        if ($guarantee -cnotin @('isolated-restore-test', 'third-hardware-copy') -or
+            $restore.freshTarget -isnot [bool] -or -not $restore.freshTarget) {
+            throw 'Version 2 requires an explicit hardware guarantee and fresh target.'
+        }
+        if (-not $archive.Value.sourceVhdx -or -not $archive.Value.sourceFilesystemUuid -or
+            $restore.target.filesystemUuid -ieq $archive.Value.sourceFilesystemUuid) {
+            throw 'Fresh restore filesystem and source-image identity are unproved.'
+        }
+        $paths += $archive.Value.sourceVhdx
+    }
+    if ($guarantee -ceq 'third-hardware-copy' -and ($sharesSource -or $sharesOriginal)) {
+        throw 'Third-hardware recovery copy requires hardware disjoint from source, repository and original.'
+    }
+    Assert-WslRecoveryDisjoint $paths
     $source = Read-WslRecoveryDocument $SourceInventoryPath
     $restored = Read-WslRecoveryDocument $RestoredInventoryPath
     if ($source.Sha256 -cne $archive.Value.sourceInventorySha256) { throw 'Source inventory is not bound to the archive evidence.' }
@@ -672,6 +695,10 @@ function Test-WslBorgRestoreInventory {
     [pscustomobject]@{
         InventoryComparisonPassed = $true; Entries = $source.Value.entries.Count
         ArchiveEvidenceSha256 = $archive.Sha256; FullRestoreAccepted = $false
+        HardwareGuarantee = $guarantee; SharesSourceHardware = $sharesSource
+        SharesProtectedOriginalHardware = $sharesOriginal
+        ThirdHardwareTopologyObserved = (-not $sharesSource -and -not $sharesOriginal)
+        ThirdHardwareRecoveryCopyAccepted = $false
         Scope = 'bounded inventory contract only; actual Borg round-trip and independent WSL restore remain required'
     }
 }

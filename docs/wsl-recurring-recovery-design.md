@@ -2,8 +2,9 @@
 
 Status: selected source design under GAP-301, 2026-11-25; **production execution
 unavailable**. The maintained adapter implements readiness and evidence contracts
-only. No tool installation, repository/key initialization, disk write, mount,
-schedule, archive creation or recovery boot is authorized by this document.
+only. Production tool installation, repository/key initialization, disk writes,
+mounts, schedules, archive creation and recovery boot require separate approval.
+The explicitly invoked private synthetic fixture below is development work only.
 Preserve the only last-good image and the existing full-export capacity refusal.
 
 ## One incremental design
@@ -23,10 +24,11 @@ rewritten. Restic is not an additional production backend in RevKit.
 | Keys and restore | Exported key plus passphrase recoverable with source unavailable, then actual metadata comparison and isolated WSL restoration | Also requires independent key recovery and a real restore; sparse output alone is not recovery acceptance |
 
 Borg's documented feature set is a reason to select this design, not proof that a
-particular installation preserves the owner's data. No backend is installed on
-this native host (`command -v borg` and `command -v restic` found neither), and
-RevKit has no reviewed isolated Borg installer. No binary was downloaded or
-package installed for this increment. A real Borg fixture remains a prerequisite.
+particular installation preserves the owner's data. Neither backend is installed
+system-wide. The installed Ubuntu package index offers Borg1.4.4-3, which does
+not satisfy this exact version. A signed standalone1.4.5 binary can now be
+verified and used only inside the private synthetic fixture described below;
+this establishes no production installation, key recovery or full restore.
 
 ## Current capacity, without optimistic credits
 
@@ -36,7 +38,11 @@ Controller measurements supplied for this source turn:
 | --- | ---: |
 | Root ext4 used | 604,949,360,640 |
 | Root ext4 available inside the current VHD | 421,159,460,864 |
-| E physical available | 271,653,101,568 |
+| E physical available, latest | 271,652,610,048 |
+| Live source VHD, latest | 636,824,322,048 |
+| Connected D initial physical available | 499,494,395,904 |
+| Media copy under controller verification | 55,569,457,453 |
+| Historical backups excluding protected image | 391,210,153,007 |
 | C physical available | 238,336,782,336 |
 | Earlier secondary volume free, now detached | 943,636,373,504 |
 | Protected read-only recovery image | 633,995,264,000 |
@@ -58,12 +64,34 @@ unique, with no compression, deduplication or deletion credit. Cache and workspa
 placement need their own per-filesystem capacity proof outside the read-only
 source. A numerical fit is conditional on those supplied bounds, not a disk probe.
 
-E and C cannot individually stage the measured filesystem or full image. The
-secondary cannot conservatively hold both a source-sized repository and a
-source-sized independent restore with reserves. **Additional independent full
-restore capacity remains an unanswered owner dependency.** Deduplication and
-compression do not remove this requirement. Do not reclaim the protected image,
-original data or the stopped Ubuntu-Recovery-20261124 to make a transaction fit.
+Current E and C free space cannot individually stage the measured filesystem or
+full image. The secondary cannot conservatively hold a source-sized repository
+and restore together. A fresh restore VHD on E could instead use the independent
+backup on the1TB disk while the source VHD/distro is unavailable. This shares
+physical hardware with the source and protected image; it is a restore test,
+not third-hardware recovery protection.
+
+Controller-approved media and eligible archive relocation to D is conditional
+on full verification and source retirement. No native transfer is performed.
+Only after BOTH retirements, the supplied totals project E free718432220508
+bytes and D remaining52714785444 bytes. E would exceed the measured source-used
+plus64GiB reserve by44763383132 bytes, BEFORE new VHD filesystem/repository
+metadata and logical sparse expansion. A live-VHD-sized reservation plus64GiB
+would leave12888421724 bytes; neither estimate proves an approved target budget.
+Fresh physical free space, target identity and complete logical/overhead bounds
+must be checked before allocation. Protected image AND proof files stay on E.
+Two USB ports require the controller to disconnect D before reconnecting1TB;
+a disconnected D cannot serve as the active restore target.
+
+More capacity or hardware is not an unconditional prerequisite for testing a
+restore on E. It remains necessary if the conservative target budget does not
+fit after verified retirement, or if a third-hardware recovery copy is requested.
+Such a third target must be physically disjoint from source/protected original
+AND backup repository, with at least measured604949360640 +64GiB =673668837376
+bytes before additional reviewed logical/metadata growth; the500GB D is too small
+even before these transfers. No third target currently satisfies that guarantee.
+Freeing E cannot satisfy hardware disjointness. Do not reclaim the protected
+image, proof files or stopped Ubuntu-Recovery-20261124 to make room.
 
 ## Executable readiness contract in the existing owner
 
@@ -151,8 +179,29 @@ increment. Never remove originals/partials as a recovery from an admission error
 archive-bound source inventory and a separate restore observation. The latter
 binds archive evidence, repository/archive/tool identities and independent key
 recovery; it requires source unavailability, original preservation and a target
-on hardware disjoint from source, repository and original. Its supported scope
-is `bounded-fixture`, never a full production restoration claim.
+with an explicit hardware guarantee. Its supported scope remains
+`bounded-fixture`, never a full production restoration claim.
+
+The970cb41 contract introduced a stricter three-hardware rule than the preceding
+design's fresh independent ext4 target/source-unavailable requirement. That was
+an overconstrained fixture interpretation, not an established owner requirement
+for an extra physical recovery copy. These guarantees are now explicit:
+
+| Evidence profile | Target requirement | What a successful real full drill could establish |
+| --- | --- | --- |
+| Version1 legacy | Hardware disjoint from source, repository and original, unchanged | Retains the original strict interpretation; no silent evidence downgrade |
+| Version2 `isolated-restore-test` | Explicit fresh target, distinct source filesystem and disjoint source VHD/view/original paths; hardware disjoint from backup repository | Actual full restoration with source unavailable; report any shared source/protected-image hardware |
+| Version2 `third-hardware-copy` | All fresh-target requirements plus hardware disjoint from source, repository and original | Additional hardware redundancy, only after real complete restore acceptance |
+
+Version2 requires `hardwareGuarantee` and `freshTarget=true`; ambiguous/missing
+profiles refuse. Archive evidence now also binds sourceVhdx/sourceFilesystemUuid.
+Old evidence without those identities cannot support version2. A target sharing
+backup hardware always refuses. Shared-hardware booleans and observed topology
+are reported separately; both FullRestoreAccepted and
+ThirdHardwareRecoveryCopyAccepted remain false for bounded comparisons. A fresh
+VHD on E and offline source on E are physically correlated failures, even when
+the restore succeeds. The independent1TB repository is the separate recovery
+hardware; no additional third-hardware guarantee is claimed by the E drill.
 
 The comparison covers content digest, numeric IDs, mode, mtime/atime, symlink target,
 canonical hardlink group, ACL/xattr digests, inode flags, device major/minor numbers and sparse observation.
@@ -170,14 +219,78 @@ of identical inode numbers or ctime. Borg cannot be told to disable ACLs/xattrs,
 flags or completeness checks. All parents/root metadata must be included. Dry
 extraction reads/verifies data but does not test filesystem writes.
 
-A complete independent ext4 target, escrowed credentials with the source absent,
+A complete fresh isolated ext4 target under the explicitly recorded hardware
+profile, escrowed credentials with the source absent,
 full content/metadata verification and reviewed WSL registration/isolated boot
 and user-service acceptance are separate requirements. Preserve the image and
 recovery registration throughout. Neither synthetic contracts, a bounded Borg
 pilot nor the earlier seven-file extraction closes GAP-301.
 
+## Maintained isolated Borg fixture and native observer
+
+`scripts/wsl-borg-fixture.py` extends the existing PowerShell planner/evidence
+owner with native Linux observations; no existing Python backup observer existed
+to extend. It is a fixed synthetic-data runner, not another production backend.
+Default invocation is a read-only plan. Explicit development use:
+
+```sh
+python3 -B scripts/wsl-borg-fixture.py --run --parent /absolute/approved/ext4/development-directory
+```
+
+It requires non-root Linux x86_64, an existing canonical owner directory on ext4,
+and at least1GiB free. It creates only a unique0700 child with a fixed dataset
+under33MiB logical data. No operator source/repository/archive arguments, root,
+mount, production disk/key or system install is supported. It creates an
+**unencrypted synthetic repository**, with no encryption secret/key recovery
+claim. Download, unpack, HOME, Borg config/cache/security and GnuPG files remain
+inside that private child. Results and failed attempts remain for review; no
+prune, repair, lock-breaking or automatic cleanup runs.
+
+The upstream glibc2.31 x86_64 binary is pinned by SHA256
+`c8457f70660064d0f45b38283ab4cc65b342970012013201d3aec713a75898fb`;
+its detached signature is also pinned. Before executing anything from the
+release, system gpg/gpgv verifies the signature against the full upstream primary
+fingerprint `6D5BEF9ADD2075805747B70F9F88FB52FAF7B393` from official security docs,
+then the runner requires the exact native version. Keyserver transport is not
+trusted for identity; signature and pinned full fingerprint are required. No
+user keyring/trust/auth config is changed. `--release-inputs` can reuse retained
+bounded downloads; it copies and repeats every hash/signature/version check.
+No installation into PATH or production identity approval is granted.
+
+Create uses numeric IDs and atime, followed by full `check --verify-data`, dry
+extraction and actual numeric-ID/sparse extraction. Nonzero status or unexpected
+Borg diagnostics refuses. The original synthetic source is renamed away before
+check/extract, and the observer compares actual data, ownership/modes, nanosecond
+times, access/default ACLs, user xattrs, root/parent directories, links, FIFO,
+owner-settable NODUMP and sparse allocation. This is source-path absence, not
+OS-enforced disk isolation, a continuously held source/Borg transaction lease,
+or a full consistency proof. No fixture observation is automatically admitted
+to production readiness/evidence. `fullRestoreAccepted` stays false.
+
+Privileged cases remain unavailable: foreign UID/GID restoration, devices,
+security/trusted xattrs/capabilities, immutable/append-only flags. There is no
+sudo, user namespace workaround, permission change or fake privileged observation.
+The sandbox's one-UID map cannot represent the named ACL subject; actual ACL
+fixture tests require normal approved native execution or must report refusal.
+
+The real8MiB sparse pilot correctly failed strict comparison: default Borg
+chunking restored its bytes fully allocated despite `--sparse`. A32MiB hole spans
+multiple chunks and tests successful sparse allocation separately. Neither
+Borg nor this observer promises exact original extent layout or universal hole
+preservation. Budget logical allocation and record/refuse material allocation
+expansion; the retained failed pilot must not be erased or recast as acceptance.
+Current native receipt: ten real entries passed create, full data check, dry
+extract, actual extraction and strict metadata comparison. Six observer/refusal
+tests passed under normal approved native execution. The PowerShell suite has
+33 backup-contract tests plus13 host-script tests (46 total); controller's prior
+31 Windows backup tests apply to970cb41 only, not this new source. These local
+results do not establish Windows execution or privileged Linux cases.
+ctime/inode identity and a third physical device are outside this fixture.
+
 ## References and retained exceptions
 
+- [Signed standalone installation](https://borgbackup.readthedocs.io/en/1.4.5/installation.html)
+- [Release fingerprint/signatures](https://borgbackup.readthedocs.io/en/1.4.5/support.html)
 - [Borg 1.4.5 metadata](https://borgbackup.readthedocs.io/en/1.4.5/usage/general.html)
 - [Create and warning behavior](https://borgbackup.readthedocs.io/en/1.4.5/usage/create.html)
 - [Cryptographic checks](https://borgbackup.readthedocs.io/en/1.4.5/usage/check.html)
