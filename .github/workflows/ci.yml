@@ -578,7 +578,8 @@ jobs:
         shell: pwsh
         run: |
           $config = New-PesterConfiguration
-          $config.Run.Path = './tests/powershell/WindowsArtifactDeployment.Tests.ps1'
+          $config.Run.Path = './tests/powershell/WindowsArtifactDeployment.Tests.ps1', './tests/powershell/CodexOfflineCopy.Tests.ps1'
+          $env:REVKIT_TEST_PYTHON = (Get-Command python -ErrorAction Stop).Source
           $config.Run.Exit = $true
           $config.Output.Verbosity = 'Detailed'
           Invoke-Pester -Configuration $config

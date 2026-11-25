@@ -109,3 +109,43 @@ refuses when original preservation can no longer be established. It does not
 delete either history, rewrite authentication or perform environment rollback.
 Old source retirement is a later owner decision after independent recovery,
 registration and ordinary-consumer acceptance; no automatic deletion follows.
+
+## External copy executor
+
+`scripts/Invoke-CodexOfflineCopy.ps1` waits for normal application Quit and runs
+the maintained adapter's plan, prepare and verify phases with private receipts.
+It never kills processes, activates a home, changes environment settings,
+restarts the app, copies the UI profile or deletes originals. A successful copy
+is `copy-verified-awaiting-operator-review`, regardless of pending-action count.
+
+Prepare a JSON request outside the homes and new receipts. Exact fields:
+`schemaVersion` (1), `sourceHome`, `targetHome`, `adapterDirectory`,
+`adapterHashes`, `pythonPath`, `pythonSha256`, `receiptDirectory`,
+`waitTimeoutSeconds` (1–3600), `pollSeconds` (1–30, no greater than timeout).
+Use fully qualified local paths without linked ancestry. Target and receipt
+directories must be absent. Homes, adapters and receipts must be disjoint.
+The adapter directory must contain this executor. Pin the Python executable
+and SHA-256 for these six sibling adapter files:
+
+- `Invoke-CodexOfflineCopy.ps1`
+- `codex-home-migrate.py`
+- `codex_adapter_lib.py`
+- `codex-state-layout-v1.json`
+- `codex-desktop-layout-v1.json`
+- `lib/WindowsArtifactDeployment.ps1`
+
+Hash and review the request, then invoke the deployed executor using
+`-RequestPath <request.json> -ExpectedRequestSha256 <digest>`.
+Only start a hidden background PowerShell helper after the saved-work boundary.
+Request normal Quit separately. Do not include a source-home command-line
+argument: the writer guard deliberately treats source-referencing command lines
+as possible writers. An unavailable census or wait timeout stops the executor;
+the underlying adapter independently checks writers and consistency every phase.
+
+`executor.json` records waiting, progress, refusal or copy verification. Each
+phase retains JSON output and diagnostic logs. Exit 2 with named pending actions
+is distinct from refusal; it does not authorize activation. Review those actions
+and complete the separate supported consumer and consent acceptance above.
+Reopening the old source may change it; do not activate a stale copy or bypass a
+manifest mismatch. Retain attempted targets and use a new absent destination for
+a fresh reviewed copy if needed. No background helper is an operational dependency.

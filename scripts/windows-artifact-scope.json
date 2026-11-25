@@ -1,8 +1,19 @@
 {
   "schemaVersion": 1,
-  "roots": ["powershell", "scripts", "git-hooks", "shell/config/gitconfig"],
-  "excludedParts": ["logs", "__pycache__", "node_modules"],
-  "excludedLeaves": ["local-config.ps1"],
+  "roots": [
+    "powershell",
+    "scripts",
+    "git-hooks",
+    "shell/config/gitconfig"
+  ],
+  "excludedParts": [
+    "logs",
+    "__pycache__",
+    "node_modules"
+  ],
+  "excludedLeaves": [
+    "local-config.ps1"
+  ],
   "required": [
     "powershell/Modules/RevealUI.RevStation/RevealUI.RevStation.psd1",
     "powershell/Modules/RevealUI.RevStation/RevealUI.RevStation.psm1",
@@ -10,6 +21,11 @@
     "scripts/lib/WslBackup.ps1",
     "scripts/lib/WindowsArtifactDeployment.ps1",
     "scripts/windows-artifact-scope.json",
-    "scripts/Deploy-WindowsArtifacts.ps1"
+    "scripts/Deploy-WindowsArtifacts.ps1",
+    "scripts/Invoke-CodexOfflineCopy.ps1",
+    "scripts/codex-home-migrate.py",
+    "scripts/codex_adapter_lib.py",
+    "scripts/codex-state-layout-v1.json",
+    "scripts/codex-desktop-layout-v1.json"
   ]
 }
