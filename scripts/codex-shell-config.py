@@ -123,10 +123,22 @@ def render_reviewed_startup_retirement(text, expected_value):
             "ambiguous startup entry requires separate review")
     require(not any(key.casefold() in {"env", "node_options"} for key in values),
             "other startup overrides require separate review")
-    if "BASH_ENV" not in values:
-        return text
-    require(values["BASH_ENV"] == expected_value, "configured startup value differs from the reviewed value")
-    return toml_edit(text, {STARTUP_FIELD: TOML_DELETE})
+    environment_filters(policy)
+    require("exclude" not in policy and "include_only" not in policy,
+            "reviewed startup retirement requires canonical filters; legacy filters need separate review")
+    filters = policy.get("filters", {})
+    matching = [name for name in filters if name.casefold() == "bash_env"]
+    require(len(matching) <= 1, "ambiguous startup filters require separate review")
+    key = matching[0] if matching else "BASH_ENV"
+    require(key not in filters or filters[key] == "exclude",
+            "an owner startup include filter requires separate review")
+    edits = {}
+    if "BASH_ENV" in values:
+        require(values["BASH_ENV"] == expected_value, "configured startup value differs from the reviewed value")
+        edits[STARTUP_FIELD] = TOML_DELETE
+    if key not in filters:
+        edits[("shell_environment_policy", "filters", key)] = "exclude"
+    return toml_edit(text, edits) if edits else text
 
 
 def reviewed_native_user_config(path, platform):

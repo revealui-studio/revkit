@@ -59,7 +59,11 @@ Apply these actions in this order from the reviewed maintained adapter:
 3. Run a fresh `retire-reviewed-startup --config ~/.codex/config.toml --platform
    linux --expected-value '~/.config/shell/env.sh'` dry run. Only the exact
    `shell_environment_policy.set.BASH_ENV` entry with that reviewed literal is
-   eligible. Unknown values, other startup overrides, noncanonical config paths
+   eligible. Retirement also records the canonical `filters.BASH_ENV="exclude"`
+   so a parent environment cannot reintroduce that entry after `set` is removed.
+   If the assignment is already absent, this same reviewed action adds the
+   exclusion after verifying the projected session. Unknown values, conflicting
+   startup include filters, legacy filter arrays, other startup overrides, noncanonical config paths
    and unreviewed metadata refuse. The verified native session must already be
    projected before retirement can proceed.
 4. Review that new dry run, then add `--apply --reviewed-sha256 <new before hash>`.

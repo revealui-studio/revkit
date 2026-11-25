@@ -30,6 +30,7 @@ class ReviewedRetirementRenderingTests(unittest.TestCase):
                 result = ADAPTER.render_reviewed_startup_retirement(text, ADAPTER.REVIEWED_BASH_ENV)
                 before, after = tomllib.loads(text), tomllib.loads(result)
                 del before['shell_environment_policy']['set']['BASH_ENV']
+                before['shell_environment_policy']['filters'] = {'BASH_ENV': 'exclude'}
                 self.assertEqual(before, after)
 
     def test_unknown_value_or_other_startup_override_is_refused(self):
@@ -38,6 +39,20 @@ class ReviewedRetirementRenderingTests(unittest.TestCase):
                       'BASH_ENV="~/.config/shell/env.sh"\nNODE_OPTIONS="owner"']:
             with self.subTest(entry=entry), self.assertRaises(Refused):
                 ADAPTER.render_reviewed_startup_retirement('[shell_environment_policy]\ninherit="core"\n[shell_environment_policy.set]\n'+entry+'\n', ADAPTER.REVIEWED_BASH_ENV)
+
+    def test_already_removed_assignment_gets_persistent_inherited_exclusion(self):
+        text = '[shell_environment_policy]\ninherit="core"\n[shell_environment_policy.filters]\n"OWNER_*"="exclude"\n'
+        result = ADAPTER.render_reviewed_startup_retirement(text, ADAPTER.REVIEWED_BASH_ENV)
+        policy = tomllib.loads(result)['shell_environment_policy']
+        self.assertEqual(policy['filters'], {'OWNER_*':'exclude', 'BASH_ENV':'exclude'})
+        self.assertEqual(ADAPTER.render_reviewed_startup_retirement(result, ADAPTER.REVIEWED_BASH_ENV), result)
+
+    def test_unknown_owner_filter_policy_is_not_rewritten(self):
+        for fields in ['exclude=["OWNER_*"]\n', 'include_only=["PATH"]\n',
+                       '[shell_environment_policy.filters]\nBASH_ENV="include"\n']:
+            text = '[shell_environment_policy]\ninherit="core"\n' + fields
+            with self.subTest(fields=fields), self.assertRaises(Refused):
+                ADAPTER.render_reviewed_startup_retirement(text, ADAPTER.REVIEWED_BASH_ENV)
 
     def test_ordinary_runtime_action_does_not_admit_session_or_startup_values(self):
         for name in ['XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'BASH_ENV', 'SSH_AUTH_SOCK', 'PATH', 'NODE_OPTIONS']:
@@ -87,6 +102,7 @@ class NativeShellActionTests(unittest.TestCase):
         result = ADAPTER.retire_reviewed_startup(self.config, ADAPTER.REVIEWED_BASH_ENV, 'linux', apply=True, reviewed_sha256=plan['before_sha256'])
         after = tomllib.loads(self.config.read_text())
         del projected['shell_environment_policy']['set']['BASH_ENV']
+        projected['shell_environment_policy']['filters'] = {'BASH_ENV': 'exclude'}
         self.assertEqual(after, projected)
         self.assertEqual(result['after_sha256'], hashlib.sha256(self.config.read_bytes()).hexdigest())
         backups = [p.read_bytes() for p in self.config.parent.glob('config.toml.revkit-before-*')]
