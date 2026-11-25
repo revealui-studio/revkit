@@ -131,7 +131,7 @@ class PrivilegedBoundaryTests(unittest.TestCase):
 
     def test_production_paths_and_writable_custody_refuse(self):
         with mock.patch.object(fixture.os, 'geteuid', return_value=0):
-            for path in ('/mnt/e/backups/new', '/home/user/live', '/dev/sda', '/var/lib/revkit-synthetic-fixtures/../source'):
+            for path in ('/srv/backup-source/new', '/srv/user-data/live', '/dev/sda', '/var/lib/revkit-synthetic-fixtures/../source'):
                 with self.assertRaises(ValueError): fixture.privileged_workspace(path, '/tmp', 'a'*64)
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(ValueError): fixture.require_root_custody(Path(directory))
