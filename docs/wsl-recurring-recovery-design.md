@@ -5,6 +5,8 @@ unavailable**. The maintained adapter implements readiness and evidence contract
 only. Production tool installation, repository/key initialization, disk writes,
 mounts, schedules, archive creation and recovery boot require separate approval.
 The explicitly invoked private synthetic fixture below is development work only.
+The named fixed64KiB candidate has an observed dense-to-sparse rejection; legacy
+privileged and encrypted proofs remain separate. See the combined-profile audit below.
 Preserve the only last-good image and the existing full-export capacity refusal.
 
 ## One incremental design
@@ -268,8 +270,10 @@ OS-enforced disk isolation, a continuously held source/Borg transaction lease,
 or a full consistency proof. No fixture observation is automatically admitted
 to production readiness/evidence. `fullRestoreAccepted` stays false.
 
-Actual privileged receipts remain unavailable: foreign UID/GID restoration, devices,
-security/trusted xattrs/capabilities, immutable/append-only flags. There is no
+The original ordinary-only baseline did not cover foreign UID/GID restoration,
+devices, security/trusted xattrs/capabilities or immutable/append-only flags.
+The controller subsequently accepted those seven synthetic cases under the legacy
+archive profile; they are not evidence for a different candidate profile. There is no
 sudo, user namespace workaround, permission change or fake privileged observation.
 The sandbox's one-UID map cannot represent the named ACL subject; actual ACL
 fixture tests require normal approved native execution or must report refusal.
@@ -446,8 +450,10 @@ This agrees with [create](https://borgbackup.readthedocs.io/en/1.4.5/usage/creat
 chunk cannot be reproduced by that extraction path. The old8MiB failure and later
 32MiB success remain separate unchanged evidence; no receipt is rewritten.
 
-The maintained candidate for NEW archives is fixed chunking with input-hole
-recognition, followed by strict restored-inventory acceptance. This does not repair
+The initial candidate for NEW archives was fixed chunking with input-hole
+recognition, followed by strict restored-inventory acceptance. The expanded
+combined-profile audit below now rejects dense-zero/dense-mixed allocation loss;
+this candidate is not broadly adequate for the maintained density contract. This does not repair
 existing archives, guarantee arbitrary/unaligned/dense-zero layouts, or establish
 privileged metadata fidelity with this candidate. Root's accepted fixture used
 the existing default archive profile. Chunking changes deduplication/cache/index
@@ -463,3 +469,177 @@ full WSL restore/boot, restore capacity and independent hardware recovery remain
 unproved. No production backup, key, disk, mount, service or activation changes
 are part of this increment. No PowerShell module changed; Linux fixture results
 are not actual Windows execution evidence.
+
+
+## Combined fixed-profile candidate: explicit rejection remains evidence
+
+Audit anchors before this increment were fixture382, privileged source293,
+metadata comparison169, key-recovery fixture559 and matrix491 in
+`scripts/wsl-borg-fixture.py`; readiness/capacity/restore remain owned by
+`scripts/lib/WslBackup.ps1`:353/372/596. The native observer and PowerShell
+contracts intentionally serve different roles (real fixed synthetic observations
+versus non-executing request/evidence validation). Legacy privileged and encrypted
+ordinary proofs also intentionally stay separate. Extending shared provenance,
+workspace, source construction and comparison avoids accidental parallel owners.
+
+The separately named `fixed64k-input-holes-v1` profile is selected explicitly:
+
+```sh
+python3 -B scripts/wsl-borg-fixture.py --run --profile fixed64k-input-holes-v1 --parent <approved-private-ext4-parent> --release-inputs <retained-release-input-directory>
+python3 -B scripts/wsl-borg-fixture.py --privileged-plan --profile fixed64k-input-holes-v1
+```
+
+The ordinary/default root refusal, root-owned source-addressed sealed bundle,
+fixed staging base, new UUID leaf, no-mount/no-device-read guard and exact
+metadata comparator remain intact. No default/production backup profile changes.
+Receipts and the root plan bind profile ID, create/extract options, dataset and
+comparison policy. Root runs add the seven actual prepared privileged cases into
+THE SAME archive as the complete ordinary/layout dataset. No old receipt/import
+path exists. Missing expanded layouts cannot produce combinedCandidateAccepted;
+missing/changed/unavailable privileged cases also prevent that flag. Per-case
+actual matches remain distinguishable from overall candidate rejection. This
+candidate still uses an unencrypted synthetic repository; earlier key recovery
+is separate and does not become a combined encrypted/production proof.
+
+The expanded dataset adds thirteen layout files to the ordinary metadata tree:
+the prior five shapes plus empty, all-hole, unaligned hole, one-block hole,
+sub-block logical zero gap, trailing hole, dense zeros and dense mixed chunks.
+Sources must actually exhibit their intended density/SEEK_DATA-HOLE properties;
+unsupported range observation/preparation refuses rather than inventing coverage.
+Only generated regular files are opened for bounded range observation, never
+block/character entries. Source and restored range maps are supplementary cost/
+layout evidence; exact extent equality is not a promised restored attribute.
+
+The **existing v1 density contract** remains exact in both directions: for each
+regular file sparse means logical size exceeds st_blocks*512; a zero-length file
+is not sparse, and allocated zero bytes are not evidence of a hole. Thus sparse
+to dense AND dense to sparse both reject, even with identical content. A short
+logical zero gap may occupy a data block and need not be a filesystem hole.
+Equal allocated-byte counts/extent layouts remain unnecessary when the boolean
+and all other restorable content/metadata match. No comparison was loosened to
+make the new candidate pass, and all previous rejections remain preserved.
+
+Actual ordinary native execution of this profile returned exit3/passed=false.
+The24-entry dataset was85,129,290 logical bytes. All content and other compared
+metadata matched; only these density cases rejected:
+
+| Case | Logical bytes | Source allocated | Restored allocated | Density result |
+| --- | ---: | ---: | ---: | --- |
+| dense-zero | 262144 | 262144 | 0 | false -> true, rejected |
+| dense-mixed | 196608 | 196608 | 131072 | false -> true, rejected |
+
+Empty/all-hole, unaligned/short/trailing holes, the sub-block logical gap and
+all five preceding shapes matched. This is actual ordinary evidence only;
+combined privileged execution is PLANNED for the controller, not performed by
+the native source agent. The controller should expect exit3 if these density
+failures reproduce, even when all seven privileged cases independently match.
+No overall candidate readiness can be inferred from that root run.
+
+Pinned Borg1.4.5 `chunker.pyx`:191-205 distinguishes allocated-zero and hole chunks
+while reading; `archive.py`:1239-1255 and1296-1311 converts both to identical
+zero data/chunk references, and extract858-875 makes holes for all-zero chunks.
+The allocation distinction is therefore unavailable to ordinary --sparse extract:
+[chunker](https://github.com/borgbackup/borg/blob/1.4.5/src/borg/chunker.pyx),
+[archive](https://github.com/borgbackup/borg/blob/1.4.5/src/borg/archive.py).
+
+**Owning design fix still required:** an archive/source/tool/profile-bound
+allocation-class manifest (hardlink groups must agree), preserved under archive
+integrity, plus a reviewed native restore policy that uses sparse output only
+for source-sparse groups and dense output for source-dense groups. Exact extent
+preservation, if later required, needs a distinct explicit contract. Selection
+must handle literal paths, hardlinks, complete directories, metadata/flag order
+and final root timestamps safely; tests must include all privileged cases and
+mixed density groups before adoption. The current single global --sparse
+extraction is inadequate for the maintained v1 density policy. This is a design
+follow-up, not an implemented executor or an in-place hole-punch workaround.
+Existing archives lacking bound allocation provenance cannot simply be promoted.
+
+## Chunk/index/cache cost audit and bounded arithmetic
+
+Candidate source length stays below128MiB, paths at most64 and observed data/hole
+ranges at most256 per regular path. Range lengths must be positive contiguous
+integers covering the exact observed file size; missing/partial/oversize census
+refuses before archive creation. Empty files contribute no data chunks. The
+helper deliberately counts hardlink aliases independently and credits no reuse.
+It sums ceil(rangeLength/65536) at EACH observed range boundary, rather than
+ceil(totalBytes/65536); short files and extent splits matter. This is a fixed
+fixture chunk-reference model, not a complete repository object count.
+
+[Upstream index estimates](https://borgbackup.readthedocs.io/en/1.4.5/internals/data-structures.html#indexes-caches-memory-usage)
+use40 bytes/repository-index entry and44/chunk-cache entry, with load-factor and
+growth variation. The helper reports those84 bytes/reference and a12x sensitivity
+(0.25 load factor, old plus2x growth), explicitly NOT a total memory/disk bound.
+The actual ordinary specimen has37 observed ranges/1325 modeled references:
+111300 base bytes,1335600 growth-sensitivity bytes. No metadata chunks, prior
+archives, Python/runtime/crypto buffers or filesystem allocation slack are covered.
+
+Disabling files-cache does not remove chunks cache/repository index. The pinned
+[cache implementation](https://github.com/borgbackup/borg/blob/1.4.5/src/borg/cache.py)
+begin_txn552-569 copies config/chunks/files into transaction state; archive indexes,
+cache transactions, new temporary/index/segment files need separate disk budgets.
+`ChunkerFixed` builds list(sparsemap(...)) for each file, then chunks each range;
+[implementation](https://github.com/borgbackup/borg/blob/1.4.5/src/borg/chunker.pyx):149-205.
+Fragmented files can require many small ranges and a large Python extent list.
+
+For sensitivity ONLY, one hypothetical contiguous1TiB file yields16,777,216
+64KiB data references,1,409,286,144 index/cache base bytes and16,911,433,728 growth-
+sensitivity bytes, before all omitted costs. This is not a measurement/upper bound
+for the owner's source. Used ext4 blocks/VHD size are not a logical file census.
+Full apparent lengths, file counts, fragmentation and maximum ranges/file,
+metadata/xattrs/hardlinks/unsupported entries, existing repository objects,
+cache placement and filesystem-specific slack/temporary growth remain unmeasured.
+Controller will acquire that full inventory only after archive hashing stops
+competing for I/O. No source-wide scan was run here. Full logical source/restore
+bytes plus separately reviewed overhead/reserves remain mandatory; sparse,
+compression and deduplication credits are all zero. productionBudgetAccepted and
+fullSourceCensus remain false in every fixture cost result.
+
+## Remaining path to a reviewable full offline invocation
+
+There is still NO supported production Borg executor to invoke.
+`Get-WslBorgReadinessPlan`:372 validates version1 configuration/observations;
+CanExecute/BackendExecuted remain false, and weekly-wsl-backup's -Execute refuses
+borg-readiness. `Test-WslBorgRestoreInventory`:596 admits only bounded-fixture
+observations, never full restore acceptance. Its exact sparse field is unchanged.
+Read-WslRecoveryDocument limits JSON to1MiB, and the bounded restore comparator
+limits inventories to4096 entries. A real source-scale acceptance path therefore
+needs a reviewed scalable complete manifest/observer, not a larger modeled JSON
+file or a bypass of those bounds. The concrete supported command today is the
+read-only readiness command in the section above. Supplying modeled/fresh JSON cannot turn it into a backup command.
+
+Required ordered inputs/implementation before a full invocation can be reviewed:
+
+1. Resolve the density failure in a separately versioned archive/restore policy,
+   bind that policy/manifest to successor readiness/evidence schemas, and obtain
+   actual combined profile/privileged/encrypted acceptance. Current v1 schemas
+   reject unknown fields and do not bind any candidate/restore-manifest profile.
+2. After controller hashing, obtain a complete logical/metadata/extent census
+   and reviewed archive/cache/workspace/restore per-filesystem resource bounds,
+   including reserve >=64GiB. Refresh exact destination/target free space after
+   any independently verified retirement; preserve protected original/proofs.
+3. Owner/controller supplies approved independent maintenance environment and
+   supported stopped-source attachment procedure: distro/VHD/filesystem/hardware
+   identities, clean read-only no-replay view, continuously held exclusive lease,
+   all mount boundaries/unsupported entries and zero producer/read errors. The
+   active source cannot fulfill this. Do not reuse/boot the only recovery distro.
+4. Controller approves exact repository path, fresh identity/GPT/filesystem and
+   independent backup hardware receipt, root-safe pinned runtime binding, actual
+   encryption/repository identity, independent key/passphrase vault reference and
+   source-unavailable drill digest. Synthetic same-filesystem custody is insufficient.
+5. Implement/review an explicit fail-closed executor holding source AND repository
+   locks continuously, enforcing complete warning/error handling and immutable
+   pending/failure/evidence receipts. Existing journal lock is not Borg's lock;
+   no retention/prune/repair/lock breaking, originals remain protected. Fresh
+   observations bind the exact reviewed config/tool/archive-policy digest.
+6. Approve a NEW complete isolated ext4 restore target and explicit guarantee:
+   isolated-restore-test can share source/protected-image hardware but never
+   repository hardware; third-hardware-copy additionally requires another disk.
+   Review allocation, source-unavailable restore, complete data/metadata checks,
+   isolated WSL registration/boot/user-service acceptance and preserved original.
+
+The1TB repository hardware is disconnected and not currently approved/probed for
+writes. E restore capacity after possible verified retirement is conditional,
+not evidence of hardware independence. No key/repository creation, disk/mount,
+service/configuration, source shutdown/boot or full backup operation is authorized
+or performed by this source increment. Source and actual Windows evidence remain
+distinct; no PowerShell module changed or Windows execution is claimed here.

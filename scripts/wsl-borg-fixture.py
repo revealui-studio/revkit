@@ -356,7 +356,7 @@ def ordinary_workspace(parent):
     if fs != 'ext4':
         raise ValueError('Real metadata fixture requires ext4, no mount will be created')
     if shutil.disk_usage(parent).free < GIB:
-        raise ValueError('Fixture requires1GiB reserve; bounded dataset under80MiB; no sparse savings budgeted')
+        raise ValueError('Fixture requires1GiB free before bounded synthetic run; no savings credit')
     return Path(tempfile.mkdtemp(prefix='.revkit-borg-fixture-', dir=parent)), fs
 
 
@@ -379,7 +379,182 @@ def prepare_tool(root, release_inputs, env):
     return binary, verify_tool(root, binary, signature, public_key, env)
 
 
-def fixture(parent=None, release_inputs=None, *, privileged=False, workspace=None, reviewed_source_sha256=None):
+DEFAULT_PROFILE = 'legacy-default-v1'
+CANDIDATE_PROFILE = 'fixed64k-input-holes-v1'
+CANDIDATE_LOGICAL_LIMIT = 128 * 1024 * 1024
+FIXED_CHUNK_BYTES = 65536
+
+
+def fixture_profile(name):
+    if name not in (DEFAULT_PROFILE, CANDIDATE_PROFILE):
+        raise ValueError('Unknown reviewed synthetic profile')
+    return {'id': name, 'createOptions': (['--chunker-params=fixed,65536', '--sparse']
+            if name == CANDIDATE_PROFILE else []), 'extractOptions': ['--sparse'],
+            'comparisonPolicy': 'exact-content-metadata-and-sparse-boolean-v1',
+            'dataset': 'ordinary-plus-expanded-layouts-v1' if name == CANDIDATE_PROFILE else 'ordinary-v1',
+            'productionExecutionAllowed': False}
+
+
+def make_candidate_layouts(tree):
+    make_sparse_matrix(tree)  # Reuse the five cases without altering the old protocol.
+    (tree / 'empty').touch(mode=0o600)
+    with (tree / 'all-hole').open('xb') as stream:
+        stream.truncate(131073)
+    with (tree / 'unaligned-hole').open('xb') as stream:
+        stream.write(b'head')
+        stream.seek(100003)
+        stream.write(b'tail')
+    with (tree / 'short-block-hole').open('xb') as stream:
+        stream.write(b'A' * 4096)
+        stream.seek(8192)
+        stream.write(b'B' * 4096)
+    with (tree / 'short-logical-gap').open('xb') as stream:
+        stream.write(b'prefix' * 100)
+        stream.seek(857)
+        stream.write(b'tail')
+    with (tree / 'trailing-hole').open('xb') as stream:
+        stream.write(b'head')
+        stream.truncate(262145)
+    # Actual writes, not truncate/fallocate: dense-zero versus hole is intentional.
+    with (tree / 'dense-zero').open('xb') as stream:
+        stream.write(bytes(262144))
+        stream.flush()
+        os.fsync(stream.fileno())
+    with (tree / 'dense-mixed').open('xb') as stream:
+        stream.write(bytes(range(256)) * 256)
+        stream.write(bytes(65536))
+        stream.write(bytes(range(256)) * 256)
+        stream.flush()
+        os.fsync(stream.fileno())
+    for path in [*tree.iterdir(), tree]:
+        os.utime(path, ns=(1900000000123456789, 1700000100987654321))
+
+
+def observed_ranges(tree, entries):
+    """SEEK_DATA/HOLE observations of generated regular files only; no extent equality promise."""
+    result = {}
+    for row in entries:
+        if row['type'] != 'file':
+            continue
+        path = tree / row['path']
+        if path.is_symlink() or not stat.S_ISREG(path.lstat().st_mode):
+            raise ValueError('Range observer refuses non-regular synthetic entries')
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NOATIME)
+        ranges = []
+        try:
+            offset, size = 0, row['size']
+            while offset < size:
+                try:
+                    data = min(os.lseek(fd, offset, os.SEEK_DATA), size)
+                except OSError as error:
+                    if error.errno != errno.ENXIO:
+                        raise  # Unsupported SEEK_HOLE is an evidence gap, not a fake map.
+                    data = size
+                if data > offset:
+                    ranges.append({'offset': offset, 'bytes': data-offset, 'data': False})
+                if data < size:
+                    end = min(os.lseek(fd, data, os.SEEK_HOLE), size)
+                    if end <= data:
+                        raise ValueError('Non-progressing synthetic range observation')
+                    ranges.append({'offset': data, 'bytes': end-data, 'data': True})
+                    offset = end
+                else:
+                    offset = size
+                if len(ranges) > 256:
+                    raise ValueError('Bounded synthetic range census exceeded')
+        finally:
+            os.close(fd)
+        result[row['path']] = ranges
+    return result
+
+
+def candidate_cost(entries, ranges):
+    """Fixture arithmetic and upstream sensitivity, NEVER a production upper bound."""
+    files = [row for row in entries if row['type'] == 'file']
+    if len(entries) > 64 or set(ranges) != {row['path'] for row in files}:
+        raise ValueError('Complete bounded fixture file/range census required')
+    logical, references, range_count = 0, 0, 0
+    for row in files:
+        size = row['size']
+        if type(size) is not int or size < 0:
+            raise ValueError('Nonnegative integer logical length required')
+        logical += size
+        offset = 0
+        if len(ranges[row['path']]) > 256:
+            raise ValueError('Bounded synthetic range census exceeded')
+        for part in ranges[row['path']]:
+            if (type(part['bytes']) is not int or part['bytes'] <= 0 or
+                type(part['offset']) is not int or part['offset'] != offset or
+                type(part['data']) is not bool):
+                raise ValueError('Complete contiguous observed ranges required')
+            offset += part['bytes']
+            references += (part['bytes'] + FIXED_CHUNK_BYTES-1) // FIXED_CHUNK_BYTES
+            range_count += 1
+        if offset != size:
+            raise ValueError('Range census differs from logical length')
+    if logical > CANDIDATE_LOGICAL_LIMIT:
+        raise ValueError('Candidate exceeds128MiB logical fixture limit; no savings credit')
+    return {'logicalDataBytes': logical, 'logicalLimitBytes': CANDIDATE_LOGICAL_LIMIT,
+            'regularPathsIncludingHardlinkAliases': len(files), 'observedRanges': range_count,
+            'fixedDataChunkReferencesNoReuseModel': references,
+            'indexAndChunksCacheBaseSensitivityBytes': references * (40+44),
+            'indexAndChunksCacheGrowthSensitivityBytes': references * (40+44) * 4 * 3,
+            'filesCache': 'disabled; chunk cache and repository indexes remain',
+            'sparseCreditBytes': 0, 'compressionCreditBytes': 0, 'dedupCreditBytes': 0,
+            'productionBudgetAccepted': False, 'fullSourceCensus': False,
+            'limitations': ['Upstream index/cache factors are estimates, not RSS or disk bounds',
+                'No metadata chunks, existing generations, runtime/crypto/buffers, extent-list object costs',
+                'No cache transaction copies, archive indexes, segment/temp growth or filesystem metadata bound',
+                'Full source file/range/metadata census and per-filesystem budgets remain missing']}
+
+
+def candidate_preconditions(entries, ranges):
+    rows = {row['path']: row for row in entries}
+    expected = {'empty': False, 'all-hole': True, 'unaligned-hole': True,
+                'short-block-hole': True, 'short-logical-gap': False,
+                'trailing-hole': True, 'dense-zero': False, 'dense-mixed': False}
+    for name, sparse in expected.items():
+        key = 'layouts/' + name
+        if key not in rows or rows[key]['sparse'] is not sparse:
+            raise ValueError('Synthetic layout source property unavailable: ' + name)
+        if name.startswith('dense-') and any(not part['data'] for part in ranges[key]):
+            raise ValueError('Dense fixture unexpectedly has source holes: ' + name)
+    if rows['layouts/empty']['size'] != 0 or any(part['data'] for part in ranges['layouts/all-hole']):
+        raise ValueError('Empty/all-hole source preconditions unavailable')
+
+
+def candidate_assessment(before, after, cases, privileged):
+    report = sparse_assessment(before, after)
+    expected_layouts = {'empty', 'all-hole', 'unaligned-hole', 'short-block-hole',
+                        'short-logical-gap', 'trailing-hole', 'dense-zero', 'dense-mixed',
+                        'small-8KiB', 'medium-256KiB', 'retained-shape-8MiB', 'large-32MiB', 'mixed-8MiB'}
+    dataset_complete = {'layouts/' + name for name in expected_layouts}.issubset({row['path'] for row in before})
+    paths = {'foreign-uid-gid': 'foreign-owner', 'block-node': 'block-node',
+             'char-node': 'char-node', 'security.capability': 'capability-data',
+             'trusted-xattr': 'capability-data', 'immutable': 'immutable', 'append-only': 'append-only'}
+    verified = []
+    for case in cases:
+        if case['status'] == 'prepared':
+            path = paths[case['case']]
+            left = [row for row in before if row['path'] == path]
+            right = [row for row in after if row['path'] == path]
+            if not left or not right:
+                continue
+            try:
+                compare(left, right)
+                verified.append(case['case'])
+            except ValueError:
+                pass
+    metadata = privileged and privileged_complete(before, cases) and len(verified) == 7
+    return {'profileId': CANDIDATE_PROFILE, 'strictInventory': report, 'layoutDatasetComplete': dataset_complete,
+            'verifiedPrivilegedCases': verified, 'privilegedMetadataVerified': metadata,
+            'combinedCandidateAccepted': bool(metadata and report['accepted'] and dataset_complete),
+            'productionReady': False}
+
+
+def fixture(parent=None, release_inputs=None, *, privileged=False, workspace=None, reviewed_source_sha256=None, profile=DEFAULT_PROFILE):
+    selected_profile = fixture_profile(profile)
+    candidate = profile == CANDIDATE_PROFILE
     if privileged:
         if platform.system() != 'Linux' or platform.machine() != 'x86_64' or not workspace or not release_inputs:
             raise ValueError('Privileged mode requires explicit Linux workspace and reviewed release bundle')
@@ -390,6 +565,7 @@ def fixture(parent=None, release_inputs=None, *, privileged=False, workspace=Non
     env = private_env(root)
     receipt = {'schemaVersion': 1, 'scope': 'synthetic-borg-ext4-fixture', 'root': str(root),
                'observerSha256': digest(Path(__file__)), 'privilegedMode': privileged,
+               'archiveProfile': selected_profile, 'combinedCandidateAccepted': False,
                'createdAt': datetime.datetime.now(datetime.timezone.utc).isoformat(),
                'filesystem': fs, 'uid': os.getuid(), 'fullRestoreAccepted': False,
                'hardwareScope': 'single-filesystem developer fixture; no physical identity proof',
@@ -407,10 +583,17 @@ def fixture(parent=None, release_inputs=None, *, privileged=False, workspace=Non
         binary, receipt['tool'] = prepare_tool(root, release_inputs, env)
         tree = root / 'source'
         make_source(tree, env)
+        if candidate:
+            make_candidate_layouts(tree / 'layouts')
         cases = make_privileged_source(tree) if privileged else []
         receipt['privilegedCases'] = cases
         before = observe(tree, env)
         write_json(root / 'source-inventory.json', before)
+        if candidate:
+            layout = observed_ranges(tree, before)
+            write_json(root / 'source-ranges.json', layout)
+            receipt['fixtureCost'] = candidate_cost(before, layout)
+            candidate_preconditions(before, layout)
         privileged_ready = privileged_complete(before, cases) if privileged else False
         archive = str(root / 'repository') + '::synthetic'
         steps = []
@@ -423,7 +606,7 @@ def fixture(parent=None, release_inputs=None, *, privileged=False, workspace=Non
             steps.append({'command': list(args), 'exitCode': result.returncode, 'stderrBytes': 0})
             return result
         borg('init', '--encryption=none', str(root / 'repository'))
-        borg('create', '--numeric-ids', '--atime', '--files-cache=disabled', archive, 'source')
+        borg('create', '--numeric-ids', '--atime', '--files-cache=disabled', *selected_profile['createOptions'], archive, 'source')
         # Rename the synthetic tree out of its original location, with no traversal
         # or argument referencing it during check/extraction. This is path absence,
         # not a production disk-offline claim or an access-control boundary.
@@ -432,13 +615,23 @@ def fixture(parent=None, release_inputs=None, *, privileged=False, workspace=Non
         restored = root / 'restored'
         restored.mkdir(mode=0o700)
         borg('extract', '--dry-run', '--numeric-ids', archive, cwd=restored)
-        borg('extract', '--numeric-ids', '--sparse', archive, cwd=restored)
+        borg('extract', '--numeric-ids', *selected_profile['extractOptions'], archive, cwd=restored)
         after = observe(restored / 'source', env)
         write_json(root / 'restored-inventory.json', after)
-        receipt['allocationBudget'] = compare(before, after)
-        receipt['verifiedPrivilegedCases'] = [case['case'] for case in cases if case['status'] == 'prepared']
-        complete = not privileged or privileged_ready
-        receipt['privilegedMetadataVerified'] = privileged and complete
+        if candidate:
+            restored_ranges = observed_ranges(restored / 'source', after)
+            write_json(root / 'restored-ranges.json', restored_ranges)
+            receipt['candidateAssessment'] = candidate_assessment(before, after, cases, privileged)
+            assessment = receipt['candidateAssessment']
+            receipt['verifiedPrivilegedCases'] = assessment['verifiedPrivilegedCases']
+            receipt['privilegedMetadataVerified'] = assessment['privilegedMetadataVerified']
+            receipt['combinedCandidateAccepted'] = assessment['combinedCandidateAccepted']
+            complete = assessment['strictInventory']['accepted'] and assessment['layoutDatasetComplete'] and (not privileged or privileged_ready)
+        else:
+            receipt['allocationBudget'] = compare(before, after)
+            receipt['verifiedPrivilegedCases'] = [case['case'] for case in cases if case['status'] == 'prepared']
+            complete = not privileged or privileged_ready
+            receipt['privilegedMetadataVerified'] = privileged and complete
         if privileged:
             receipt['unavailable'] = [case['case'] for case in cases if case['status'] != 'prepared']
         receipt.update(passed=complete, steps=steps, entries=len(before), sourcePathAbsent=not tree.exists(),
@@ -645,6 +838,8 @@ def recovery_fixture(parent, release_inputs):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--profile', choices=(DEFAULT_PROFILE, CANDIDATE_PROFILE), default=DEFAULT_PROFILE,
+                        help='Named reviewed archive profile; default unchanged')
     parser.add_argument('--privileged-plan', action='store_true', help='Read-only source/release hashes and controller argv')
     parser.add_argument('--run-privileged', action='store_true', help='Controller-only synthetic root metadata mode')
     parser.add_argument('--workspace', type=Path, help='NEW UUID leaf under fixed root-owned synthetic base')
@@ -656,14 +851,14 @@ def main():
     args = parser.parse_args()
     if args.privileged_plan:
         sha = digest(Path(__file__))
-        workspace = PRIVILEGED_BASE / '00000000-0000-4000-8000-000000000001'
+        workspace = PRIVILEGED_BASE / str(uuid.uuid4())
         bundle = PRIVILEGED_TOOLS / sha
         print(json.dumps({'sourceSha256': sha, 'binarySha256': SHA256, 'signatureSha256': SIGNATURE_SHA256,
-            'publicKeySha256': PUBLIC_KEY_SHA256, 'bundle': str(bundle), 'workspaceMustBeNew': str(workspace),
+            'publicKeySha256': PUBLIC_KEY_SHA256, 'archiveProfile': fixture_profile(args.profile), 'bundle': str(bundle), 'workspaceMustBeNew': str(workspace),
             'controllerArgv': ['/usr/bin/env', '-i', 'PATH=/usr/bin:/bin', '/usr/bin/python3', '-I', '-B',
                 str(bundle / 'wsl-borg-fixture.py'), '--run-privileged', '--workspace', str(workspace),
-                '--release-inputs', str(bundle), '--reviewed-source-sha256', sha],
-            'productionExecutionAllowed': False}, indent=2))
+                '--release-inputs', str(bundle), '--reviewed-source-sha256', sha, '--profile', args.profile],
+            'privilegedMode': True, 'productionExecutionAllowed': False}, indent=2))
         return
     if sum((args.run, args.run_privileged, args.run_recovery)) > 1:
         parser.error('Ordinary and privileged modes are mutually exclusive')
@@ -671,18 +866,21 @@ def main():
         if args.parent:
             parser.error('Privileged mode does not accept an ordinary parent')
         result = fixture(release_inputs=args.release_inputs, privileged=True, workspace=args.workspace,
-                         reviewed_source_sha256=args.reviewed_source_sha256)
+                         reviewed_source_sha256=args.reviewed_source_sha256, profile=args.profile)
         print(json.dumps(result, indent=2))
         if not result['passed']:
             raise SystemExit(3)
     elif args.run_recovery:
-        if args.parent is None or args.workspace or args.reviewed_source_sha256:
+        if args.parent is None or args.workspace or args.reviewed_source_sha256 or args.profile != DEFAULT_PROFILE:
             parser.error('--run-recovery requires ordinary --parent and refuses privileged inputs')
         print(json.dumps(recovery_fixture(args.parent, args.release_inputs), indent=2))
     elif args.run:
         if args.parent is None:
             parser.error('--run requires --parent')
-        print(json.dumps(fixture(args.parent, args.release_inputs), indent=2))
+        result = fixture(args.parent, args.release_inputs, profile=args.profile)
+        print(json.dumps(result, indent=2))
+        if not result['passed']:
+            raise SystemExit(3)
     else:
         print(json.dumps({'canExecuteProduction': False, 'fixtureRequiresExplicitRun': True,
                           'version': VERSION, 'asset': ASSET, 'sha256': SHA256,

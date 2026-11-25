@@ -48,12 +48,16 @@ The owning library adds conservative no-dedup-credit capacity evaluation,
 read-only input contracts, private evidence-journal transactions and bounded
 restore-inventory comparison. None creates a repository, key or real archive.
 Operator-supplied attempt records remain explicitly unverified and cannot enter
-the existing verified-image inventory. The native fixture has demonstrated an
-actual unprivileged Borg1.4.5 ext4 round trip; privileged metadata, independent
-key recovery and full WSL restore acceptance remain missing. The
+the existing verified-image inventory. The native fixture has recorded
+actual Borg1.4.5 ext4 observations. The controller accepted the legacy-profile
+synthetic privileged cases and a separate ordinary synthetic encrypted-key drill;
+neither is combined candidate/full recovery acceptance. The explicitly named
+fixed64KiB candidate now rejects dense-zero allocation changes under the unchanged
+sparse contract; see the maintained design for source plan, evidence and required
+allocation-policy follow-up. Independent key custody and full WSL restore remain missing. The
 controller alone owns real destination/maintenance approval and later deployment;
-this increment changes source library/adapter bytes, not the accepted Windows
-release. There is no automatic retention, repair, compaction or lock breaking.
+the PR changes future source payloads, not the accepted Windows release. This
+native fixture increment does not alter PowerShell modules. There is no automatic retention, repair, compaction or lock breaking.
 
 Run `Invoke-Pester ./tests/powershell/WslBackup.Tests.ps1` for bounded behavioral
 fixtures. They cover real small-file hashing, journal contention/duplicates and

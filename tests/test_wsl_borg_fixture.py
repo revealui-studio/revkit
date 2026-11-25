@@ -277,5 +277,118 @@ class RecoveryBoundaryTests(unittest.TestCase):
             self.assertFalse(fixture.sparse_assessment(before, after)['accepted'])
 
 
+class CandidateProfileTests(unittest.TestCase):
+    def test_legacy_receipts_and_missing_privilege_cannot_be_combined_acceptance(self):
+        old = [{'path': 'old-only', 'type': 'file', 'size': 8, 'sparse': False, 'allocatedBytes': 4096}]
+        report = fixture.candidate_assessment(old, old, [], False)
+        self.assertTrue(report['strictInventory']['accepted'])
+        self.assertFalse(report['layoutDatasetComplete'])
+        self.assertFalse(report['combinedCandidateAccepted'])
+        with self.assertRaises(ValueError): fixture.fixture(ROOT, profile='unreviewed')
+        with mock.patch.object(fixture.os, 'geteuid', return_value=0), mock.patch.object(fixture, 'prepare_tool') as tool:
+            with self.assertRaises(ValueError): fixture.fixture(ROOT, profile=fixture.CANDIDATE_PROFILE)
+            tool.assert_not_called()
+
+    def test_candidate_controller_plan_never_executes_or_creates_workspace(self):
+        import contextlib
+        import io
+        import json
+        output = io.StringIO()
+        with mock.patch.object(fixture.sys, 'argv', ['fixture', '--privileged-plan', '--profile', fixture.CANDIDATE_PROFILE]), \
+             mock.patch.object(fixture, 'fixture') as execute, \
+             mock.patch.object(fixture, 'privileged_workspace') as create, contextlib.redirect_stdout(output):
+            fixture.main()
+        plan = json.loads(output.getvalue())
+        self.assertEqual(plan['archiveProfile']['id'], fixture.CANDIDATE_PROFILE)
+        argv = plan['controllerArgv']
+        self.assertEqual(argv[argv.index('--profile')+1], fixture.CANDIDATE_PROFILE)
+        self.assertEqual(plan['sourceSha256'], fixture.digest(Path(fixture.__file__)))
+        self.assertEqual(Path(plan['workspaceMustBeNew']).parent, fixture.PRIVILEGED_BASE)
+        self.assertFalse(plan['productionExecutionAllowed'])
+        execute.assert_not_called()
+        create.assert_not_called()
+
+    def test_old_encrypted_protocol_cannot_be_silently_relabelled_candidate(self):
+        import contextlib
+        import io
+        with mock.patch.object(fixture.sys, 'argv', ['fixture', '--run-recovery', '--parent', str(ROOT), '--profile', fixture.CANDIDATE_PROFILE]), \
+             mock.patch.object(fixture, 'recovery_fixture') as execute, contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as caught: fixture.main()
+            self.assertEqual(caught.exception.code, 2)
+            execute.assert_not_called()
+
+    def test_dense_to_sparse_is_rejected_as_well_as_sparse_to_dense(self):
+        dense = [{'path': 'dense-zero', 'type': 'file', 'size': 65536, 'sparse': False, 'allocatedBytes': 65536}]
+        sparse = [dict(dense[0], sparse=True, allocatedBytes=0)]
+        self.assertFalse(fixture.sparse_assessment(dense, sparse)['accepted'])
+        self.assertFalse(fixture.sparse_assessment(sparse, dense)['accepted'])
+        with self.assertRaises(ValueError): fixture.compare(dense, sparse)
+
+    def test_range_observer_never_opens_block_or_character_entries(self):
+        rows = [{'path': 'block-node', 'type': 'block'}, {'path': 'char-node', 'type': 'character'}]
+        with mock.patch.object(fixture.os, 'open', side_effect=AssertionError('must never open a device')):
+            self.assertEqual(fixture.observed_ranges(Path('/synthetic-only'), rows), {})
+
+    def test_old_privileged_inventory_cannot_be_promoted_without_candidate_layouts(self):
+        paths = {'foreign-uid-gid': 'foreign-owner', 'block-node': 'block-node',
+                 'char-node': 'char-node', 'security.capability': 'capability-data',
+                 'trusted-xattr': 'capability-data', 'immutable': 'immutable', 'append-only': 'append-only'}
+        cases = [{'case': name, 'status': 'prepared'} for name in paths]
+        rows = [{'path': path, 'type': 'file', 'size': 1, 'allocatedBytes': 4096, 'sparse': False}
+                for path in sorted(set(paths.values()))]
+        # Model admission only; never privileged execution or actual metadata proof.
+        with mock.patch.object(fixture, 'privileged_complete', return_value=True):
+            report = fixture.candidate_assessment(rows, rows, cases, True)
+        self.assertTrue(report['privilegedMetadataVerified'])
+        self.assertFalse(report['layoutDatasetComplete'])
+        self.assertFalse(report['combinedCandidateAccepted'])
+
+    def test_cost_uses_file_and_range_boundaries_not_aggregate_average(self):
+        entries = [{'path': 'one', 'type': 'file', 'size': 65536},
+                   {'path': 'two', 'type': 'file', 'size': 1}]
+        ranges = {'one': [{'offset': 0, 'bytes': 32768, 'data': True},
+                          {'offset': 32768, 'bytes': 32768, 'data': False}],
+                  'two': [{'offset': 0, 'bytes': 1, 'data': True}]}
+        cost = fixture.candidate_cost(entries, ranges)
+        self.assertEqual(cost['fixedDataChunkReferencesNoReuseModel'], 3)
+        self.assertEqual(cost['logicalDataBytes'], 65537)
+        self.assertEqual(cost['indexAndChunksCacheBaseSensitivityBytes'], 252)
+        self.assertEqual(cost['indexAndChunksCacheGrowthSensitivityBytes'], 3024)
+        self.assertFalse(cost['productionBudgetAccepted'])
+        self.assertFalse(cost['fullSourceCensus'])
+        self.assertEqual(cost['sparseCreditBytes'], 0)
+
+    def test_missing_incomplete_overlapping_and_oversize_census_refuses(self):
+        rows = [{'path': 's', 'type': 'file', 'size': 10}]
+        for ranges in ({}, {'s': []}, {'s': [{'offset': 1, 'bytes': 10, 'data': True}]},
+                       {'s': [{'offset': 0, 'bytes': 11, 'data': False}]},
+                       {'s': [{'offset': 0, 'bytes': True, 'data': True}]}):
+            with self.assertRaises(ValueError): fixture.candidate_cost(rows, ranges)
+        size = fixture.CANDIDATE_LOGICAL_LIMIT + 1
+        with self.assertRaises(ValueError):
+            fixture.candidate_cost([dict(rows[0], size=size)], {'s': [{'offset': 0, 'bytes': size, 'data': False}]})
+
+    def test_actual_dense_empty_hole_and_short_gap_preconditions_and_cost(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            root = Path(directory)
+            env = fixture.private_env(root)
+            tree = root / 'source'
+            tree.mkdir()
+            fixture.make_candidate_layouts(tree / 'layouts')
+            before = fixture.observe(tree, env)
+            ranges = fixture.observed_ranges(tree, before)
+            fixture.candidate_preconditions(before, ranges)
+            cost = fixture.candidate_cost(before, ranges)
+            self.assertLess(cost['logicalDataBytes'], fixture.CANDIDATE_LOGICAL_LIMIT)
+            by_path = {row['path']: row for row in before}
+            self.assertEqual(ranges['layouts/empty'], [])
+            self.assertFalse(by_path['layouts/dense-zero']['sparse'])
+            self.assertTrue(by_path['layouts/all-hole']['sparse'])
+            self.assertTrue(all(part['data'] for part in ranges['layouts/dense-zero']))
+            damaged = [dict(row) for row in before]
+            next(row for row in damaged if row['path'] == 'layouts/dense-zero')['sparse'] = True
+            with self.assertRaises(ValueError): fixture.candidate_preconditions(damaged, ranges)
+
+
 if __name__ == '__main__':
     unittest.main()
