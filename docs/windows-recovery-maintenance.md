@@ -25,10 +25,37 @@ first. The planner refuses that next export. Reducing retention to one does not
 solve the replacement-capacity problem. The weekly task is registered disabled.
 Recurring recovery acceptance still needs sufficient independent staging or an
 approved incremental/deduplicated backup design, plus independent recovery-key
-access and a verified restore. A controller assessment is considering Restic's
-content-defined chunks and failure-aware streaming; no new backup system is
-selected, installed or deployed by this change. Preserve existing images and
-secondary-disk data while that assessment proceeds.
+access and a verified restore. The maintained incremental design now selects Linux Borg 1.4.5 offline
+filesystem archives, superseding the earlier Restic VHD/file-stream assessment.
+This is a source design selection, not deployment or permission to initialize
+storage. [Recurring recovery design](wsl-recurring-recovery-design.md) records the
+metadata, consistency, key recovery and separate restore-capacity rationale.
+Preserve existing images and secondary-disk data; neither tool is installed.
+
+## Incremental readiness and evidence only
+
+The existing wrapper accepts `-RecoveryBackend borg-readiness` with optional
+`-IncrementalConfigurationPath`, `-IncrementalObservationPath` and
+`-ReviewedConfigurationSha256`. It reports missing inputs or evaluates exact
+version-1 bindings through WslBackup.ps1, exits 3, and always refuses `-Execute`.
+It does not inspect the registry or invoke WSL/Borg in this mode. The existing
+full-image default and capacity refusal remain unchanged; mixed-mode inputs
+refuse rather than falling back to a full export.
+
+The owning library adds conservative no-dedup-credit capacity evaluation,
+read-only input contracts, private evidence-journal transactions and bounded
+restore-inventory comparison. None creates a repository, key or real archive.
+Operator-supplied attempt records remain explicitly unverified and cannot enter
+the existing verified-image inventory. Complete real Borg metadata round-trip,
+independent key recovery and full WSL restore acceptance remain missing. The
+controller alone owns real destination/maintenance approval and later deployment;
+this increment changes source library/adapter bytes, not the accepted Windows
+release. There is no automatic retention, repair, compaction or lock breaking.
+
+Run `Invoke-Pester ./tests/powershell/WslBackup.Tests.ps1` for bounded behavioral
+fixtures. They cover real small-file hashing, journal contention/duplicates and
+failure retention, with modeled metadata observations. They are not a Borg
+round-trip or evidence that the detached secondary disk is approved for writes.
 
 ## Verified artifact contract
 
@@ -132,4 +159,4 @@ readiness. Actual Windows WSL export, restoration, Task Scheduler registration,
 ACL and device behavior remain controller acceptance checks.
 
 References: [WSL supported commands](https://learn.microsoft.com/en-us/windows/wsl/basic-commands)
-and [Restic backup behavior](https://restic.readthedocs.io/en/stable/040_backup.html).
+and the selected [Borg recovery contract](wsl-recurring-recovery-design.md).

@@ -5,11 +5,23 @@ param(
     [string]$Distro = 'Ubuntu',
     [string]$SnapshotDir = 'E:\backups\wsl-snapshots\current',
     [long]$ReserveBytes = 1GB,
+    [ValidateSet('full-image', 'borg-readiness')][string]$RecoveryBackend = 'full-image',
+    [string]$IncrementalConfigurationPath,
+    [string]$IncrementalObservationPath,
+    [string]$ReviewedConfigurationSha256,
     [switch]$Execute
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib' 'WslBackup.ps1')
+if ($RecoveryBackend -ceq 'borg-readiness') {
+    if ($Execute) { throw 'Borg execution is unavailable: only the readiness/evidence contract is implemented. No backend, repository or key was invoked.' }
+    Get-WslBorgReadinessPlan -ConfigurationPath $IncrementalConfigurationPath -ObservationPath $IncrementalObservationPath -ReviewedConfigurationSha256 $ReviewedConfigurationSha256 | ConvertTo-Json -Depth 12
+    exit 3
+}
+if ($IncrementalConfigurationPath -or $IncrementalObservationPath -or $ReviewedConfigurationSha256) {
+    throw 'Incremental inputs require the explicit borg-readiness contract; refusing a full-export fallback.'
+}
 Assert-WslBackupLeaf $Distro
 $source = Get-WslRegisteredVhdx -Distro $Distro
 $destination = Get-Item -LiteralPath $SnapshotDir -ErrorAction Stop

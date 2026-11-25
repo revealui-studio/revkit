@@ -176,3 +176,273 @@ Describe 'Health monitor consumes the same verified artifact contract' {
         $result.ExitCode | Should -Be 2
     }
 }
+
+Describe 'Borg readiness and restore-evidence contracts, without a backend' {
+    BeforeAll {
+        . (Join-Path $PSScriptRoot '..' '..' 'powershell' 'Modules' 'RevealUI.RevStation' 'Private' 'Invoke-WslProbe.ps1')
+        function Write-RecoveryFixtureJson($Path, $Value) {
+            [IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 20), [Text.UTF8Encoding]::new($false))
+            return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+        function Get-RecoveryFixtureInventory($Path) {
+            $file = Get-Item -LiteralPath $Path
+            $mode = if ($IsWindows) { 420 } else { [int][IO.File]::GetUnixFileMode($Path) }
+            return [ordered]@{
+                schemaVersion = 1; complete = $true; entries = @([ordered]@{
+                    path = 'payload'; type = 'file'; uid = 1000; gid = 1000; mode = $mode
+                    mtimeNs = ([DateTimeOffset]$file.LastWriteTimeUtc).ToUnixTimeMilliseconds() * 1000000L
+                    atimeNs = 0L
+                    contentSha256 = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+                    linkTarget = ''; hardlinkGroup = ''; aclSha256 = 'a' * 64; xattrsSha256 = 'b' * 64
+                    flags = 0; sparse = $false; deviceMajor = 0; deviceMinor = 0
+                })
+            }
+        }
+        function Save-RecoveryFixtureInputs {
+            $script:ConfigHash = Write-RecoveryFixtureJson $script:ConfigPath $script:Config
+            $script:Observation.configurationSha256 = $script:ConfigHash
+            $script:ObservationHash = Write-RecoveryFixtureJson $script:ObservationPath $script:Observation
+            $script:Attempt.configurationSha256 = $script:ConfigHash
+            $script:Attempt.observationSha256 = $script:ObservationHash
+            $script:Attempt.transactionId = $script:Observation.transactionId
+            $null = Write-RecoveryFixtureJson $script:AttemptPath $script:Attempt
+        }
+        function Read-FixtureReadiness {
+            Get-WslBorgReadinessPlan -ConfigurationPath $script:ConfigPath -ObservationPath $script:ObservationPath -ReviewedConfigurationSha256 $script:ConfigHash
+        }
+        function Register-FixtureArchive {
+            $record = Register-WslBorgArchiveEvidence -ConfigurationPath $script:ConfigPath -ObservationPath $script:ObservationPath -ReviewedConfigurationSha256 $script:ConfigHash -AttemptPath $script:AttemptPath -JournalDirectory $script:Journal
+            $script:RestoreObservation = [ordered]@{
+                schemaVersion = 1; scope = 'bounded-fixture'
+                archiveEvidenceSha256 = (Get-FileHash $record.EvidencePath).Hash.ToLowerInvariant()
+                repositoryId = $script:Config.repository.id; archiveId = $script:Attempt.archiveId
+                toolSha256 = $script:Config.tool.sha256; keyRecoveryDrillSha256 = $script:Config.keyRecovery.drillSha256
+                sourceUnavailable = $true; originalPreserved = $true
+                target = @{ path = '/fixture/independent-restore'; physicalDeviceId = 'restore-hardware'; filesystemUuid = 'restore-filesystem' }
+            }
+            $null = Write-RecoveryFixtureJson $script:RestoreObservationPath $script:RestoreObservation
+            return $record
+        }
+    }
+    BeforeEach {
+        $script:Fixture = Join-Path $TestDrive ([Guid]::NewGuid().ToString('N'))
+        $null = New-Item -ItemType Directory -Path $script:Fixture
+        if (-not $IsWindows) { [IO.File]::SetUnixFileMode($script:Fixture, [IO.UnixFileMode]448) }
+        $script:Journal = Join-Path $script:Fixture 'journal'
+        $null = New-Item -ItemType Directory -Path $script:Journal
+        if (-not $IsWindows) { [IO.File]::SetUnixFileMode($script:Journal, [IO.UnixFileMode]448) }
+        $script:Original = Join-Path $script:Fixture 'last-good.vhdx'
+        [IO.File]::WriteAllText($script:Original, 'protected fixture original')
+        $script:OriginalHash = (Get-FileHash $script:Original).Hash.ToLowerInvariant()
+        $script:Payload = Join-Path $script:Fixture 'payload'
+        $script:RestoredPayload = Join-Path $script:Fixture 'restored-payload'
+        [IO.File]::WriteAllText($script:Payload, 'real bounded fixture data')
+        [IO.File]::SetLastWriteTimeUtc($script:Payload, [DateTime]::new(2020, 1, 1, 0, 0, 0, [DateTimeKind]::Utc))
+        [IO.File]::Copy($script:Payload, $script:RestoredPayload)
+        $script:SourceInventory = Join-Path $script:Fixture 'source-inventory.json'
+        $script:RestoredInventory = Join-Path $script:Fixture 'restored-inventory.json'
+        $inventoryHash = Write-RecoveryFixtureJson $script:SourceInventory (Get-RecoveryFixtureInventory $script:Payload)
+        $null = Write-RecoveryFixtureJson $script:RestoredInventory (Get-RecoveryFixtureInventory $script:RestoredPayload)
+        $script:ConfigPath = Join-Path $script:Fixture 'configuration.json'
+        $script:ObservationPath = Join-Path $script:Fixture 'observation.json'
+        $script:AttemptPath = Join-Path $script:Fixture 'attempt.json'
+        $script:RestoreObservationPath = Join-Path $script:Fixture 'restore-observation.json'
+        $script:Config = [ordered]@{
+            schemaVersion = 1; backend = 'borg-1.4.5'
+            tool = @{ path = '/reviewed/tool/borg'; version = '1.4.5'; sha256 = '1' * 64; provenanceSha256 = '2' * 64 }
+            source = @{ distro = 'Ubuntu'; vhdx = (Join-Path $script:Fixture 'source.vhdx'); view = '/fixture/offline-view'; filesystemUuid = 'source-filesystem'; physicalDeviceId = 'source-hardware'; inventorySha256 = $inventoryHash }
+            repository = @{ path = '/fixture/repository'; id = '3' * 64; physicalDeviceId = 'repository-hardware'; partitionUuid = 'partition'; filesystemUuid = 'repository-filesystem'; identitySha256 = '4' * 64; encryption = 'repokey-blake2' }
+            keyRecovery = @{ reference = 'vault-reference-placeholder'; drillSha256 = '5' * 64 }
+            original = @{ path = $script:Original; sha256 = $script:OriginalHash; bytes = (Get-Item $script:Original).Length; physicalDeviceId = 'original-hardware' }
+            budget = @{ logicalBytes = 604949360640L; metadataUpperBoundBytes = 1GB; reserveBytes = 64GB }
+        }
+        $script:Observation = [ordered]@{
+            schemaVersion = 1; configurationSha256 = ''; capturedAt = [DateTimeOffset]::UtcNow.ToString('o'); transactionId = [Guid]::NewGuid().ToString('D')
+            tool = $script:Config.tool.Clone(); source = $script:Config.source.Clone(); repository = $script:Config.repository.Clone()
+            keyRecovery = $script:Config.keyRecovery.Clone(); original = $script:Config.original.Clone()
+        }
+        $script:Observation.tool.Remove('path')
+        $script:Observation.source.Remove('distro')
+        $script:Observation.source.state = 'Stopped'; $script:Observation.source.readOnly = $true
+        $script:Observation.source.clean = $true; $script:Observation.source.exclusiveLease = $true
+        $script:Observation.source.leaseId = 'fixture-only-lease'; $script:Observation.source.inventoryComplete = $true
+        $script:Observation.source.producerExitCode = 0; $script:Observation.source.readErrors = 0
+        $script:Observation.repository.private = $true; $script:Observation.repository.availableBytes = 943636373504L
+        $script:Observation.keyRecovery.sourceUnavailable = $true
+        $script:Observation.original.Remove('physicalDeviceId'); $script:Observation.original.readOnly = $true
+        $script:Attempt = [ordered]@{
+            schemaVersion = 1; kind = 'revealfleet-wsl-borg-attempt-v1'; configurationSha256 = ''; observationSha256 = ''; transactionId = ''
+            repositoryId = $script:Config.repository.id; archiveId = '6' * 64
+            sourceInventoryBefore = $inventoryHash; sourceInventoryAfter = $inventoryHash
+            originalSha256Before = $script:OriginalHash; originalSha256After = $script:OriginalHash
+            sourceLeaseId = 'fixture-only-lease'; sourceLeaseHeldThroughout = $true; repositoryLockHeldThroughout = $true
+            steps = @('create', 'check-verify-data', 'extract-dry-run') | ForEach-Object { @{ name = $_; exitCode = 0; warningCount = 0; complete = $true } }
+        }
+        Save-RecoveryFixtureInputs
+    }
+    It 'never grants execution, even for internally consistent operator data' {
+        $plan = Read-FixtureReadiness
+        $plan.InputBindingsValid | Should -BeTrue
+        $plan.CanExecute | Should -BeFalse
+        $plan.BackendExecuted | Should -BeFalse
+        $plan.FullRestoreAccepted | Should -BeFalse
+        $plan.Capacity.DeduplicationCreditBytes | Should -Be 0
+    }
+    It 'keeps E and C capacity refused without assuming compression or deleting originals' {
+        foreach ($free in @(271653101568L, 238336782336L)) {
+            $script:Observation.repository.availableBytes = $free; Save-RecoveryFixtureInputs
+            $plan = Read-FixtureReadiness
+            $plan.InputBindingsValid | Should -BeFalse
+            $plan.Capacity.CanStageArchive | Should -BeFalse
+            $plan.Capacity.ReclaimOriginalBytes | Should -Be 0
+        }
+        (Get-FileHash $script:Original).Hash.ToLowerInvariant() | Should -Be $script:OriginalHash
+        { Get-WslBorgCapacityPlan -LogicalBytes 1 -MetadataUpperBoundBytes 1 -AvailableBytes 100 -ReserveBytes 0 } | Should -Throw
+        (Get-WslBorgCapacityPlan -LogicalBytes ([long]::MaxValue) -MetadataUpperBoundBytes ([long]::MaxValue) -AvailableBytes ([long]::MaxValue)).CanStageArchive | Should -BeFalse
+    }
+    It 'rejects active, stale, incomplete, failed-producer and changed tool observations' {
+        foreach ($change in @('active', 'stale', 'incomplete', 'producer', 'tool', 'key', 'original', 'boolean-string')) {
+            $saved = $script:Observation | ConvertTo-Json -Depth 20
+            switch ($change) {
+                active { $script:Observation.source.state = 'Running' }
+                stale { $script:Observation.capturedAt = [DateTimeOffset]::UtcNow.AddMinutes(-10).ToString('o') }
+                incomplete { $script:Observation.source.inventoryComplete = $false }
+                producer { $script:Observation.source.producerExitCode = 1 }
+                tool { $script:Observation.tool.sha256 = 'f' * 64 }
+                key { $script:Observation.keyRecovery.sourceUnavailable = $false }
+                original { $script:Observation.original.sha256 = 'f' * 64 }
+                boolean-string { $script:Observation.source.readOnly = 'true' }
+            }
+            Save-RecoveryFixtureInputs
+            (Read-FixtureReadiness).InputBindingsValid | Should -BeFalse
+            { Register-FixtureArchive } | Should -Throw
+            @(Get-ChildItem $script:Journal -Force).Count | Should -Be 0
+            $script:Observation = $saved | ConvertFrom-Json -AsHashtable
+        }
+    }
+    It 'rejects config drift, duplicate JSON keys, aliases and shared destination hardware' {
+        [IO.File]::AppendAllText($script:ConfigPath, ' ')
+        { Read-FixtureReadiness } | Should -Throw
+        Save-RecoveryFixtureInputs
+        $script:Config.repository.physicalDeviceId = 'SOURCE-HARDWARE'; Save-RecoveryFixtureInputs
+        { Read-FixtureReadiness } | Should -Throw
+        $script:Config.repository.physicalDeviceId = 'repository-hardware'; $script:Config.repository.path = '/fixture/offline-view/hidden-repository'; Save-RecoveryFixtureInputs
+        { Read-FixtureReadiness } | Should -Throw
+        { Get-WslRecoveryPathKey '/fixture/../ambiguous' } | Should -Throw
+        [IO.File]::WriteAllText($script:ConfigPath, '{"schemaVersion":1,"schemaVersion":2}')
+        { Read-WslRecoveryDocument $script:ConfigPath } | Should -Throw
+    }
+    It 'serializes evidence writers without breaking locks or overwriting a transaction' {
+        $lock = [IO.File]::Open((Join-Path $script:Journal '.wsl-recovery-evidence.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        try { { Register-FixtureArchive } | Should -Throw } finally { $lock.Dispose() }
+        $record = Register-FixtureArchive
+        $before = (Get-FileHash $record.EvidencePath).Hash
+        { Register-FixtureArchive } | Should -Throw
+        (Get-FileHash $record.EvidencePath).Hash | Should -Be $before
+        $record.Verified | Should -BeFalse
+        $record.FullRestoreAccepted | Should -BeFalse
+        $record.RetentionApplied | Should -BeFalse
+        @((Get-WslVerifiedBackups -Directory $script:Journal -Distro Ubuntu)).Count | Should -Be 0
+    }
+    It 'retains failures and last-good data for warning, partial, unlocked or drifting archive results' {
+        foreach ($failure in @('warning', 'partial', 'lock', 'inventory', 'original')) {
+            $saved = $script:Attempt | ConvertTo-Json -Depth 20
+            $script:Observation.transactionId = [Guid]::NewGuid().ToString('D')
+            switch ($failure) {
+                warning { $script:Attempt.steps[0].exitCode = 1; $script:Attempt.steps[0].warningCount = 1 }
+                partial { $script:Attempt.steps[1].complete = $false }
+                lock { $script:Attempt.repositoryLockHeldThroughout = $false }
+                inventory { $script:Attempt.sourceInventoryAfter = 'f' * 64 }
+                original { $script:Attempt.originalSha256After = 'f' * 64 }
+            }
+            Save-RecoveryFixtureInputs
+            { Register-FixtureArchive } | Should -Throw
+            Test-Path (Join-Path $script:Journal ($script:Observation.transactionId + '.failed.json')) | Should -BeTrue
+            Test-Path (Join-Path $script:Journal ($script:Observation.transactionId + '.archive-evidence.json')) | Should -BeFalse
+            (Get-FileHash $script:Original).Hash.ToLowerInvariant() | Should -Be $script:OriginalHash
+            $script:Attempt = $saved | ConvertFrom-Json -AsHashtable
+        }
+    }
+    It 'compares actual small-file content and declared metadata without claiming a Borg round trip' {
+        $record = Register-FixtureArchive
+        $result = Test-WslBorgRestoreInventory -ArchiveEvidencePath $record.EvidencePath -SourceInventoryPath $script:SourceInventory -RestoredInventoryPath $script:RestoredInventory -RestoreObservationPath $script:RestoreObservationPath
+        $result.InventoryComparisonPassed | Should -BeTrue
+        $result.FullRestoreAccepted | Should -BeFalse
+        [IO.File]::WriteAllText($script:RestoredPayload, 'changed restored bytes')
+        [IO.File]::SetLastWriteTimeUtc($script:RestoredPayload, (Get-Item $script:Payload).LastWriteTimeUtc)
+        $null = Write-RecoveryFixtureJson $script:RestoredInventory (Get-RecoveryFixtureInventory $script:RestoredPayload)
+        { Test-WslBorgRestoreInventory -ArchiveEvidencePath $record.EvidencePath -SourceInventoryPath $script:SourceInventory -RestoredInventoryPath $script:RestoredInventory -RestoreObservationPath $script:RestoreObservationPath } | Should -Throw
+    }
+    It 'rejects a configuration change while its pending journal record is being written' {
+        $script:OriginalEvidenceWriter = (Get-Command Write-WslBackupJsonNew).ScriptBlock
+        Mock Write-WslBackupJsonNew {
+            param($Path, $Value)
+            & $script:OriginalEvidenceWriter -Path $Path -Value $Value
+            if ($Path.EndsWith('.pending.json')) { [IO.File]::AppendAllText($script:ConfigPath, ' ') }
+        }
+        { Register-FixtureArchive } | Should -Throw
+        Test-Path (Join-Path $script:Journal ($script:Observation.transactionId + '.archive-evidence.json')) | Should -BeFalse
+        Test-Path (Join-Path $script:Journal ($script:Observation.transactionId + '.failed.json')) | Should -BeTrue
+        (Get-FileHash $script:Original).Hash.ToLowerInvariant() | Should -Be $script:OriginalHash
+    }
+    It 'compares case-distinct Linux inventory paths without collapsing them' {
+        $inventory = Get-RecoveryFixtureInventory $script:Payload
+        $first = $inventory.entries[0] | ConvertTo-Json | ConvertFrom-Json -AsHashtable
+        $second = $first | ConvertTo-Json | ConvertFrom-Json -AsHashtable
+        $first.path = 'A'; $second.path = 'a'; $second.mode = 384
+        $inventory.entries = @($first, $second)
+        $digest = Write-RecoveryFixtureJson $script:SourceInventory $inventory
+        $null = Write-RecoveryFixtureJson $script:RestoredInventory $inventory
+        $script:Config.source.inventorySha256 = $digest; $script:Observation.source.inventorySha256 = $digest
+        $script:Attempt.sourceInventoryBefore = $digest; $script:Attempt.sourceInventoryAfter = $digest
+        Save-RecoveryFixtureInputs
+        $record = Register-FixtureArchive
+        (Test-WslBorgRestoreInventory -ArchiveEvidencePath $record.EvidencePath -SourceInventoryPath $script:SourceInventory -RestoredInventoryPath $script:RestoredInventory -RestoreObservationPath $script:RestoreObservationPath).Entries | Should -Be 2
+    }
+    It 'refuses a same-device restore, wrong archive or source-dependent key recovery' {
+        $record = Register-FixtureArchive
+        foreach ($change in @('device', 'archive', 'source', 'original', 'scope')) {
+            $saved = $script:RestoreObservation | ConvertTo-Json -Depth 10
+            switch ($change) {
+                device { $script:RestoreObservation.target.physicalDeviceId = 'REPOSITORY-HARDWARE' }
+                archive { $script:RestoreObservation.archiveId = 'f' * 64 }
+                source { $script:RestoreObservation.sourceUnavailable = $false }
+                original { $script:RestoreObservation.originalPreserved = $false }
+                scope { $script:RestoreObservation.scope = 'full-production-restore' }
+            }
+            $null = Write-RecoveryFixtureJson $script:RestoreObservationPath $script:RestoreObservation
+            { Test-WslBorgRestoreInventory -ArchiveEvidencePath $record.EvidencePath -SourceInventoryPath $script:SourceInventory -RestoredInventoryPath $script:RestoredInventory -RestoreObservationPath $script:RestoreObservationPath } | Should -Throw
+            $script:RestoreObservation = $saved | ConvertFrom-Json -AsHashtable
+        }
+    }
+    It 'rejects ownership, modes, ACL/xattr, hardlink, flag, sparse and path coverage drift' {
+        $record = Register-FixtureArchive
+        foreach ($field in @('uid', 'gid', 'mode', 'mtimeNs', 'atimeNs', 'deviceMajor', 'deviceMinor', 'aclSha256', 'xattrsSha256', 'hardlinkGroup', 'linkTarget', 'flags', 'sparse', 'path')) {
+            $inventory = Get-RecoveryFixtureInventory $script:RestoredPayload
+            switch ($field) {
+                { $_ -in @('uid', 'gid', 'mode', 'mtimeNs', 'atimeNs', 'deviceMajor', 'deviceMinor', 'flags') } { $inventory.entries[0][$field]++ }
+                { $_ -in @('aclSha256', 'xattrsSha256') } { $inventory.entries[0][$field] = 'f' * 64 }
+                sparse { $inventory.entries[0][$field] = $true }
+                default { $inventory.entries[0][$field] = 'different' }
+            }
+            $null = Write-RecoveryFixtureJson $script:RestoredInventory $inventory
+            { Test-WslBorgRestoreInventory -ArchiveEvidencePath $record.EvidencePath -SourceInventoryPath $script:SourceInventory -RestoredInventoryPath $script:RestoredInventory -RestoreObservationPath $script:RestoreObservationPath } | Should -Throw
+        }
+    }
+    It 'keeps the existing adapter read-only with missing approval and refuses Execute' {
+        $wrapper = Join-Path $PSScriptRoot '..' '..' 'scripts' 'weekly-wsl-backup.ps1'
+        $result = Invoke-WslProbe -Executable (Get-Process -Id $PID).Path -Arguments @('-NoProfile', '-NonInteractive', '-File', $wrapper, '-RecoveryBackend', 'borg-readiness')
+        $result.ExitCode | Should -Be 3
+        ($result.Output -join "`n" | ConvertFrom-Json).CanExecute | Should -BeFalse
+        $complete = Invoke-WslProbe -Executable (Get-Process -Id $PID).Path -Arguments @('-NoProfile', '-NonInteractive', '-File', $wrapper, '-RecoveryBackend', 'borg-readiness', '-IncrementalConfigurationPath', $script:ConfigPath, '-IncrementalObservationPath', $script:ObservationPath, '-ReviewedConfigurationSha256', $script:ConfigHash)
+        $complete.ExitCode | Should -Be 3
+        $data = ($complete.Output -join [Environment]::NewLine) | ConvertFrom-Json
+        $data.InputBindingsValid | Should -BeTrue
+        $data.CanExecute | Should -BeFalse
+        $mixed = Invoke-WslProbe -Executable (Get-Process -Id $PID).Path -Arguments @('-NoProfile', '-NonInteractive', '-File', $wrapper, '-IncrementalConfigurationPath', $script:ConfigPath)
+        $mixed.ExitCode | Should -Not -Be 0
+        $execute = Invoke-WslProbe -Executable (Get-Process -Id $PID).Path -Arguments @('-NoProfile', '-NonInteractive', '-File', $wrapper, '-RecoveryBackend', 'borg-readiness', '-Execute')
+        $execute.ExitCode | Should -Not -Be 0
+        (Get-FileHash $script:Original).Hash.ToLowerInvariant() | Should -Be $script:OriginalHash
+    }
+}
