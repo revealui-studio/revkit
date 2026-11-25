@@ -9,6 +9,7 @@ import io
 import json
 import os
 from pathlib import Path
+import secrets
 import socket
 import struct
 import subprocess
@@ -147,7 +148,7 @@ class RealWorkerTests(unittest.TestCase):
         cls.root, fs=cls.fixture.ordinary_workspace(CUSTODY)
         cls.env=cls.fixture.private_env(cls.root)
         cls.binary, cls.tool=cls.fixture.prepare_tool(cls.root, INPUTS, cls.env)
-        cls.secret=b'private synthetic worker fixture only'
+        cls.secret=secrets.token_hex(32).encode('ascii')
         cls.phrase=cls.root/'private-input'; cls.fixture.private_secret(cls.phrase, cls.secret+b'\n')
         cls.summary=[]
 
@@ -263,7 +264,7 @@ class RealWorkerTests(unittest.TestCase):
             ('import',['key','import',str(self.repository),str(key)],self.phrase,0)):
             self.fixture.recovery_borg(self.binary,args,cwd=self.case,env=fresh_env,passphrase=phrase,expected_exit=exit_code)
             self.summary.append({'control':label,'exitCode':exit_code})
-        wrong=self.case/'wrong'; self.fixture.private_secret(wrong,b'wrong synthetic phrase\n')
+        wrong=self.case/'wrong'; self.fixture.private_secret(wrong,secrets.token_hex(32).encode('ascii')+b'\n')
         self.fixture.recovery_borg(self.binary,['list',str(self.repository)],cwd=self.case,env=fresh_env,passphrase=wrong,expected_exit=52)
         self.summary.append({'control':'wrong-passphrase','exitCode':52})
         self.state.rename(self.case/'original-client-unavailable')
