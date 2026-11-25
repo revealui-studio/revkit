@@ -238,7 +238,7 @@ python3 -B scripts/wsl-borg-fixture.py --run --parent /absolute/approved/ext4/de
 ```
 
 It requires non-root Linux x86_64, an existing canonical owner directory on ext4,
-and at least1GiB free. It creates only a unique0700 child with a fixed dataset
+and at least1GiB free, outside any Git source checkout. It creates only a unique0700 child with a fixed dataset
 under33MiB logical data. No operator source/repository/archive arguments, root,
 mount, production disk/key or system install is supported. It creates an
 **unencrypted synthetic repository**, with no encryption secret/key recovery
@@ -280,12 +280,23 @@ Borg nor this observer promises exact original extent layout or universal hole
 preservation. Budget logical allocation and record/refuse material allocation
 expansion; the retained failed pilot must not be erased or recast as acceptance.
 Current native receipt: ten real entries passed create, full data check, dry
-extract, actual extraction and strict metadata comparison. Six observer/refusal
+extract, actual extraction and strict metadata comparison. Seven observer/refusal
 tests passed under normal approved native execution. The PowerShell suite has
 33 backup-contract tests plus13 host-script tests (46 total); controller's prior
 31 Windows backup tests apply to970cb41 only, not this new source. These local
 results do not establish Windows execution or privileged Linux cases.
 ctime/inode identity and a third physical device are outside this fixture.
+
+The first source push was refused by the normal private-path leak hook because
+retained fixture/cache receipts under the development checkout contain absolute
+private paths. Those successful/failed attempts remain intact; no exclusion,
+hook bypass, deletion, receipt rewrite or evidence relocation was used. The
+runner now refuses a parent inside a Git checkout before creating files, fixing
+future evidence placement. An explicitly approved private ext4 custody location
+outside published source, and a reviewed preservation/disposition of the existing
+attempts, are required before further fixture runs/source publication. The real
+round-trip receipt predates this placement-only guard; its observation/backend
+logic is unchanged. This gate does not authorize writing a real backup disk.
 
 ## References and retained exceptions
 

@@ -213,6 +213,8 @@ def fixture(parent, release_inputs=None):
     parent = Path(parent).absolute()
     if parent.resolve() != parent or not parent.is_dir() or parent.stat().st_uid != os.getuid():
         raise ValueError('Fixture parent must be an existing canonical owner directory')
+    if any((directory / '.git').exists() for directory in (parent, *parent.parents)):
+        raise ValueError('Retained private fixture evidence must be outside source checkouts; explicit custody approval required')
     fs = subprocess.run(['/usr/bin/findmnt', '--noheadings', '--output', 'FSTYPE', '--target', str(parent)],
                         capture_output=True, check=True, text=True).stdout.strip()
     if fs != 'ext4':

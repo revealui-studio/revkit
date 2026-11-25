@@ -34,6 +34,13 @@ class ProvenanceTests(unittest.TestCase):
                     fixture.fixture(Path(directory))
                 fetch.assert_not_called()
 
+    def test_source_checkout_refuses_before_download_or_evidence_creation(self):
+        with mock.patch.object(fixture, 'fetch') as fetch, mock.patch.object(fixture.tempfile, 'mkdtemp') as create:
+            with self.assertRaises(ValueError):
+                fixture.fixture(ROOT)
+            fetch.assert_not_called()
+            create.assert_not_called()
+
 
 @unittest.skipUnless(os.name == 'posix' and shutil.which('getfacl') and shutil.which('setfacl'), 'requires Linux ACL tools')
 class ActualMetadataTests(unittest.TestCase):
