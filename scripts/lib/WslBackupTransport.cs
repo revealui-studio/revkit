@@ -82,8 +82,18 @@ namespace Revealfleet.Backup {
                     InputSha256=sent.Item2, OutputSha256=received.Item2, ExitCode=child.ExitCode };
             } catch {
                 stop.Cancel();
-                try { if (!child.HasExited) child.Kill(true); } catch (InvalidOperationException) { }
-                try { await all.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); } catch { }
+                // Transaction cancellation also cancels Exit(), so it cannot confirm
+                // termination. Kill is asynchronous: independently await the owned
+                // process and settle pipe tasks BEFORE returning caller stream custody.
+                using var shutdown = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                try {
+                    try { if (!child.HasExited) child.Kill(true); } catch (InvalidOperationException) { }
+                    await child.WaitForExitAsync(shutdown.Token).ConfigureAwait(false);
+                    try { await all.WaitAsync(shutdown.Token).ConfigureAwait(false); }
+                    catch when (all.IsCompleted) { } // Expected transaction faults, all tasks settled.
+                } catch {
+                    throw new InvalidDataException("Binary transaction rejected; shutdown unconfirmed; retain caller custody");
+                }
                 // No backend text, bytes, secret values or process arguments escape this boundary.
                 throw new InvalidDataException("Binary transaction rejected; partial output must be retained");
             }

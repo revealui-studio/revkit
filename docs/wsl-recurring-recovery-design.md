@@ -720,8 +720,15 @@ an exact ArgumentList and own source/target/lease for the ENTIRE transaction.
 Three streams drain concurrently with fixed buffers, incremental SHA256/counts,
 exact length/digest checks, finite timeout/cancellation, nonzero-exit/any-diagnostic
 rejection and64KiB stderr limit. Errors expose no backend bytes/text/secret values.
-Failure cancels/kills the owned child tree; caller-owned partial output is never
-removed or overwritten. First source-read digest may be computed under the live
+Failure requests child-tree termination and uses an independent5-second shutdown
+budget to confirm the owned process exits and pipe tasks settle before returning.
+The cancelled transaction exit task cannot establish this. Unconfirmed teardown
+is a distinct refusal that requires retaining caller custody. Caller-owned partial
+output is never removed or overwritten. Descendant termination is requested;
+this parent-exit check does not independently prove every descendant has exited.
+[Microsoft documents asynchronous Kill and descendant-status limits](https://learn.microsoft.com/en-us/dotnet/api/system.diagnostics.process.kill?view=net-9.0);
+[WaitForExitAsync cancellation](https://learn.microsoft.com/en-us/dotnet/api/system.diagnostics.process.waitforexitasync?view=net-9.0)
+is distinct from confirmed process exit. First source-read digest may be computed under the live
 lease, then must match archive read-back before admission. A process exit0 alone
 never admits bytes. The helper supplies mechanics, not source identity or cold proof.
 
@@ -760,7 +767,17 @@ and every file hash. WslBackupTransport.cs is now required by the closure. This
 package is NOT deployed/activated by source work. Controller stages it into a NEW
 private test source tree, plus the exact signed tests/powershell/WslBackup.Tests.ps1,
 WslHostScripts.Tests.ps1 and WslColdContainer.Tests.ps1 at their relative paths.
-Verify supplemental test hashes from the checkpoint. Use fresh ordinary pwsh7
+Verify supplemental test hashes from the checkpoint. Both synthetic child-launch
+sites explicitly set CreateNoWindow=true with shell execution disabled and
+noninteractive arguments. Native tests do not establish Windows window behavior.
+Failure tests await the transport, then assert actual child exit BEFORE defensive
+cleanup; no post-return grace wait/poll or cleanup kill can make those assertions
+pass. A signalled source-read fault occurs only after a4096-byte prefix is flushed,
+then verifies source/target handles, seek/read/write usability and exact partial
+file bytes/existence before cleanup. The simulated fault affects only NEW synthetic
+files, never a VHD/device. First strengthened native run exposed four child-lifetime
+failures in d052; the owning C# shutdown path was repaired. Preserve both receipts.
+Use fresh ordinary pwsh7
 with no profile so no earlier same-named loaded assembly can substitute for code:
 
 ```powershell
