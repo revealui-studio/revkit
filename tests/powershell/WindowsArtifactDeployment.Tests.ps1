@@ -114,6 +114,23 @@ function Owner-Command { 'keep me' }
         $changed.Contains("function Owner-Command { 'keep me' }") | Should -BeTrue
         Update-RevkitWindowsFleetProfile -Content $changed | Should -BeExactly $changed
     }
+    It 'recognizes the exact launcher for both source and profile newline conventions' {
+        $source = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..' '..' 'scripts' 'lib' 'WindowsArtifactDeployment.ps1') -Raw
+        $source = $source.Replace("`r`n", "`n")
+        $profile = $script:FleetProfile.Replace("`r`n", "`n")
+        foreach ($sourceNewline in @("`n", "`r`n")) {
+            foreach ($profileNewline in @("`n", "`r`n")) {
+                $changed = & {
+                    param($library, $content)
+                    . ([scriptblock]::Create($library))
+                    Update-RevkitWindowsFleetProfile -Content $content
+                } $source.Replace("`n", $sourceNewline) $profile.Replace("`n", $profileNewline)
+                $changed.Contains('function revealfleet') | Should -BeFalse
+                $changed.Contains('function Owner-Command') | Should -BeTrue
+                $changed.Contains('$script:_RevkitProfilePid = $PID') | Should -BeTrue
+            }
+        }
+    }
     It 'refuses a customized WSL launcher instead of silently replacing owner behavior' {
         { Update-RevkitWindowsFleetProfile -Content ($script:FleetProfile.Replace('-- bash -lc claude', '-- bash -lc claude --custom-option')) } | Should -Throw
     }

@@ -23,7 +23,7 @@ function Update-RevkitWindowsFleetProfile {
                 if (-not 'abcdefghijklmnopqrstuvwxyz0123456789-'.Contains([string]$character)) { $safeName = $false }
             }
             $body = $statement.Body.Extent.Text.Replace("`r`n", "`n").Trim()
-            if ($safeName -and $body -ceq $legacyBody.Replace('__FLEET__', $name).Trim()) { $remove = $true }
+            if ($safeName -and $body -ceq $legacyBody.Replace("`r`n", "`n").Replace('__FLEET__', $name).Trim()) { $remove = $true }
             elseif ($statement.Extent.Text.Contains('-- bash -lc claude') -and $statement.Extent.Text.Contains('wsl.exe')) {
                 throw 'Unknown owner WSL launcher requires source review; profile remains unchanged.'
             }
