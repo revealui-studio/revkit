@@ -2,10 +2,11 @@
 """Prepare an offline Codex-home copy; activation remains an operator action."""
 
 import argparse
+import fnmatch
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import sqlite3
 import stat
@@ -20,7 +21,15 @@ from codex_adapter_lib import (Refused, contains_home, encode, is_link, path_fla
 from codex_adapter_lib import windows_access_batch, windows_access_inventory
 
 
-PROFILE = json.loads(Path(__file__).with_name("codex-state-layout-v1.json").read_text())
+PROFILE_FILES = ["codex-state-layout-v1.json", "codex-desktop-layout-v1.json"]
+PROFILE_BYTES = {name: Path(__file__).with_name(name).read_bytes() for name in PROFILE_FILES}
+PROFILE_SET = {name: hashlib.sha256(data).hexdigest() for name, data in PROFILE_BYTES.items()}
+PROFILE = json.loads(PROFILE_BYTES[PROFILE_FILES[0]])
+DESKTOP_PROFILE = json.loads(PROFILE_BYTES[PROFILE_FILES[1]])
+require(set(DESKTOP_PROFILE["databases"]) == {"sqlite/codex.db", "sqlite/codex-dev.db"},
+        "unsupported desktop database profile paths")
+PROFILE["profile"] += "+" + DESKTOP_PROFILE["profile"]
+PROFILE["databases"].update(DESKTOP_PROFILE["databases"])
 RECEIPT = ".revkit-codex-migration.json"
 
 
@@ -208,10 +217,12 @@ def schema(connection):
     return [[x.replace("\r\n", "\n") if isinstance(x, str) else x for x in row] for row in rows]
 
 
-def validate_database(path):
-    require(path.name.casefold() in PROFILE["databases"], "unknown database layout")
-    expected = PROFILE["databases"][path.name.casefold()]
-    connection = sqlite3.connect(path)
+def validate_database(path, relative_key=None, read_only=False):
+    key = (relative_key or path.name).replace("\\", "/").casefold()
+    require(key in PROFILE["databases"], "unknown database layout")
+    expected = PROFILE["databases"][key]
+    connection = (sqlite3.connect(path.absolute().as_uri() + "?mode=ro", uri=True)
+                  if read_only else sqlite3.connect(path))
     try:
         require(connection.execute("PRAGMA integrity_check").fetchall() == [("ok",)], "SQLite integrity failed")
         require(not connection.execute("PRAGMA foreign_key_check").fetchall(), "SQLite foreign-key validation failed")
@@ -228,6 +239,10 @@ def validate_database(path):
                 migrations = [[r[0], bytes(r[1]).hex(), int(r[2])] for r in connection.execute(
                     "SELECT version,checksum,success FROM _sqlx_migrations ORDER BY version")]
                 require(migrations == expected["migrations"], "unsupported database migrations")
+            if "desktop_migrations" in expected:
+                migrations = [list(row) for row in connection.execute(
+                    "SELECT id,predecessor_id,checksum FROM codex_schema_migrations ORDER BY id")]
+                require(migrations == expected["desktop_migrations"], "unsupported desktop database migrations")
         else:
             require(all(row[0] == "table" for row in schema(connection)),
                     "unsupported auxiliary database schema objects")
@@ -272,7 +287,53 @@ def classify_document(relative, text, old_home):
     return [{"field": field, "kind": kind, "count": count, "action": action}]
 
 
-def inspect_copy(source_home, copied, target_home, transform):
+def project_copied_home(text, source_home, target_home):
+    document = tomllib.loads(text)
+    policy = document.get("shell_environment_policy", {})
+    require(policy.get("inherit", "core") == "core", "copied-home projection requires core inheritance")
+    values = policy.get("set", {})
+    require(isinstance(values, dict), "unsupported copied-home environment assignments")
+    windows = path_flavor(source_home) == "windows"
+    matching = [key for key in values if (key.casefold() == "codex_home" if windows else key == "CODEX_HOME")]
+    require(len(matching) <= 1, "ambiguous copied-home assignment")
+    key = matching[0] if matching else "CODEX_HOME"
+    if matching:
+        require(parsed_path(values[key]) in {parsed_path(source_home), parsed_path(target_home)},
+                "owner child-home assignment requires separate identity review")
+    require(not ("filters" in policy and ("exclude" in policy or "include_only" in policy)),
+            "mixed copied-home environment filters")
+    filters = policy.get("filters", {})
+    require(isinstance(filters, dict) and all(isinstance(k, str) and v in {"include", "exclude"} for k, v in filters.items()),
+            "unsupported copied-home environment filters")
+    includes = [k for k, v in filters.items() if v == "include"]
+    excludes = [k for k, v in filters.items() if v == "exclude"]
+    for name, output in [("include_only", includes), ("exclude", excludes)]:
+        patterns = policy.get(name, [])
+        require(isinstance(patterns, list) and all(isinstance(item, str) for item in patterns), "unsupported copied-home filter list")
+        output.extend(patterns)
+    matches = lambda pattern: fnmatch.fnmatchcase("codex_home", pattern.casefold())
+    require(not any(matches(item) for item in excludes) and (not includes or any(matches(item) for item in includes)),
+            "owner filters would remove the adopted child home")
+    return toml_edit(text, {("shell_environment_policy", "set", key): target_home})
+
+
+def rollout_presence(root, parts):
+    current = Path(root)
+    for index, part in enumerate(parts):
+        current = current / part
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            return "missing"
+        require(not is_link(current), "indexed rollout ancestry is linked")
+        if index < len(parts) - 1:
+            require(stat.S_ISDIR(metadata.st_mode), "indexed rollout parent is not a directory")
+        else:
+            require(stat.S_ISREG(metadata.st_mode), "indexed rollout is not a regular file")
+    return "present"
+
+
+def inspect_copy(source_home, copied, target_home, transform, source_manifest=None, rollout_baseline=None):
     pending = []
     changes = []
     connections = []
@@ -282,8 +343,7 @@ def inspect_copy(source_home, copied, target_home, transform):
                 continue
             relative = path.relative_to(copied)
             if path.suffix.casefold() in {".db", ".sqlite", ".sqlite3"}:
-                require(len(relative.parts) == 1, "nested database requires a supported schema profile")
-                connection = validate_database(path)
+                connection = validate_database(path, relative.as_posix())
                 connections.append(connection)
                 if path.name.casefold() == "state_5.sqlite":
                     before = database_snapshot(connection)
@@ -291,8 +351,27 @@ def inspect_copy(source_home, copied, target_home, transform):
                     id_index, path_index = columns.index("id"), columns.index("rollout_path")
                     for row in before["threads"]:
                         parts = storage_relative(row[path_index], source_home)
-                        rollout = copied.joinpath(*parts)
-                        require(rollout.is_file() and not is_link(rollout), "indexed rollout is missing or linked")
+                        presence = rollout_presence(copied, parts)
+                        if source_manifest is None:
+                            require(presence == "present", "missing rollout requires a sealed source baseline")
+                        else:
+                            source_presence = rollout_presence(source_home, parts)
+                            relative_name = "/".join(parts)
+                            windows = path_flavor(source_home) == "windows"
+                            keys = {key.casefold() if windows else key: entry for key, entry in source_manifest.items()}
+                            require(len(keys) == len(source_manifest), "ambiguous Windows source inventory paths")
+                            manifest_entry = keys.get(relative_name.casefold() if windows else relative_name)
+                            require((source_presence == "present" and manifest_entry is not None and manifest_entry["kind"] == "file")
+                                    or (source_presence == "missing" and manifest_entry is None),
+                                    "rollout presence differs from the sealed source inventory")
+                            require(presence == source_presence, "rollout copy introduced a presence change")
+                            if rollout_baseline is not None:
+                                rollout_baseline.append({"thread_id": row[id_index], "relative": relative_name,
+                                                         "presence": source_presence,
+                                                         "history_mode": row[columns.index("history_mode")]})
+                            if presence == "missing":
+                                pending.append({"field": "threads.rollout_path.baseline-missing", "kind": "requires-history-verification", "count": 1,
+                                                "action": "verify recorded history mode and database-backed projection through the supported reader; preserve the row and history; recover only if an actual deficit is confirmed"})
                         new_path = rebase_storage(row[path_index], source_home, target_home)
                         changes.append({"field": "threads.rollout_path", "count": 1})
                         if transform:
@@ -324,12 +403,36 @@ def inspect_copy(source_home, copied, target_home, transform):
                         count = references(value, source_home) + int(contains_home(key, source_home))
                         if count:
                             pending.append({"field": "settings.structured-state", "kind": "requires-supported-regeneration", "count": count})
+                elif relative.as_posix().casefold() in DESKTOP_PROFILE["databases"]:
+                    before = database_snapshot(connection)
+                    fields = [("automations", "cwds", "review current automation workspaces through the supported Automation editor"),
+                              ("automations", "local_environment_config_path", "review the automation environment configuration through its supported editor"),
+                              ("automation_runs", "source_cwd", "retain historical source context and verify unchanged history through the supported reader; do not rewrite or reschedule"),
+                              ("local_thread_catalog", "cwd", "review the current project location through supported project controls"),
+                              ("local_thread_catalog", "source_detail", "review the catalog source-detail schema and consumer before activation")]
+                    for table, field, action in fields:
+                        names = [row[1] for row in connection.execute("PRAGMA table_info(" + table + ")")]
+                        if field not in names:
+                            continue
+                        index = names.index(field)
+                        count = sum(references(row[index], source_home) for row in before[table])
+                        if count:
+                            pending.append({"database": relative.as_posix(), "field": table + "." + field,
+                                            "kind": "requires-supported-review", "count": count,
+                                            "action": action + "; preserve rows, schedules and account assignments"})
+                    require(database_snapshot(connection) == before, "desktop application rows changed")
                 connection.commit()
                 require(connection.execute("PRAGMA integrity_check").fetchall() == [("ok",)], "copied SQLite integrity failed")
                 require(not connection.execute("PRAGMA foreign_key_check").fetchall(), "copied SQLite reference validation failed")
             elif path.suffix.casefold() in {".json", ".toml"}:
                 text = path.read_text(encoding="utf-8-sig")
                 if relative.as_posix().casefold() == "config.toml":
+                    changed = project_copied_home(text, source_home, target_home)
+                    if changed != text:
+                        changes.append({"field": "config.shell_environment_policy.set.CODEX_HOME", "count": 1})
+                        if transform:
+                            path.write_text(changed, encoding="utf-8", newline="")
+                        text = changed
                     document = tomllib.loads(text)
                     env = document.get("mcp_servers", {}).get("node_repl", {}).get("env", {})
                     if contains_home(env.get("CODEX_HOME"), source_home):
@@ -349,7 +452,7 @@ def inspect_copy(source_home, copied, target_home, transform):
 
 def ensure_capacity(target, manifest):
     total = sum(v.get("size", 0) for v in manifest.values())
-    sqlite_bytes = sum(v.get("size", 0) for k, v in manifest.items() if k.endswith(".sqlite"))
+    sqlite_bytes = sum(v.get("size", 0) for k, v in manifest.items() if Path(k).suffix.casefold() in {".db", ".sqlite", ".sqlite3"})
     required = total + sqlite_bytes + max(64 * 1024 * 1024, total // 20)
     require(shutil.disk_usage(target.parent).free >= required, "insufficient destination capacity")
     return required
@@ -377,13 +480,15 @@ def plan(source, target):
                 dest = scratch / relative
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.touch()
-        changes, pending = inspect_copy(str(source), scratch, str(target), False)
+        baseline = []
+        changes, pending = inspect_copy(str(source), scratch, str(target), False, manifest, baseline)
         pending.extend(regeneration_tasks(manifest))
     writers(source)
     require(inventory(source) == manifest, "source changed during offline planning")
     return {"status": "planned", "profile": PROFILE["profile"], "entries": len(manifest),
             "files": sum(entry["kind"] == "file" for entry in manifest.values()),
             "required_bytes": required, "changes": changes, "pending": pending,
+            "rollout_presence": {state: sum(row["presence"] == state for row in baseline) for state in ["present", "missing"]},
             "ready_for_activation": False, "source_unchanged": True}
 
 
@@ -399,14 +504,16 @@ def prepare(source, target):
         require(copied_metadata(inventory(stage)) == copied_metadata(manifest),
                 "copied bytes, effective access rules or link metadata differ")
         require(inventory(source) == manifest, "source changed during copying")
-        changes, pending = inspect_copy(str(source), stage, str(target), True)
+        baseline = []
+        changes, pending = inspect_copy(str(source), stage, str(target), True, manifest, baseline)
         pending.extend(regeneration_tasks(manifest))
         writers(source)
         require(inventory(source) == manifest, "source changed during offline preparation")
         prepared = inventory(stage)
         receipt = {"format": 1, "id": uuid.uuid4().hex, "profile": PROFILE["profile"],
-                   "source": str(source), "target": str(target), "source_manifest": manifest,
+                   "source": str(source), "target": str(target), "profile_set": PROFILE_SET, "source_manifest": manifest,
                    "target_manifest": prepared, "changes": changes, "pending": pending,
+                   "rollout_baseline": baseline,
                    "ready_for_activation": False, "storage_copy_verified": True,
                    "activation_validation_required": ["resume-first", "thread-read", "thread-list", "application-registration-and-consent"],
                    "activation_owner": "operator",
@@ -455,6 +562,7 @@ def read_receipt(target):
     receipt = json.loads((target / RECEIPT).read_text())
     require(receipt["format"] == 1 and receipt["profile"] == PROFILE["profile"]
             and Path(receipt["target"]).resolve() == target, "unknown or misplaced migration receipt")
+    require(receipt.get("profile_set") == PROFILE_SET, "migration schema profile set changed")
     source = Path(receipt["source"]).resolve()
     require(source != target and source not in target.parents and target not in source.parents,
             "migration receipt roots overlap")
@@ -469,10 +577,18 @@ def verify(target):
     current.pop(RECEIPT, None)
     require(current == receipt["target_manifest"], "prepared target changed; retain it for operator review")
     require(inventory(Path(receipt["source"])) == receipt["source_manifest"], "original source changed")
-    for path in target.iterdir():
-        if path.suffix.casefold() != ".sqlite":
+    for row in receipt["rollout_baseline"]:
+        relative = PurePosixPath(row["relative"])
+        parts = relative.parts
+        require(not relative.is_absolute() and len(parts) >= 2 and parts[0] in {"sessions", "archived_sessions"}
+                and ".." not in parts and "/".join(parts) == row["relative"]
+                and row["presence"] in {"present", "missing"}, "invalid rollout baseline path or state")
+        require(rollout_presence(receipt["source"], parts) == row["presence"]
+                and rollout_presence(target, parts) == row["presence"], "recorded rollout presence changed")
+    for path in target.rglob("*"):
+        if path.suffix.casefold() not in {".db", ".sqlite", ".sqlite3"} or not path.is_file():
             continue
-        connection = validate_database(path)
+        connection = validate_database(path, path.relative_to(target).as_posix(), read_only=True)
         connection.close()
     return public_result(receipt) | {"status": "verified"}
 

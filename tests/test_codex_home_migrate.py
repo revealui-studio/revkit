@@ -21,6 +21,7 @@ from codex_adapter_lib import Refused, contains_home, rebase_storage, references
 
 def database(path, name="state_5.sqlite"):
     profile = ADAPTER.PROFILE["databases"][name]
+    path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path)
     if "schema" in profile:
         for kind in ["table", "index", "trigger"]:
@@ -31,6 +32,10 @@ def database(path, name="state_5.sqlite"):
             connection.executemany(
                 "INSERT INTO _sqlx_migrations(version,description,installed_on,success,checksum,execution_time) VALUES(?, 'synthetic', '2026-11-25', ?, ?, 0)",
                 [(version, success, bytes.fromhex(checksum)) for version, checksum, success in profile["migrations"]])
+        if "desktop_migrations" in profile:
+            connection.executemany(
+                "INSERT INTO codex_schema_migrations(id,predecessor_id,checksum,applied_at) VALUES(?,?,?,1)",
+                profile["desktop_migrations"])
     else:
         connection.execute("CREATE TABLE settings (scope TEXT NOT NULL,key TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(scope,key))")
     connection.execute("PRAGMA user_version=" + str(profile["user_version"]))
@@ -75,6 +80,73 @@ class MigrationTests(unittest.TestCase):
         self.assertFalse(result["ready_for_activation"])
         self.assertEqual(ADAPTER.inventory(self.source), before)
         self.assertFalse(self.target.exists())
+
+    def test_preexisting_absent_rollout_preserves_rows_and_records_unresolved_baseline(self):
+        self.rollout.unlink()
+        before = ADAPTER.inventory(self.source)
+        result = ADAPTER.prepare(self.source, self.target)
+        self.assertTrue(result["storage_copy_verified"])
+        self.assertFalse(result["ready_for_activation"])
+        self.assertEqual(ADAPTER.inventory(self.source), before)
+        receipt = json.loads((self.target / ADAPTER.RECEIPT).read_text())
+        baseline = receipt["rollout_baseline"]
+        self.assertEqual(len(baseline), 1)
+        self.assertEqual(baseline[0]["thread_id"], "synthetic-thread-id")
+        self.assertEqual(baseline[0]["presence"], "missing")
+        self.assertFalse((self.target / baseline[0]["relative"]).exists())
+        with closing(sqlite3.connect(self.target / "state_5.sqlite")) as connection:
+            self.assertEqual(connection.execute("SELECT count(*) FROM threads").fetchone(), (1,))
+        self.assertTrue(any(item["kind"] == "requires-history-verification" for item in result["pending"]))
+        self.assertEqual(ADAPTER.verify(self.target)["status"], "verified")
+
+    def test_copy_cannot_classify_a_newly_lost_rollout_as_preexisting_absence(self):
+        copied = self.base / "copied"
+        copied.mkdir(mode=0o700)
+        manifest = ADAPTER.inventory(self.source)
+        ADAPTER.copy_tree(self.source, copied, manifest)
+        (copied / self.rollout.relative_to(self.source)).unlink()
+        with self.assertRaises(Refused):
+            ADAPTER.inspect_copy(str(self.source), copied, str(self.target), True, manifest, [])
+
+    def test_permission_failure_is_never_classified_as_missing_history(self):
+        with patch.object(Path, "lstat", side_effect=PermissionError("synthetic denial")):
+            with self.assertRaises(PermissionError):
+                ADAPTER.rollout_presence(self.source, ("sessions", "synthetic.jsonl"))
+
+    def test_prepared_receipt_cannot_silently_adopt_another_profile_set(self):
+        ADAPTER.prepare(self.source, self.target)
+        path = self.target / ADAPTER.RECEIPT
+        receipt = json.loads(path.read_text())
+        receipt["profile_set"]["codex-desktop-layout-v1.json"] = "0" * 64
+        path.write_text(json.dumps(receipt))
+        with self.assertRaises(Refused) as caught:
+            ADAPTER.verify(self.target)
+        self.assertIn("profile set", str(caught.exception))
+
+    def test_capacity_includes_desktop_database_recovery_space(self):
+        from types import SimpleNamespace
+        with patch.object(ADAPTER.shutil, "disk_usage", return_value=SimpleNamespace(free=64 * 1024 * 1024 + 199)):
+            with self.assertRaises(Refused):
+                ADAPTER.ensure_capacity(self.target, {"sqlite/codex.db": {"kind": "file", "size": 100}})
+
+    def test_copied_config_projects_adopted_home_without_changing_owner_policy(self):
+        text = 'model = "owner-model"\n[shell_environment_policy]\ninherit = "core"\n[shell_environment_policy.set]\nOWNER_VALUE = "preserve"\n'
+        (self.source / "config.toml").write_text(text)
+        result = ADAPTER.prepare(self.source, self.target)
+        import tomllib
+        changed = tomllib.loads((self.target / "config.toml").read_text())
+        self.assertEqual(changed["shell_environment_policy"]["set"]["CODEX_HOME"], str(self.target))
+        self.assertEqual(changed["shell_environment_policy"]["set"]["OWNER_VALUE"], "preserve")
+        self.assertEqual(changed["shell_environment_policy"]["inherit"], "core")
+        self.assertEqual(changed["model"], "owner-model")
+        self.assertEqual((self.source / "config.toml").read_text(), text)
+        self.assertFalse(result["ready_for_activation"])
+
+    def test_copied_home_refuses_owner_identity_or_filter_conflicts(self):
+        for text in ['[shell_environment_policy.set]\nCODEX_HOME = "/synthetic/other-account"\n',
+                     '[shell_environment_policy]\ninherit = "core"\ninclude_only = ["PATH", "HOME"]\n']:
+            with self.subTest(text=text), self.assertRaises(Refused):
+                ADAPTER.project_copied_home(text, str(self.source), str(self.target))
 
     def test_prepare_rebases_only_index_and_preserves_history_auth_and_rows(self):
         before = ADAPTER.inventory(self.source)
@@ -148,7 +220,7 @@ class MigrationTests(unittest.TestCase):
         with self.assertRaises(Refused):
             ADAPTER.prepare(self.source, self.target)
 
-    def test_all_seven_supported_database_schemas_are_validated(self):
+    def test_all_supported_database_schemas_are_validated(self):
         for name in ADAPTER.PROFILE["databases"]:
             if name == "state_5.sqlite":
                 continue
