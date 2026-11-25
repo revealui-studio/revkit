@@ -38,11 +38,28 @@ def publish_no_replace(staging, destination):
         raise OSError(error, os.strerror(error), str(destination))
 
 
+def require_atomic_destination(parent):
+    parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='.revkit-publish-probe-', dir=parent) as probe:
+        root = Path(probe)
+        source = root / 'source'
+        source.mkdir()
+        try:
+            publish_no_replace(source, root / 'published')
+        except OSError as error:
+            raise ArtifactError(
+                'Destination filesystem does not support atomic no-replace directory publication '
+                f'(errno {error.errno}); build on a native Linux filesystem. '
+                'Deploy-WindowsArtifacts.ps1 copies the verified package into its Windows release.'
+            ) from error
+
+
 def package(source, destination, *, run=subprocess.run):
     source = Path(source).resolve(strict=True)
     destination = Path(destination).absolute()
     if destination.exists() or destination.is_relative_to(source) or source.is_relative_to(destination):
         raise ArtifactError('Package destination must be absent and separate from source')
+    require_atomic_destination(destination.parent)
     policy = json.loads((source / 'scripts/windows-artifact-scope.json').read_text())
     if set(policy) != {'schemaVersion', 'roots', 'excludedParts', 'excludedLeaves', 'required'} or policy['schemaVersion'] != 1:
         raise ArtifactError('Unsupported Windows artifact scope policy')
@@ -89,8 +106,9 @@ def package(source, destination, *, run=subprocess.run):
                 raise ArtifactError('Source changed during artifact packaging')
         (staging / 'artifact-source-manifest.json').write_bytes(manifest_data)
         publish_no_replace(staging, destination)
-    except Exception:
-        raise ArtifactError('Package failed; source and existing destinations are unchanged; staging preserved at ' + str(staging))
+    except Exception as error:
+        raise ArtifactError('Package failed; source and existing destinations are unchanged; staging preserved at '
+                            + str(staging) + '; cause: ' + str(error)) from error
     return {'package': str(destination), 'sourceCommit': commit, 'files': len(files),
             'manifestSha256': hashlib.sha256(manifest_data).hexdigest(), 'productionStateMutated': False}
 

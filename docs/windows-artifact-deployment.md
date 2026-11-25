@@ -28,6 +28,12 @@ asking Windows Git to interpret Linux worktree linkage or creating a second
 Windows source checkout. A native build preserves failed staging artifacts and
 never overwrites an existing output package. Direct committed Windows source
 checkouts remain supported by the same file selector.
+The builder requires atomic no-replace directory publication and probes that
+capability before reading Git or staging source. Build on native Linux storage;
+DrvFs does not provide this directory operation. The Windows deployment adapter
+can read the verified package through the supported WSL UNC share, then copies
+it into its independent Windows release. The build directory is temporary
+deployment input, never a runtime dependency after release publication.
 The selected artifact closure contains maintained scripts, modules, hooks and
 Git configuration, excluding machine-local `local-config.ps1`, logs and caches.
 The manifest identifies the source commit, each file digest and the ignore-data

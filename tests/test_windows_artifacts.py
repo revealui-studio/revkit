@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location('windows_artifacts', Path(__file__).parents[1] / 'scripts/build-windows-artifacts.py')
 MODULE = importlib.util.module_from_spec(SPEC)
@@ -92,6 +93,15 @@ class WindowsArtifactTests(unittest.TestCase):
             MODULE.publish_no_replace(staging, destination)
         self.assertTrue(staging.exists())
         self.assertEqual(list(destination.iterdir()), [])
+
+    def test_unsupported_destination_refuses_before_reading_git_or_staging_code(self):
+        destination = self.root / 'package'
+        with patch.object(MODULE, 'publish_no_replace', side_effect=OSError(22, 'unsupported')):
+            with self.assertRaises(MODULE.ArtifactError) as caught:
+                MODULE.package(self.source, destination, run=lambda *a, **k: self.fail('Git must not run'))
+        self.assertIn('errno 22', str(caught.exception))
+        self.assertFalse(destination.exists())
+        self.assertFalse(any(self.root.glob('.revkit-publish-probe-*')))
 
 
 if __name__ == '__main__':
