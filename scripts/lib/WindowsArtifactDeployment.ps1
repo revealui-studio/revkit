@@ -209,7 +209,16 @@ function Set-RevkitPrivateDirectory {
     $current.SetSecurityDescriptorSddlForm($expected, $access)
     [IO.FileSystemAclExtensions]::SetAccessControl($item, $current)
     $verified = [IO.FileSystemAclExtensions]::GetAccessControl($item, $sections)
-    if ($verified.GetSecurityDescriptorSddlForm($access) -cne $expected -or
+    # Windows may canonicalize ACE order and the auto-inherited flag. Verify
+    # exact rule semantics and DACL protection, not that incidental SDDL form.
+    $ruleKey = {
+        param($rule)
+        '{0}|{1}|{2}|{3}|{4}|{5}' -f $rule.IdentityReference.Value, [int]$rule.AccessControlType,
+            [int]$rule.FileSystemRights, [int]$rule.InheritanceFlags, [int]$rule.PropagationFlags, $rule.IsInherited
+    }
+    $expectedRules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | ForEach-Object { & $ruleKey $_ } | Sort-Object)
+    $actualRules = @($verified.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | ForEach-Object { & $ruleKey $_ } | Sort-Object)
+    if (-not $verified.AreAccessRulesProtected -or ($actualRules -join "`n") -cne ($expectedRules -join "`n") -or
         $verified.GetOwner([Security.Principal.SecurityIdentifier]) -ne $owner -or
         $verified.GetGroup([Security.Principal.SecurityIdentifier]) -ne $group) {
         throw 'Private artifact directory access or ownership verification failed.'
