@@ -390,5 +390,52 @@ class CandidateProfileTests(unittest.TestCase):
             with self.assertRaises(ValueError): fixture.candidate_preconditions(damaged, ranges)
 
 
+class ContainerBinaryTests(unittest.TestCase):
+    def transact(self, code, data, expected_input=None, expected_output=None, sha=None, timeout=5):
+        import io
+        import hashlib
+        import sys
+        target = io.BytesIO()
+        with tempfile.TemporaryDirectory() as directory:
+            status = fixture.binary_transaction([sys.executable, '-I', '-c', code], cwd=directory,
+                env={'PATH': '/usr/bin:/bin'}, source=io.BytesIO(data), target=target,
+                expected_input=len(data) if expected_input is None else expected_input,
+                expected_output=len(data) if expected_output is None else expected_output,
+                expected_output_sha256=hashlib.sha256(data).hexdigest() if sha is None else sha, timeout=timeout)
+        return status, target.getvalue()
+
+    def test_binary_nontext_echo_and_simultaneous_output_before_input(self):
+        import hashlib
+        data = bytes(range(256))*1024+b'\x00\xff\n'
+        prefix = bytes(1024*1024)
+        code = 'import sys;sys.stdout.buffer.write(bytes(1024*1024));sys.stdout.buffer.flush();sys.stdout.buffer.write(sys.stdin.buffer.read())'
+        result, output = self.transact(code, data, expected_output=len(prefix)+len(data),
+                                      sha=hashlib.sha256(prefix+data).hexdigest())
+        self.assertEqual(output, prefix+data)
+        self.assertEqual(result['inputSha256'], hashlib.sha256(data).hexdigest())
+
+    def test_zero_exit_truncation_extra_bytes_corruption_diagnostics_and_failure_refuse(self):
+        data = bytes(range(256))*1024
+        for code in (
+            'import sys;d=sys.stdin.buffer.read();sys.stdout.buffer.write(d[:len(d)//2])',
+            'import sys;d=sys.stdin.buffer.read();sys.stdout.buffer.write(d+b"x")',
+            'import sys;d=sys.stdin.buffer.read();sys.stdout.buffer.write(bytes(len(d)))',
+            'import sys;d=sys.stdin.buffer.read();sys.stdout.buffer.write(d);sys.stderr.write("synthetic diagnostic")',
+            'import sys;sys.stderr.buffer.write(bytes(131072));sys.stderr.buffer.flush()',
+            'import sys;sys.exit(7)'):
+            with self.assertRaises(RuntimeError) as caught: self.transact(code, data)
+            self.assertNotIn('synthetic diagnostic', str(caught.exception))
+        with self.assertRaises(RuntimeError):
+            self.transact('import sys;sys.stdin.buffer.read()', data, expected_input=len(data)+1, expected_output=0)
+
+    def test_timeout_cancels_child_instead_of_accepting_a_partial_stream(self):
+        with self.assertRaises(RuntimeError): self.transact('import time;time.sleep(30)', b'', timeout=.1)
+
+    def test_container_cannot_run_as_root_or_reinterpret_filesystem_profile(self):
+        with mock.patch.object(fixture.os, 'geteuid', return_value=0), mock.patch.object(fixture, 'prepare_tool') as tool:
+            with self.assertRaises(ValueError):fixture.container_fixture(ROOT, None)
+            tool.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

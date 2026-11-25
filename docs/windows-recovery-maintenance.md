@@ -34,6 +34,15 @@ Preserve existing images and secondary-disk data; neither tool is installed
 system-wide. A separately invoked private synthetic Borg fixture is available
 under the maintained design; it installs nothing globally.
 
+## Explicit cold-container source increment
+
+The separate `borg-container-readiness` entry plans whole stopped-VHD byte custody,
+with full dense-image/overhead/cache/reserve budgets and CanExecute=false. Its
+Execute switch refuses before opening a source or worker. See the maintained
+[profile, synthetic evidence and staged Windows tests](wsl-recurring-recovery-design.md#separate-cold-opaque-vhd-profile-readiness-and-synthetic-transport-only).
+This does not reinterpret the rejected filesystem sparse profile or activate a
+production worker. Native binary tests are not actual Windows/WSL acceptance.
+
 ## Incremental readiness and evidence only
 
 The existing wrapper accepts `-RecoveryBackend borg-readiness` with optional

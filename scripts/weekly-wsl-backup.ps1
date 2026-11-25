@@ -5,7 +5,7 @@ param(
     [string]$Distro = 'Ubuntu',
     [string]$SnapshotDir = 'E:\backups\wsl-snapshots\current',
     [long]$ReserveBytes = 1GB,
-    [ValidateSet('full-image', 'borg-readiness')][string]$RecoveryBackend = 'full-image',
+    [ValidateSet('full-image', 'borg-readiness', 'borg-container-readiness')][string]$RecoveryBackend = 'full-image',
     [string]$IncrementalConfigurationPath,
     [string]$IncrementalObservationPath,
     [string]$ReviewedConfigurationSha256,
@@ -14,6 +14,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib' 'WslBackup.ps1')
+if ($RecoveryBackend -ceq 'borg-container-readiness') {
+    if ($Execute) { throw 'Cold-container production execution remains unavailable; no VHD, worker or repository was opened.' }
+    if ($IncrementalObservationPath) { throw 'Sampled operator booleans cannot establish a live cold-container lease.' }
+    Get-WslColdContainerReadinessPlan -ConfigurationPath $IncrementalConfigurationPath -ReviewedConfigurationSha256 $ReviewedConfigurationSha256 | ConvertTo-Json -Depth 12
+    exit 3
+}
 if ($RecoveryBackend -ceq 'borg-readiness') {
     if ($Execute) { throw 'Borg execution is unavailable: only the readiness/evidence contract is implemented. No backend, repository or key was invoked.' }
     Get-WslBorgReadinessPlan -ConfigurationPath $IncrementalConfigurationPath -ObservationPath $IncrementalObservationPath -ReviewedConfigurationSha256 $ReviewedConfigurationSha256 | ConvertTo-Json -Depth 12

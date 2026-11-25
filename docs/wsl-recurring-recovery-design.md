@@ -5,6 +5,9 @@ unavailable**. The maintained adapter implements readiness and evidence contract
 only. Production tool installation, repository/key initialization, disk writes,
 mounts, schedules, archive creation and recovery boot require separate approval.
 The explicitly invoked private synthetic fixture below is development work only.
+A distinct cold-vhd-container-v1 byte-custody alternative is now maintained as
+readiness/synthetic transport only; it is not approved for production or a change
+to the filesystem profile. See the final section for that explicit assessment.
 The named fixed64KiB candidate has an observed dense-to-sparse rejection; legacy
 privileged and encrypted proofs remain separate. See the combined-profile audit below.
 Preserve the only last-good image and the existing full-export capacity refusal.
@@ -643,3 +646,185 @@ not evidence of hardware independence. No key/repository creation, disk/mount,
 service/configuration, source shutdown/boot or full backup operation is authorized
 or performed by this source increment. Source and actual Windows evidence remain
 distinct; no PowerShell module changed or Windows execution is claimed here.
+
+## Separate cold opaque VHD profile (readiness and synthetic transport only)
+
+`cold-vhd-container-v1` is a distinct byte-custody design for a stopped actual
+container, not a reinterpretation of filesystem reconstruction. The rejected
+fixed64KiB filesystem profile stays REJECTED; no privileged rerun is requested.
+Guest allocation maps, ACLs, ownership, special files, flags and data reside inside
+the original VHD bytes. Exact entire-container bytes preserve that representation;
+outer NTFS sparse/allocation metadata is not preserved: restore writes a NEW dense
+private NTFS file. Random bytes matching a digest do not prove VHD/ext4 validity,
+cold consistency, boot or recovery acceptance.
+
+Audit reused WslBackup.ps1's bounded JSON reader, path/disjointness/hash checks,
+capacity and non-executing readiness conventions. The new owner entry is explicit:
+
+```powershell
+pwsh -NoProfile -NonInteractive -File scripts/weekly-wsl-backup.ps1 -RecoveryBackend borg-container-readiness
+```
+
+It returns missing gates/CanExecute=false and exit3, without source/registry/WSL
+access. Optional IncrementalConfigurationPath and ReviewedConfigurationSha256
+validate a bounded version1 request; IncrementalObservationPath refuses because
+sampled booleans cannot establish a continuous OS handle lease. -Execute ALWAYS
+refuses this profile before touching a source, worker, repository or power state.
+The legacy full-image default and filesystem contracts remain strict/unchanged.
+RequestBindingsValid is syntax/digest binding only, never operational approval.
+
+The exact request fields are maintained in Get-WslColdContainerReadinessPlan;
+behavioral examples in tests/powershell/WslColdContainer.Tests.ps1 are model data,
+not real approvals. They bind source/worker names and distinct registration UUIDs,
+source VHD path/full container length/hardware, worker source/tool hashes,
+repository/restore/original paths and hardware, explicit restore guarantee,
+filesystem capacity domains/free space and positive repository/cache/restore
+overhead bounds. Shared capacity domains must report the same available bytes;
+requirements aggregate per domain with one >=64GiB reserve, full container bytes
+for BOTH repository and dense restore, and no savings credits. Worker/cache costs
+sharing E with a fresh restore count against the SAME free space. No real
+installation, tool binding, repository ID or key custody is inferred from a request.
+
+Controller READ-ONLY evidence supplied active VHD length637998727168, E free
+326025490432 and provisional E after eligible archive retirement717235476229.
+Dense image plus64GiB is706718203904, leaving only10517272325 BEFORE target
+metadata/cache/other costs. Physical retirement has not happened. Final cold size
+and actual physical free space must be remeasured under the approved protocol;
+logical deletion totals are not proof of released physical capacity. The independent
+1TB disk is disconnected, with no current write/repository approval.
+
+Coarse transport proposal: pinned Borg1.4.5, repokey-blake2, fixed4MiB chunking,
+files-cache disabled, compression none, stdin-name ext4.vhdx; extract --stdout.
+No --sparse and no guest-file reconstruction options apply. At the reported active
+length the contiguous data-reference model is152111 chunks, not a measured complete
+object/index/metadata/memory/disk bound. Repository/index/cache/security/transaction
+and runtime/temporary/NTFS allocation overhead, timing and final cold size remain
+unmeasured. Guest-file apparent-size/extent census is NOT an opaque-byte custody
+prerequisite; it remains required for the separate filesystem profile's budgets.
+
+[Microsoft](https://learn.microsoft.com/en-us/windows/wsl/basic-commands) documents
+VHD export/import and import-in-place; [disk-space guidance](https://learn.microsoft.com/en-us/windows/wsl/disk-space)
+identifies registered VHD storage. Generic '-' wording is not evidence that VHD
+export supports stdout. This design does NOT invoke wsl --export --vhd -.
+[Borg stdin documentation](https://borgbackup.readthedocs.io/en/1.4.5/usage/create.html#reading-backup-data-from-stdin)
+warns a producer can fail/truncate while piped archive creation succeeds: independent
+exact count/digest and producer exit checks are mandatory. [Extract --stdout](https://borgbackup.readthedocs.io/en/1.4.5/usage/extract.html)
+provides binary data; no PowerShell object/text pipeline may carry it.
+
+### Maintained mechanics and actual bounded evidence
+
+WslBackupTransport.cs, loaded by Initialize-WslBackupBinaryTransport, provides
+bounded asynchronous binary transfer around an ALREADY STARTED shell-free child.
+It launches no backend and opens no path. The future trusted caller must construct
+an exact ArgumentList and own source/target/lease for the ENTIRE transaction.
+Three streams drain concurrently with fixed buffers, incremental SHA256/counts,
+exact length/digest checks, finite timeout/cancellation, nonzero-exit/any-diagnostic
+rejection and64KiB stderr limit. Errors expose no backend bytes/text/secret values.
+Failure cancels/kills the owned child tree; caller-owned partial output is never
+removed or overwritten. First source-read digest may be computed under the live
+lease, then must match archive read-back before admission. A process exit0 alone
+never admits bytes. The helper supplies mechanics, not source identity or cold proof.
+
+The Linux-only binary helper in the existing wsl-borg-fixture.py uses bounded
+binary pipes/selectors and an owned process group. This intentional platform
+separation permits inherited passphrase FD delivery to Borg; neither layer is an
+additional backup backend. Only fixed synthetic CLI --run-container is exposed;
+no real source/repository/command passthrough exists. Shared pinned provenance,
+private workspace, secret descriptor and fresh key-recovery observers are reused.
+Secret values never enter environment values, argv, logs or committed artifacts.
+
+An actual new private8,388,621-byte mixed/random/zero fixture passed encrypted Borg
+stdin create, exported-key recovery with fresh client state/original paths absent,
+exact negative controls44/52, check --verify-data, binary stdout extraction and
+independent restored-file count/SHA256. Create uses three4MiB data references in
+the no-reuse model. Source/restore bytes/hash match; private secret custody and all
+attempts remain outside Git. This is same-filesystem synthetic key custody and
+path renaming, not OS-enforced source unavailability, off-laptop custody, actual
+Windows/WSL transport, VHD validity or boot. Older proofs are unchanged.
+
+Native tests cover byte corruption/truncation with exit0, excess data, diagnostic
+flood/nonzero exit, output-before-input deadlock pressure, timeout/cancellation,
+request identity/path/capacity/profile refusals and legacy behavior. Windows-only
+tests additionally require actual sharing error32 for existing-writer/read-lease,
+write/delete exclusion while a handle stays live through binary transfer, exact
+restored bytes and non-sparse new file. Native .NET execution is NOT Windows
+acceptance. No maintained Windows-to-selected-worker integration receipt exists yet;
+the controller diagnostic is independent historical evidence, never an operational
+dependency or admission substitute.
+
+### Staged Windows tests and selected-worker plan
+
+After signed-source review, build a NEW artifact package with the existing
+build-windows-artifacts.py and verify artifact-source-manifest.json/source commit
+and every file hash. WslBackupTransport.cs is now required by the closure. This
+package is NOT deployed/activated by source work. Controller stages it into a NEW
+private test source tree, plus the exact signed tests/powershell/WslBackup.Tests.ps1,
+WslHostScripts.Tests.ps1 and WslColdContainer.Tests.ps1 at their relative paths.
+Verify supplemental test hashes from the checkpoint. Use fresh ordinary pwsh7
+with no profile so no earlier same-named loaded assembly can substitute for code:
+
+```powershell
+pwsh -NoProfile -NonInteractive -Command 'Invoke-Pester -Path ./tests/powershell/WslBackup.Tests.ps1,./tests/powershell/WslHostScripts.Tests.ps1,./tests/powershell/WslColdContainer.Tests.ps1 -Output Detailed -CI'
+```
+
+Run only from that reviewed staging tree, retain XML/output/hash/source receipts,
+and treat any sharing case skip/failure as Windows coverage still missing. Pester
+uses disposable synthetic TestDrive data only; it has no real-device/VHD arguments.
+Operator backup attempts require separately retained private pending/partial/failure
+custody; the low-level transport never deletes caller streams/files.
+
+No worker distro is selected here. Main Ubuntu and the spare are E-backed; spare
+is stopped and must not be started until controller approval. First identify its
+registration/VHD/hardware independently of source/recovery, budget its cache on E,
+and stage exact reviewed runtime/source in immutable non-user-writable custody
+where privileged consumers require it. Test the maintained transport through that
+explicit worker using a NEW synthetic source BEFORE any real VHD. Existing native
+--run-container can prove that worker's Borg/crypto path after approved isolated
+staging, but does not test wsl.exe pipe/sharing behavior. A fixed operational worker
+protocol/launch wrapper and its actual Windows integration are still missing;
+there is intentionally no production --create/--restore arbitrary-path CLI.
+
+### Ordered real-operation gates and reviewable transaction design
+
+1. Finish current controller paired archive verification; any retirement requires
+   independent acceptance, then remeasure physical free space. Preserve protected
+   recovery image/proofs and every failed attempt. Obtain explicit cold-container
+   profile, destination, worker and restore-target approval; vault/provider choice
+   is independent and pending, never ask for secret values in chat.
+2. Implement/review the fixed operational wrapper around existing owner: resolve
+   EXACT source distro registration UUID/canonical VHD (including reparse/final
+   handle path/file identity checks), save work/quiesce and observe stopped state.
+   Acquire an OS read handle with FileShare.Read that rejects any existing writer
+   and excludes new write/delete access. Recheck bindings/state after acquisition.
+   Do not start source as worker. Hold that SAME handle continuously through read,
+   full archive check, archive byte read-back verification and receipt commit.
+   No sampled boolean, reopen-by-path or journal lock substitutes for this lease.
+3. Actual Windows tests must prove maintained child cancellation/binary pipes and
+   source exclusion through the selected WSL worker, including baseline/held/released
+   access controls and read errors. The supplied one-off diagnostic cannot close
+   this maintained integration gate. Source size comes from the held handle, stream
+   count/hash covers EVERY byte, and archive evidence binds repository/archive/member
+   IDs, source handle/registration, exact tool/worker/profile and lease lifetime.
+4. Approve independent repository hardware/identity/private access, per-filesystem
+   complete overhead/reserve budgets, root-safe pinned runtime and independently
+   recoverable encrypted key/passphrase custody. Initialize real repository/key
+   only in a separately approved phase. Hold Borg repository transaction locks;
+   immutable pending/failure receipts retain partials on ANY source/child/count/hash/
+   diagnostic/timeout error. No prune/repair/overwrite/automatic retention.
+5. Recover independently with source unavailable: select exact bound archive/member,
+   recover key in fresh approved client state, create NEW private dense NTFS target
+   with CreateNew, continuously hash/count binary output and flush, independently
+   rehash its ENTIRE file before ANY import. Exact length/hash and non-sparse/reparse
+   attributes are required, plus actual filesystem/capacity/ACL checks. No partial
+   output may register even if child exits0. E target can be an isolated restore
+   test sharing source/protected hardware; never claim third-hardware redundancy.
+6. Only after separate approval, use supported import/import-in-place on that NEW
+   verified image with preserved source/original/repository, isolated boot/identity/
+   user/service checks and actual cold-image consistency acceptance. Random bytes,
+   equal digest or a renamed synthetic source cannot grant full restore/boot proof.
+
+This source turn does not read a live VHD, stop/start a distro, choose/activate the
+worker, attach a disk, create real keys/repositories or change runtime/security/
+services. Production execution stays unavailable until a reviewed operational
+implementation and actual named gates exist. No extra guest census is imposed
+on opaque byte custody, and no filesystem-profile gate is removed.

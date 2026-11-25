@@ -6,6 +6,7 @@ No production executor, mount, user key, retention or system installation.
 """
 import argparse
 import configparser
+from contextlib import contextmanager
 import secrets
 import array
 import datetime
@@ -659,8 +660,8 @@ def private_secret(path, value):
         os.fsync(stream.fileno())
 
 
-def recovery_borg(binary, args, *, cwd, env, passphrase, expected_exit=0):
-    """Only private synthetic secrets; never propagate command output on failure."""
+@contextmanager
+def secret_descriptor(passphrase, env):
     if any(name in env for name in ('BORG_PASSPHRASE', 'BORG_NEW_PASSPHRASE', 'BORG_PASSCOMMAND')):
         raise ValueError('Secret environment-value fallback refused')
     info = passphrase.lstat()
@@ -668,12 +669,17 @@ def recovery_borg(binary, args, *, cwd, env, passphrase, expected_exit=0):
         raise ValueError('Synthetic passphrase requires owner-only regular custody')
     fd = os.open(passphrase, os.O_RDONLY | os.O_NOFOLLOW)
     try:
-        child_env = dict(env, BORG_PASSPHRASE_FD=str(fd), BORG_EXIT_CODES='modern')
+        yield fd, dict(env, BORG_PASSPHRASE_FD=str(fd), BORG_EXIT_CODES='modern')
+    finally:
+        os.close(fd)
+
+
+def recovery_borg(binary, args, *, cwd, env, passphrase, expected_exit=0):
+    """Only private synthetic secrets; never propagate command output on failure."""
+    with secret_descriptor(passphrase, env) as (fd, child_env):
         result = subprocess.run([str(binary), *args], cwd=cwd, env=child_env,
                                 stdin=subprocess.DEVNULL, capture_output=True, pass_fds=(fd,),
                                 timeout=120, check=False)
-    finally:
-        os.close(fd)
     if result.returncode != expected_exit:
         raise RuntimeError('Synthetic Borg recovery step refused; exit=' + str(result.returncode))
     # Even successful output may contain sensitive configuration. Retain counts only.
@@ -836,6 +842,179 @@ def recovery_fixture(parent, release_inputs):
         raise RuntimeError(f'Synthetic recovery refused; evidence retained at {root}; {type(exc).__name__}') from None
 
 
+CONTAINER_PROFILE = 'cold-vhd-container-v1'
+CONTAINER_CHUNK = 4 * 1024 * 1024
+
+
+def binary_transaction(command, *, cwd, env, source, target, expected_input, expected_output,
+                       expected_output_sha256, pass_fds=(), timeout=120):
+    """Linux binary mechanics; fixed callers only, bounded pipes, no shell/text conversion."""
+    import selectors
+    import time
+    if expected_input < 0 or expected_output < 0 or not 0 < timeout <= 86400:
+        raise ValueError('Finite binary bounds required')
+    child = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=pass_fds, start_new_session=True)
+    input_count = output_count = errors = 0
+    input_hash, output_hash = hashlib.sha256(), hashlib.sha256()
+    pending = b''
+    deadline = time.monotonic() + timeout
+    try:
+        with selectors.DefaultSelector() as poll:
+            for pipe, event, role in ((child.stdin, selectors.EVENT_WRITE, 'input'),
+                                      (child.stdout, selectors.EVENT_READ, 'output'),
+                                      (child.stderr, selectors.EVENT_READ, 'error')):
+                os.set_blocking(pipe.fileno(), False)
+                poll.register(pipe, event, role)
+            while poll.get_map():
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('Binary transaction timeout')
+                for key, events in poll.select(min(.1, max(0, deadline-time.monotonic()))):
+                    pipe = key.fileobj
+                    if key.data == 'input':
+                        if not pending:
+                            pending = source.read(65536)
+                            if not pending:
+                                if input_count != expected_input:
+                                    raise ValueError('Binary input truncated')
+                                poll.unregister(pipe)
+                                pipe.close()
+                                continue
+                            if len(pending) > expected_input-input_count:
+                                raise ValueError('Binary input exceeds bound')
+                            input_hash.update(pending)
+                            input_count += len(pending)
+                        sent = os.write(pipe.fileno(), pending)
+                        pending = pending[sent:]
+                    else:
+                        data = os.read(pipe.fileno(), 65536)
+                        if not data:
+                            poll.unregister(pipe)
+                            pipe.close()
+                        elif key.data == 'error':
+                            errors += len(data)
+                            if errors > 65536:
+                                raise ValueError('Binary diagnostic limit exceeded')
+                        else:
+                            if len(data) > expected_output-output_count:
+                                raise ValueError('Binary output exceeds bound')
+                            if target.write(data) != len(data):
+                                raise ValueError('Binary output short write')
+                            output_hash.update(data)
+                            output_count += len(data)
+            code = child.wait(timeout=max(.001, deadline-time.monotonic()))
+        if code != 0 or errors or output_count != expected_output or output_hash.hexdigest() != expected_output_sha256:
+            raise ValueError('Binary output/diagnostics/exit rejected')
+        target.flush()
+        return {'inputBytes': input_count, 'inputSha256': input_hash.hexdigest(),
+                'outputBytes': output_count, 'outputSha256': output_hash.hexdigest(),
+                'exitCode': code, 'stderrBytes': errors}
+    except Exception:
+        if child.poll() is None:
+            import signal
+            os.killpg(child.pid, signal.SIGKILL)
+        child.wait(timeout=5)
+        raise RuntimeError('Binary transaction refused; retained partial output; diagnostics withheld') from None
+    finally:
+        for pipe in (child.stdin, child.stdout, child.stderr):
+            pipe.close()
+
+
+def container_fixture(parent, release_inputs):
+    import io
+    root, fs = ordinary_workspace(parent)
+    env = private_env(root)
+    receipt = {'schemaVersion': 1, 'profile': CONTAINER_PROFILE, 'scope': 'synthetic-opaque-bytes-only',
+               'root': str(root), 'observerSha256': digest(Path(__file__)), 'passed': False,
+               'productionExecutionAllowed': False, 'validVhdProved': False, 'fullRestoreAccepted': False,
+               'windowsLeaseAccepted': False, 'crossDistroTransportAccepted': False,
+               'savingsCreditBytes': 0, 'steps': []}
+    write_json(root / 'pending.json', receipt)
+    try:
+        binary, receipt['tool'] = prepare_tool(root, release_inputs, env)
+        original = root / 'original-client'
+        original.mkdir(mode=0o700)
+        original_env = private_env(original)
+        recovery = root / 'recovery-artifacts'
+        recovery.mkdir(mode=0o700)
+        phrase = secrets.token_hex(32).encode() + b'\n'
+        private_secret(original / 'passphrase', phrase)
+        private_secret(recovery / 'passphrase', phrase)
+        del phrase
+        private_secret(root / 'wrong-passphrase', secrets.token_hex(32).encode() + b'\n')
+        source = root / 'synthetic-container.bin'
+        with source.open('xb') as stream:
+            stream.write(os.urandom(4*1024*1024))
+            stream.write(bytes(2*1024*1024))
+            stream.write(bytes(range(256))*8192)
+            stream.write(b'opaque-end\x00\xff\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        size, sha = source.stat().st_size, digest(source)
+        receipt.update(sourceBytes=size, sourceSha256=sha)
+        repo = root / 'repository'
+        archive = str(repo) + '::opaque'
+        def control(label, args, client_env, passphrase, expected_exit=0):
+            status = recovery_borg(binary, args, cwd=root, env=client_env,
+                                   passphrase=passphrase, expected_exit=expected_exit)
+            receipt['steps'].append(dict(status, label=label))
+        def transfer(label, args, client_env, passphrase, incoming, outgoing, in_bytes, out_bytes, out_sha):
+            # No secret values in argv/environment or diagnostics; only inherited FD number.
+            with secret_descriptor(passphrase, client_env) as (fd, child_env):
+                status = binary_transaction([str(binary), *args], cwd=root, env=child_env,
+                    source=incoming, target=outgoing, expected_input=in_bytes,
+                    expected_output=out_bytes, expected_output_sha256=out_sha, pass_fds=(fd,))
+            receipt['steps'].append(dict(status, label=label))
+            return status
+        phrase = original / 'passphrase'
+        control('init', ['init','--encryption=repokey-blake2',str(repo)], original_env, phrase)
+        create_options = ['--chunker-params=fixed,4194304','--files-cache=disabled',
+                          '--compression=none','--stdin-name=ext4.vhdx']
+        receipt['createOptions'] = create_options
+        empty_sha = hashlib.sha256(b'').hexdigest()
+        with source.open('rb') as incoming:
+            status = transfer('binary-stdin-create', ['create',*create_options,archive,'-'],
+                              original_env, phrase, incoming, io.BytesIO(), size, 0, empty_sha)
+        if status['inputSha256'] != sha:
+            raise ValueError('Source stream differs from generated original')
+        exported = recovery / 'exported-key'
+        control('key-export', ['key','export',str(repo),str(exported)], original_env, phrase)
+        exported.chmod(0o600)
+        remove_synthetic_key(root, repo, exported)
+        original.rename(root / 'original-client-unavailable')
+        source.rename(root / 'source-unavailable')
+        fresh = root / 'fresh-client'
+        fresh.mkdir(mode=0o700)
+        fresh_env = private_env(fresh)
+        phrase = recovery / 'passphrase'
+        control('missing-key', ['list',str(repo)], fresh_env, phrase, 44)
+        control('key-import', ['key','import',str(repo),str(exported)], fresh_env, phrase)
+        control('wrong-passphrase', ['list',str(repo)], fresh_env, root / 'wrong-passphrase', 52)
+        control('verify-data', ['check','--verify-data',str(repo)], fresh_env, phrase)
+        restored = root / 'restored-dense.bin'
+        with restored.open('xb') as outgoing:
+            transfer('extract-binary-stdout', ['extract','--stdout',archive,'ext4.vhdx'],
+                     fresh_env, phrase, io.BytesIO(), outgoing, 0, size, sha)
+            outgoing.flush()
+            os.fsync(outgoing.fileno())
+        if restored.stat().st_size != size or digest(restored) != sha:
+            raise ValueError('Independent restored all-byte verification rejected')
+        receipt.update(passed=True, restoredBytes=size, restoredSha256=digest(restored),
+                       sourceOriginalPathAbsent=not source.exists(), originalClientPathAbsent=not original.exists(),
+                       encryptedSyntheticKeyRecovery=True,
+                       sourceUnavailableScope='renamed synthetic path; not OS isolation or real cold VHD',
+                       dataChunkReferencesNoReuseModel=(size+CONTAINER_CHUNK-1)//CONTAINER_CHUNK,
+                       unprovedGates=['actual Windows source lease/process transport','selected independent worker',
+                           'cold VHD consistency','independent hardware and key custody','resource overhead',
+                           'full image byte verification and isolated import/boot'])
+        write_json(root / 'result.json', receipt)
+        return receipt
+    except Exception as exc:
+        receipt['failure'] = type(exc).__name__ + ': synthetic container refused'
+        write_json(root / 'failed.json', receipt)
+        raise RuntimeError(f'Synthetic container refused; retained at {root}; {type(exc).__name__}') from None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--profile', choices=(DEFAULT_PROFILE, CANDIDATE_PROFILE), default=DEFAULT_PROFILE,
@@ -844,6 +1023,7 @@ def main():
     parser.add_argument('--run-privileged', action='store_true', help='Controller-only synthetic root metadata mode')
     parser.add_argument('--workspace', type=Path, help='NEW UUID leaf under fixed root-owned synthetic base')
     parser.add_argument('--reviewed-source-sha256')
+    parser.add_argument('--run-container', action='store_true', help='Fixed synthetic encrypted binary-container fixture only')
     parser.add_argument('--run-recovery', action='store_true', help='New synthetic encrypted recovery and sparse matrix only')
     parser.add_argument('--run', action='store_true', help='Download/verify tool and run fixed synthetic fixture only')
     parser.add_argument('--parent', type=Path, help='Existing private ext4 development directory, never a real disk root')
@@ -860,7 +1040,7 @@ def main():
                 '--release-inputs', str(bundle), '--reviewed-source-sha256', sha, '--profile', args.profile],
             'privilegedMode': True, 'productionExecutionAllowed': False}, indent=2))
         return
-    if sum((args.run, args.run_privileged, args.run_recovery)) > 1:
+    if sum((args.run, args.run_privileged, args.run_recovery, args.run_container)) > 1:
         parser.error('Ordinary and privileged modes are mutually exclusive')
     if args.run_privileged:
         if args.parent:
@@ -870,6 +1050,10 @@ def main():
         print(json.dumps(result, indent=2))
         if not result['passed']:
             raise SystemExit(3)
+    elif args.run_container:
+        if args.parent is None or args.workspace or args.reviewed_source_sha256 or args.profile != DEFAULT_PROFILE:
+            parser.error('--run-container requires ordinary parent and distinct fixed container protocol')
+        print(json.dumps(container_fixture(args.parent, args.release_inputs), indent=2))
     elif args.run_recovery:
         if args.parent is None or args.workspace or args.reviewed_source_sha256 or args.profile != DEFAULT_PROFILE:
             parser.error('--run-recovery requires ordinary --parent and refuses privileged inputs')

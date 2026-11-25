@@ -702,3 +702,88 @@ function Test-WslBorgRestoreInventory {
         Scope = 'bounded inventory contract only; actual Borg round-trip and independent WSL restore remain required'
     }
 }
+
+# Explicit opaque-byte profile; request validation only, never operational admission.
+function Get-WslColdContainerReadinessPlan {
+    [CmdletBinding()]
+    param([string]$ConfigurationPath, [string]$ReviewedConfigurationSha256)
+    $result = [ordered]@{
+        SchemaVersion = 1; Profile = 'cold-vhd-container-v1'; CanExecute = $false
+        Encryption = 'repokey-blake2'; LiveLeaseHeld = $false; ToolBindingVerified = $false
+        BackendExecuted = $false; FullRestoreAccepted = $false; RequestBindingsValid = $false
+        GuestFileCensusRequired = $false; WholeContainerByteVerificationRequired = $true
+        CreateOptions = @('--chunker-params=fixed,4194304', '--files-cache=disabled', '--compression=none', '--stdin-name=ext4.vhdx')
+        ExtractOptions = @('--stdout'); Capacity = @(); Blockers = @(
+            'Actual Windows registered/canonical source identity, saved work and stopped/quiesced state',
+            'Live OS writer/delete-exclusion handle continuously held through source read and archive byte verification',
+            'Approved distinct worker registration/runtime/source hashes; source must not be started by worker',
+            'Approved independent repository and independent key recovery custody',
+            'Reviewed per-filesystem repository/cache/restore overhead and fresh physical capacity',
+            'Actual Windows binary process/lease acceptance and reviewed locked production executor',
+            'Source-unavailable fresh dense NTFS image with exact bytes/hash before isolated import/boot'
+        )
+    }
+    if (-not $ConfigurationPath -or -not $ReviewedConfigurationSha256) {
+        $result.Blockers += 'Explicit cold-container request and reviewed SHA256 are absent.'
+        return [pscustomobject]$result
+    }
+    Assert-WslBackupHash $ReviewedConfigurationSha256
+    $doc = Read-WslRecoveryDocument $ConfigurationPath
+    if ($doc.Sha256 -cne $ReviewedConfigurationSha256) { throw 'Container request differs from reviewed digest.' }
+    $c = $doc.Value
+    Assert-WslRecoveryFields $c @('schemaVersion','profile','source','worker','repository','restore','original','budget') 'container request'
+    if ($c.schemaVersion -isnot [long] -or $c.schemaVersion -ne 1 -or $c.profile -cne 'cold-vhd-container-v1') { throw 'Unsupported cold-container profile.' }
+    Assert-WslRecoveryFields $c.source @('distro','registrationId','vhdx','physicalDeviceId','containerBytes') 'container source'
+    Assert-WslRecoveryFields $c.worker @('distro','registrationId','sourceSha256','toolSha256','capacityDomain','availableBytes') 'container worker'
+    Assert-WslRecoveryFields $c.repository @('path','physicalDeviceId','capacityDomain','availableBytes') 'container repository'
+    Assert-WslRecoveryFields $c.restore @('path','physicalDeviceId','capacityDomain','availableBytes','hardwareGuarantee') 'container restore'
+    Assert-WslRecoveryFields $c.original @('path','physicalDeviceId') 'protected original'
+    Assert-WslRecoveryFields $c.budget @('repositoryOverheadBytes','cacheWorkspaceBytes','restoreOverheadBytes','reserveBytes') 'container budget'
+    Assert-WslBackupLeaf $c.source.distro; Assert-WslBackupLeaf $c.worker.distro
+    foreach ($value in @($c.source.registrationId,$c.worker.registrationId)) {
+        $guid = [Guid]::Empty
+        if ($value -isnot [string] -or -not [Guid]::TryParseExact($value,'D',[ref]$guid)) { throw 'Canonical registration UUID required.' }
+    }
+    if ($c.source.registrationId -ieq $c.worker.registrationId -or $c.source.distro -ieq $c.worker.distro) { throw 'Worker must not be the source distribution.' }
+    foreach ($value in @($c.worker.sourceSha256,$c.worker.toolSha256)) { Assert-WslBackupHash $value }
+    foreach ($value in @($c.source.physicalDeviceId,$c.repository.physicalDeviceId,$c.restore.physicalDeviceId,
+        $c.original.physicalDeviceId,$c.worker.capacityDomain,$c.repository.capacityDomain,$c.restore.capacityDomain)) {
+        if ($value -isnot [string] -or [string]::IsNullOrWhiteSpace($value) -or $value.Trim() -cne $value) { throw 'Exact device/capacity identity required.' }
+    }
+    Assert-WslRecoveryDisjoint @($c.source.vhdx,$c.repository.path,$c.restore.path,$c.original.path)
+    if ($c.repository.physicalDeviceId -ieq $c.source.physicalDeviceId -or $c.repository.physicalDeviceId -ieq $c.original.physicalDeviceId -or
+        $c.restore.physicalDeviceId -ieq $c.repository.physicalDeviceId) { throw 'Independent repository hardware required.' }
+    if ($c.restore.hardwareGuarantee -cnotin @('isolated-restore-test','third-hardware-copy')) { throw 'Explicit restore hardware guarantee required.' }
+    $sharesSource = $c.restore.physicalDeviceId -ieq $c.source.physicalDeviceId
+    $sharesOriginal = $c.restore.physicalDeviceId -ieq $c.original.physicalDeviceId
+    if ($c.restore.hardwareGuarantee -ceq 'third-hardware-copy' -and ($sharesSource -or $sharesOriginal)) { throw 'Third-hardware guarantee is not met.' }
+    foreach ($value in @($c.source.containerBytes,$c.budget.repositoryOverheadBytes,$c.budget.cacheWorkspaceBytes,$c.budget.restoreOverheadBytes)) { Assert-WslRecoveryInteger $value 1 }
+    Assert-WslRecoveryInteger $c.budget.reserveBytes 64GB
+    $domains = @{}
+    foreach ($part in @(
+        @{ Domain=$c.repository.capacityDomain; Available=$c.repository.availableBytes; Bytes=([decimal]$c.source.containerBytes + $c.budget.repositoryOverheadBytes) },
+        @{ Domain=$c.worker.capacityDomain; Available=$c.worker.availableBytes; Bytes=[decimal]$c.budget.cacheWorkspaceBytes },
+        @{ Domain=$c.restore.capacityDomain; Available=$c.restore.availableBytes; Bytes=([decimal]$c.source.containerBytes + $c.budget.restoreOverheadBytes) }
+    )) {
+        Assert-WslRecoveryInteger $part.Available
+        if (-not $domains.ContainsKey($part.Domain)) {
+            $domains[$part.Domain] = @{ Domain=$part.Domain; AvailableBytes=$part.Available; RequiredBytes=[decimal]$c.budget.reserveBytes }
+        } elseif ($domains[$part.Domain].AvailableBytes -ne $part.Available) { throw 'Shared filesystem capacity observations disagree.' }
+        $domains[$part.Domain].RequiredBytes += $part.Bytes
+    }
+    $result.Capacity = @($domains.Values | ForEach-Object {
+        [pscustomobject]@{ Domain=$_.Domain; AvailableBytes=$_.AvailableBytes; RequiredBytes=$_.RequiredBytes
+            ConditionalFit=([decimal]$_.AvailableBytes -ge $_.RequiredBytes); SavingsCreditBytes=0 }
+    })
+    $result.RequestBindingsValid = $true; $result.ConfigurationSha256 = $doc.Sha256
+    $result.SharesSourceHardware = $sharesSource; $result.SharesProtectedHardware = $sharesOriginal
+    $result.Blockers += @($result.Capacity | Where-Object { -not $_.ConditionalFit } | ForEach-Object { 'Insufficient conditional capacity: ' + $_.Domain })
+    return [pscustomobject]$result
+}
+
+function Initialize-WslBackupBinaryTransport {
+    # Only low-level binary mechanics. Never launches a child or opens a VHD.
+    if (-not ('Revealfleet.Backup.BinaryTransport' -as [type])) {
+        Add-Type -Path (Join-Path $PSScriptRoot 'WslBackupTransport.cs') -ErrorAction Stop
+    }
+}

@@ -26,6 +26,7 @@
     "scripts/codex-home-migrate.py",
     "scripts/codex_adapter_lib.py",
     "scripts/codex-state-layout-v1.json",
-    "scripts/codex-desktop-layout-v1.json"
+    "scripts/codex-desktop-layout-v1.json",
+    "scripts/lib/WslBackupTransport.cs"
   ]
 }
