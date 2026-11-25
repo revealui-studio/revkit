@@ -322,7 +322,7 @@ reviewed binding"; user failed units are empty. Preserve that guard. No
 reset-failed, rebind, service change or claim of overall migration completion.
 
 
-## Controller-only privileged metadata fixture (unproved until executed)
+## Controller-only privileged metadata fixture
 
 The ordinary `--run` guard still refuses root. New `--run-privileged` is a
 separate controller-only protocol, never an elevation/override of that guard.
@@ -388,3 +388,78 @@ metadata/reserve are additional. No older receipt is rewritten or promoted.
 The later32MiB-hole success does not resolve the small-hole failure. Windows
 PowerShell evidence remains strict on its existing sparse property and is not
 changed by this Python-only increment; prior Windows receipts remain historical.
+
+
+## Synthetic encrypted recovery and sparse matrix
+
+`wsl-borg-fixture.py --run-recovery --parent <approved-private-ext4-parent>
+--release-inputs <retained-release-input-directory>` is a separate ordinary-user
+experiment. It refuses root and source checkouts, creates a new private workspace,
+reverifies all three pinned inputs plus the upstream signature, and accepts no
+user source, repository or key arguments. No production executor is enabled.
+Its fixed dataset is50,602,004 logical bytes; reserve at least1GiB free. Repeated
+attempts accumulate retained custody; inspect capacity before another run.
+
+A new repokey-blake2 repository receives synthetic content. Random synthetic
+passphrases are created with exclusive mode0600 files inside private0700 custody;
+only the documented BORG_PASSPHRASE_FD descriptor number reaches Borg's environment.
+No value fallback, ambient client state, secret output or secret hash is recorded.
+The encrypted key export and a separately stored passphrase copy are retained in
+recovery-artifacts. These are independent of the original client paths, on the
+same filesystem: this does NOT prove off-laptop or separate-hardware key custody.
+
+After export, the fixture models loss of the embedded repokey by removing only
+the key option from its NEW synthetic repository config with an atomic private
+replacement. Borg1.4.5's config CLI rejects key deletion (its option allowlist
+excludes key), so it is not used for this fault injection. No real repository may
+be supplied. An active repository lock, absent export or symlink refuses. The
+original synthetic client/source are renamed and never supplied to recovery
+commands; this proves path absence and fresh-state dependency isolation, not an
+OS-enforced denial of same-owner access. Evidence and original client are retained.
+
+A fresh HOME/config/cache/security state must receive modern Borg error44 before
+key import and error52 with a wrong passphrase after import; arbitrary failures
+cannot satisfy those controls. Import from the explicit export, check --verify-data
+and actual restored content/non-allocation metadata comparison must then succeed.
+Backend stdout/stderr remain undisclosed; receipts contain byte counts and exact
+exit codes only. The recovery export remains encrypted and requires its original
+passphrase, as described by [upstream key recovery](https://borgbackup.readthedocs.io/en/1.4.5/usage/key.html).
+[Passphrase FD and modern errors](https://borgbackup.readthedocs.io/en/1.4.5/usage/general.html)
+are supported upstream interfaces; errors44/52 are defined in the
+[pinned key implementation](https://github.com/borgbackup/borg/blob/1.4.5/src/borg/crypto/key.py).
+
+The same five-file matrix is archived with default chunking and separately with
+`--chunker-params=fixed,65536 --sparse`, then extracted using --sparse. Cases have
+8KiB,256KiB,8MiB and32MiB head/tail holes and an8MiB mixed-data layout. Inventory
+records original/restored logical length, allocation, content SHA256, ownership,
+mode, nanosecond times, ACLs, xattrs and flags. The strict comparator is unchanged;
+each policy/case reports its own rejection. completed=true means the experiment
+finished; it is not a blanket sparse/full-restore acceptance flag.
+
+Actual native ext4 observation reproduced default extraction's sparse-to-allocated
+failure for all cases except32MiB. Fixed64KiB input-hole detection preserved all
+five tested cases, including content and metadata, with matching allocated amounts.
+This agrees with [create](https://borgbackup.readthedocs.io/en/1.4.5/usage/create.html)
+(input hole detection requires the fixed chunker) and
+[extract](https://borgbackup.readthedocs.io/en/1.4.5/usage/extract.html)
+(sparse output operates on all-zero chunks). A hole embedded in a mixed default
+chunk cannot be reproduced by that extraction path. The old8MiB failure and later
+32MiB success remain separate unchanged evidence; no receipt is rewritten.
+
+The maintained candidate for NEW archives is fixed chunking with input-hole
+recognition, followed by strict restored-inventory acceptance. This does not repair
+existing archives, guarantee arbitrary/unaligned/dense-zero layouts, or establish
+privileged metadata fidelity with this candidate. Root's accepted fixture used
+the existing default archive profile. Chunking changes deduplication/cache/index
+cost and may alter non-sparse allocation; production policy requires further
+bounded acceptance and capacity measurements before adoption. Existing archives
+that fail sparse comparison remain rejected; no in-place rewriting/hole-punch
+workaround is offered. Full logical lengths plus reserve/metadata are budgeted,
+with zero compression/dedup/sparse credit even when observed allocation matches.
+
+Controller-reported accepted synthetic root metadata evidence closes its seven
+cases only. Actual independent key/passphrase custody, offline consistent source,
+full WSL restore/boot, restore capacity and independent hardware recovery remain
+unproved. No production backup, key, disk, mount, service or activation changes
+are part of this increment. No PowerShell module changed; Linux fixture results
+are not actual Windows execution evidence.

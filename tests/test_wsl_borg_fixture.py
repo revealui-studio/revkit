@@ -191,5 +191,91 @@ class PrivilegedBoundaryTests(unittest.TestCase):
                 with self.assertRaises(ValueError):fixture.privileged_workspace(leaf,bundle,sha)
             self.assertFalse(leaf.exists())
 
+class RecoveryBoundaryTests(unittest.TestCase):
+    def test_recovery_refuses_root_and_checkout_before_tool_or_secret_creation(self):
+        for root in (True, False):
+            with mock.patch.object(fixture.os, 'geteuid', return_value=0 if root else 1000), \
+                 mock.patch.object(fixture, 'prepare_tool') as tool, \
+                 mock.patch.object(fixture, 'private_secret') as secret:
+                with self.assertRaises(ValueError): fixture.recovery_fixture(ROOT, None)
+                tool.assert_not_called()
+                secret.assert_not_called()
+
+    def test_passphrase_never_enters_environment_and_output_is_redacted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            phrase = root / 'passphrase'
+            fixture.private_secret(phrase, b'synthetic-test-secret\n')
+            def backend(command, **kwargs):
+                self.assertNotIn('BORG_PASSPHRASE', kwargs['env'])
+                self.assertEqual(os.read(kwargs['pass_fds'][0], 100), b'synthetic-test-secret\n')
+                self.assertEqual(kwargs['env']['BORG_PASSPHRASE_FD'], str(kwargs['pass_fds'][0]))
+                return subprocess.CompletedProcess(command, 44, stdout=b'synthetic-test-secret', stderr=b'synthetic-test-secret')
+            with mock.patch.object(fixture.subprocess, 'run', side_effect=backend):
+                with self.assertRaises(RuntimeError) as caught:
+                    fixture.recovery_borg('/synthetic/borg', ['list'], cwd=root, env={}, passphrase=phrase)
+                self.assertNotIn('secret', str(caught.exception))
+                result = fixture.recovery_borg('/synthetic/borg', ['list'], cwd=root, env={}, passphrase=phrase, expected_exit=44)
+                self.assertNotIn('secret', str(result))
+            with mock.patch.object(fixture.subprocess, 'run') as run:
+                with self.assertRaises(ValueError):
+                    fixture.recovery_borg('/synthetic/borg', [], cwd=root, env={'BORG_PASSCOMMAND': 'anything'}, passphrase=phrase)
+                phrase.chmod(0o644)
+                with self.assertRaises(ValueError):
+                    fixture.recovery_borg('/synthetic/borg', [], cwd=root, env={}, passphrase=phrase)
+                run.assert_not_called()
+
+    def test_synthetic_key_loss_requires_export_and_preserves_other_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = root / 'repository'
+            repo.mkdir()
+            key = root / 'recovery-artifacts/exported-key'
+            key.parent.mkdir()
+            config = repo / 'config'
+            config.write_text('[repository]\nversion = 1\nid = synthetic-id\nkey = synthetic-encrypted-key\n')
+            with self.assertRaises(ValueError): fixture.remove_synthetic_key(root, repo, key)
+            self.assertIn('key =', config.read_text())
+            key.write_text('synthetic-export')
+            (repo / 'lock.exclusive').mkdir()
+            with self.assertRaises(ValueError): fixture.remove_synthetic_key(root, repo, key)
+            (repo / 'lock.exclusive').rmdir()
+            fixture.remove_synthetic_key(root, repo, key)
+            parsed = fixture.configparser.ConfigParser()
+            parsed.read(config)
+            self.assertFalse(parsed.has_option('repository', 'key'))
+            self.assertEqual(parsed['repository']['id'], 'synthetic-id')
+            self.assertEqual(key.read_text(), 'synthetic-export')
+            with self.assertRaises(ValueError): fixture.remove_synthetic_key(root, repo, key)
+
+    def test_negative_control_must_actually_reject(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            phrase = root / 'passphrase'
+            fixture.private_secret(phrase, b'synthetic\n')
+            with mock.patch.object(fixture.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, b'', b'')):
+                with self.assertRaises(RuntimeError):
+                    fixture.recovery_borg('/synthetic/borg', [], cwd=root, env={}, passphrase=phrase, expected_exit=44)
+
+    def test_real_sparse_matrix_reports_small_hole_loss_without_relaxing_content(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            root = Path(directory)
+            env = fixture.private_env(root)
+            tree = root / 'source'
+            fixture.make_sparse_matrix(tree)
+            before = fixture.observe(tree, env)
+            after = [dict(row) for row in before]
+            small = next(row for row in after if row['path'] == 'retained-shape-8MiB')
+            self.assertTrue(small['sparse'])
+            small.update(sparse=False, allocatedBytes=small['size']+4096)
+            report = fixture.sparse_assessment(before, after)
+            self.assertFalse(report['accepted'])
+            self.assertEqual(report['sparseCreditBytes'], 0)
+            self.assertIn('sparse', report['reason'])
+            small['sparse'] = True
+            small['contentSha256'] = 'corrupt'
+            self.assertFalse(fixture.sparse_assessment(before, after)['accepted'])
+
+
 if __name__ == '__main__':
     unittest.main()

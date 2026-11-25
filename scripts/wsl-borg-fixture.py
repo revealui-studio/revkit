@@ -2,9 +2,11 @@
 """Private synthetic Borg observer; never backs up an operator-supplied source.
 
 Extends WslBackup.ps1's evidence design with actual Linux fixture observations.
-No production executor, mount, secret key, retention or system installation.
+No production executor, mount, user key, retention or system installation.
 """
 import argparse
+import configparser
+import secrets
 import array
 import datetime
 import fcntl
@@ -78,7 +80,8 @@ def fetch(url, target, limit, expected=None):
 
 def verify_tool(root, binary, signature, public_key, env):
     """Verify pinned bytes and upstream detached signature before any execution."""
-    for path, expected in ((binary, SHA256), (signature, SIGNATURE_SHA256)):
+    for path, expected in ((binary, SHA256), (signature, SIGNATURE_SHA256),
+                           (public_key, PUBLIC_KEY_SHA256)):
         if path.is_symlink() or not path.is_file() or digest(path) != expected:
             raise ValueError('Unverified Borg release input')
     keyring = root / 'release-key.gpg'
@@ -340,6 +343,42 @@ def privileged_complete(entries, cases):
     return all(c['status'] == 'prepared' for c in cases)
 
 
+def ordinary_workspace(parent):
+    if platform.system() != 'Linux' or platform.machine() != 'x86_64' or os.geteuid() == 0:
+        raise ValueError('Fixture requires non-root Linux x86_64')
+    parent = Path(parent).absolute()
+    if parent.resolve() != parent or not parent.is_dir() or parent.stat().st_uid != os.getuid():
+        raise ValueError('Fixture parent must be an existing canonical owner directory')
+    if any((directory / '.git').exists() for directory in (parent, *parent.parents)):
+        raise ValueError('Retained private fixture evidence must be outside source checkouts; explicit custody approval required')
+    fs = subprocess.run(['/usr/bin/findmnt', '--noheadings', '--output', 'FSTYPE', '--target', str(parent)],
+                        capture_output=True, check=True, text=True).stdout.strip()
+    if fs != 'ext4':
+        raise ValueError('Real metadata fixture requires ext4, no mount will be created')
+    if shutil.disk_usage(parent).free < GIB:
+        raise ValueError('Fixture requires1GiB reserve; bounded dataset under80MiB; no sparse savings budgeted')
+    return Path(tempfile.mkdtemp(prefix='.revkit-borg-fixture-', dir=parent)), fs
+
+
+def prepare_tool(root, release_inputs, env):
+    binary = root / 'borg'
+    signature = root / (ASSET + '.asc')
+    public_key = root / 'release-key.asc'
+    if release_inputs is None:
+        fetch(RELEASE + ASSET, binary, 40 * 1024 * 1024, SHA256)
+        fetch(RELEASE + ASSET + '.asc', signature, 8192, SIGNATURE_SHA256)
+        fetch(KEY_URL, public_key, 1024 * 1024)
+    else:
+        # Reuse retained downloads, never execute them in place or trust a receipt.
+        for target, limit in ((binary, 40 * 1024 * 1024), (signature, 8192), (public_key, 1024 * 1024)):
+            source = Path(release_inputs) / target.name
+            if source.is_symlink() or not source.is_file() or source.stat().st_size > limit:
+                raise ValueError('Invalid bounded release input')
+            with source.open('rb') as incoming, target.open('xb') as outgoing:
+                shutil.copyfileobj(incoming, outgoing)
+    return binary, verify_tool(root, binary, signature, public_key, env)
+
+
 def fixture(parent=None, release_inputs=None, *, privileged=False, workspace=None, reviewed_source_sha256=None):
     if privileged:
         if platform.system() != 'Linux' or platform.machine() != 'x86_64' or not workspace or not release_inputs:
@@ -347,20 +386,7 @@ def fixture(parent=None, release_inputs=None, *, privileged=False, workspace=Non
         root = privileged_workspace(workspace, release_inputs, reviewed_source_sha256)
         fs = 'ext4'
     else:
-        if platform.system() != 'Linux' or platform.machine() != 'x86_64' or os.geteuid() == 0:
-            raise ValueError('Fixture requires non-root Linux x86_64')
-        parent = Path(parent).absolute()
-        if parent.resolve() != parent or not parent.is_dir() or parent.stat().st_uid != os.getuid():
-            raise ValueError('Fixture parent must be an existing canonical owner directory')
-        if any((directory / '.git').exists() for directory in (parent, *parent.parents)):
-            raise ValueError('Retained private fixture evidence must be outside source checkouts; explicit custody approval required')
-        fs = subprocess.run(['/usr/bin/findmnt', '--noheadings', '--output', 'FSTYPE', '--target', str(parent)],
-                            capture_output=True, check=True, text=True).stdout.strip()
-        if fs != 'ext4':
-            raise ValueError('Real metadata fixture requires ext4, no mount will be created')
-        if shutil.disk_usage(parent).free < GIB:
-            raise ValueError('Fixture requires1GiB reserve; fixed dataset under33MiB')
-        root = Path(tempfile.mkdtemp(prefix='.revkit-borg-fixture-', dir=parent))
+        root, fs = ordinary_workspace(parent)
     env = private_env(root)
     receipt = {'schemaVersion': 1, 'scope': 'synthetic-borg-ext4-fixture', 'root': str(root),
                'observerSha256': digest(Path(__file__)), 'privilegedMode': privileged,
@@ -378,22 +404,7 @@ def fixture(parent=None, release_inputs=None, *, privileged=False, workspace=Non
                                'offline WSL consistency, physical hardware failure and full restore/boot']}
     write_json(root / 'pending.json', receipt)
     try:
-        binary = root / 'borg'
-        signature = root / (ASSET + '.asc')
-        public_key = root / 'release-key.asc'
-        if release_inputs is None:
-            fetch(RELEASE + ASSET, binary, 40 * 1024 * 1024, SHA256)
-            fetch(RELEASE + ASSET + '.asc', signature, 8192, SIGNATURE_SHA256)
-            fetch(KEY_URL, public_key, 1024 * 1024)
-        else:
-            # Reuse retained downloads, never execute them in place or trust a receipt.
-            for target, limit in ((binary, 40 * 1024 * 1024), (signature, 8192), (public_key, 1024 * 1024)):
-                source = Path(release_inputs) / target.name
-                if source.is_symlink() or not source.is_file() or source.stat().st_size > limit:
-                    raise ValueError('Invalid bounded release input')
-                with source.open('rb') as incoming, target.open('xb') as outgoing:
-                    shutil.copyfileobj(incoming, outgoing)
-        receipt['tool'] = verify_tool(root, binary, signature, public_key, env)
+        binary, receipt['tool'] = prepare_tool(root, release_inputs, env)
         tree = root / 'source'
         make_source(tree, env)
         cases = make_privileged_source(tree) if privileged else []
@@ -447,12 +458,198 @@ def fixture(parent=None, release_inputs=None, *, privileged=False, workspace=Non
         raise RuntimeError(f'Fixture refused; retained evidence at {root}: {exc}') from exc
 
 
+def private_secret(path, value):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'wb') as stream:
+        stream.write(value)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def recovery_borg(binary, args, *, cwd, env, passphrase, expected_exit=0):
+    """Only private synthetic secrets; never propagate command output on failure."""
+    if any(name in env for name in ('BORG_PASSPHRASE', 'BORG_NEW_PASSPHRASE', 'BORG_PASSCOMMAND')):
+        raise ValueError('Secret environment-value fallback refused')
+    info = passphrase.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
+        raise ValueError('Synthetic passphrase requires owner-only regular custody')
+    fd = os.open(passphrase, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        child_env = dict(env, BORG_PASSPHRASE_FD=str(fd), BORG_EXIT_CODES='modern')
+        result = subprocess.run([str(binary), *args], cwd=cwd, env=child_env,
+                                stdin=subprocess.DEVNULL, capture_output=True, pass_fds=(fd,),
+                                timeout=120, check=False)
+    finally:
+        os.close(fd)
+    if result.returncode != expected_exit:
+        raise RuntimeError('Synthetic Borg recovery step refused; exit=' + str(result.returncode))
+    # Even successful output may contain sensitive configuration. Retain counts only.
+    return {'exitCode': result.returncode, 'stdoutBytes': len(result.stdout),
+            'stderrBytes': len(result.stderr), 'expectedFailure': expected_exit != 0}
+
+
+def make_sparse_matrix(tree):
+    """Fixed bounded ext4 cases; no source arguments, scanning or live data."""
+    tree.mkdir(mode=0o700)
+    for name, size, mixed in (('small-8KiB', 8192, False),
+                              ('medium-256KiB', 256*1024, False),
+                              ('retained-shape-8MiB', 8*1024*1024, False),
+                              ('large-32MiB', 32*1024*1024, False),
+                              ('mixed-8MiB', 8*1024*1024, True)):
+        path = tree / name
+        with path.open('xb') as stream:
+            stream.write(b'head')
+            if mixed:
+                stream.seek(size//2)
+                stream.write(bytes(range(256))*256)
+            stream.seek(size)
+            stream.write(b'tail')
+        path.chmod(0o640)
+        os.setxattr(path, 'user.revkit-matrix', b'synthetic')
+    for path in [*tree.iterdir(), tree]:
+        os.utime(path, ns=(1900000000123456789, 1700000100987654321))
+
+
+def sparse_assessment(before, after):
+    """Strict acceptance unchanged; report each rejected case without hiding others."""
+    observations = []
+    right = {row['path']: row for row in after}
+    for row in before:
+        restored = right.get(row['path'])
+        try:
+            budget = compare([row], [restored] if restored else [])
+            observations.append({'path': row['path'], 'accepted': True, 'allocationBudget': budget})
+        except ValueError as exc:
+            observations.append({'path': row['path'], 'accepted': False, 'reason': str(exc)})
+    # Whole-tree comparison also detects unexpected entries.
+    try:
+        budget = compare(before, after)
+        return {'accepted': True, 'cases': observations, 'allocationBudget': budget}
+    except ValueError as exc:
+        return {'accepted': False, 'cases': observations, 'reason': str(exc), 'sparseCreditBytes': 0}
+
+
+def remove_synthetic_key(root, repo, exported_key):
+    if (repo != root / 'repository' or repo.is_symlink() or
+        exported_key != root / 'recovery-artifacts/exported-key' or
+        exported_key.is_symlink() or not exported_key.is_file() or
+        (repo / 'lock.exclusive').exists()):
+        raise ValueError('Synthetic key loss requires fresh unlocked fixture and retained export')
+    config = configparser.ConfigParser()
+    path = repo / 'config'
+    if path.is_symlink():
+        raise ValueError('Synthetic config symlink refused')
+    config.read(path)
+    if not config.remove_option('repository', 'key'):
+        raise ValueError('Synthetic embedded key already absent')
+    temporary = repo / 'config.synthetic-key-loss'
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as stream:
+        config.write(stream)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+    del config
+    observed = configparser.ConfigParser()
+    observed.read(path)
+    if observed.has_option('repository', 'key'):
+        raise ValueError('Synthetic key loss did not occur')
+
+
+def recovery_fixture(parent, release_inputs):
+    """New synthetic repokey only; no arbitrary repository/key/source inputs."""
+    root, fs = ordinary_workspace(parent)
+    env = private_env(root)
+    receipt = {'schemaVersion': 1, 'scope': 'synthetic-encrypted-recovery-sparse-matrix',
+               'root': str(root), 'filesystem': fs, 'observerSha256': digest(Path(__file__)),
+               'productionExecutionAllowed': False, 'fullRestoreAccepted': False,
+               'offLaptopKeyCustodyProved': False, 'encryptedKeyRecoveryVerified': False,
+               'completed': False, 'sparseCreditBytes': 0, 'steps': []}
+    write_json(root / 'pending.json', receipt)
+    try:
+        binary, receipt['tool'] = prepare_tool(root, release_inputs, env)
+        original = root / 'original-client'
+        original.mkdir(mode=0o700)
+        original_env = private_env(original)
+        recovery = root / 'recovery-artifacts'
+        recovery.mkdir(mode=0o700)
+        secret = secrets.token_hex(32).encode() + b'\n'
+        private_secret(original / 'passphrase', secret)
+        private_secret(recovery / 'passphrase', secret)
+        del secret
+        private_secret(root / 'wrong-passphrase', secrets.token_hex(32).encode() + b'\n')
+        repo = root / 'repository'
+        archive = str(repo) + '::'
+        def borg(label, args, client_env, phrase, *, cwd=root, expected_exit=0):
+            step = recovery_borg(binary, args, cwd=cwd, env=client_env,
+                                 passphrase=phrase, expected_exit=expected_exit)
+            receipt['steps'].append(dict(step, label=label))
+        phrase = original / 'passphrase'
+        borg('init-repokey-blake2', ['init', '--encryption=repokey-blake2', str(repo)], original_env, phrase)
+        tree = root / 'source'
+        make_sparse_matrix(tree)
+        before = observe(tree, env)
+        write_json(root / 'source-inventory.json', before)
+        policies = [('default', []), ('fixed-64KiB', ['--chunker-params=fixed,65536', '--sparse'])]
+        for name, options in policies:
+            borg('create-' + name, ['create', '--numeric-ids', '--atime', '--files-cache=disabled',
+                                   *options, archive+name, 'source'], original_env, phrase)
+        key = recovery / 'exported-key'
+        borg('export-key', ['key', 'export', str(repo), str(key)], original_env, phrase)
+        key.chmod(0o600)
+        # Fault injection, NOT an operational Borg configuration command. Borg's
+        # config CLI intentionally does not expose key deletion. Only our fresh
+        # private synthetic repository is altered, after independent key export.
+        remove_synthetic_key(root, repo, key)
+        receipt['steps'].append({'label': 'synthetic-embedded-key-loss-injection'})
+        original.rename(root / 'original-client-unavailable')
+        tree.rename(root / 'source-unavailable')
+        fresh = root / 'fresh-client'
+        fresh.mkdir(mode=0o700)
+        fresh_env = private_env(fresh)
+        recovery_phrase = recovery / 'passphrase'
+        borg('missing-key-negative-control', ['list', str(repo)], fresh_env, recovery_phrase, expected_exit=44)
+        borg('import-exported-key', ['key', 'import', str(repo), str(key)], fresh_env, recovery_phrase)
+        borg('wrong-passphrase-negative-control', ['list', str(repo)], fresh_env,
+             root / 'wrong-passphrase', expected_exit=52)
+        borg('verify-data-fresh-client', ['check', '--verify-data', str(repo)], fresh_env, recovery_phrase)
+        receipt['sparseMatrix'] = {}
+        for name, options in policies:
+            target = root / ('restored-' + name)
+            target.mkdir(mode=0o700)
+            borg('extract-' + name, ['extract', '--numeric-ids', '--sparse', archive+name],
+                 fresh_env, recovery_phrase, cwd=target)
+            after = observe(target / 'source', env)
+            write_json(root / ('restored-' + name + '-inventory.json'), after)
+            receipt['sparseMatrix'][name] = sparse_assessment(before, after)
+        # Encryption/key acceptance requires actual restored content AND all non-allocation metadata.
+        # Sparse rejection remains separately visible and cannot make full recovery green.
+        after_without_sparse = [{**row, 'sparse': False} for row in after]
+        before_without_sparse = [{**row, 'sparse': False} for row in before]
+        compare(before_without_sparse, after_without_sparse)
+        receipt.update(completed=True, encryptedKeyRecoveryVerified=True,
+                       originalKeyRemovedBeforeImport=True, originalClientPathAbsent=not original.exists(),
+                       sourcePathAbsent=not tree.exists(),
+                       isolation='Original paths renamed; not OS-enforced inaccessible or off-laptop custody',
+                       encryption='repokey-blake2', logicalSourceBytes=sum(row['size'] or 0 for row in before),
+                       unprovedGates=['off-laptop independent key/passphrase custody', 'offline consistent source',
+                                      'full WSL restore', 'independent hardware recovery', 'arbitrary sparse layouts'])
+        write_json(root / 'result.json', receipt)
+        return receipt
+    except Exception as exc:
+        # Never serialize backend stdout/stderr, key bytes or passphrase values.
+        receipt['failure'] = type(exc).__name__ + ': synthetic recovery refused'
+        write_json(root / 'failed.json', receipt)
+        raise RuntimeError(f'Synthetic recovery refused; evidence retained at {root}; {type(exc).__name__}') from None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--privileged-plan', action='store_true', help='Read-only source/release hashes and controller argv')
     parser.add_argument('--run-privileged', action='store_true', help='Controller-only synthetic root metadata mode')
     parser.add_argument('--workspace', type=Path, help='NEW UUID leaf under fixed root-owned synthetic base')
     parser.add_argument('--reviewed-source-sha256')
+    parser.add_argument('--run-recovery', action='store_true', help='New synthetic encrypted recovery and sparse matrix only')
     parser.add_argument('--run', action='store_true', help='Download/verify tool and run fixed synthetic fixture only')
     parser.add_argument('--parent', type=Path, help='Existing private ext4 development directory, never a real disk root')
     parser.add_argument('--release-inputs', type=Path, help='Optional retained downloads; all provenance is reverified')
@@ -468,7 +665,7 @@ def main():
                 '--release-inputs', str(bundle), '--reviewed-source-sha256', sha],
             'productionExecutionAllowed': False}, indent=2))
         return
-    if args.run and args.run_privileged:
+    if sum((args.run, args.run_privileged, args.run_recovery)) > 1:
         parser.error('Ordinary and privileged modes are mutually exclusive')
     if args.run_privileged:
         if args.parent:
@@ -478,6 +675,10 @@ def main():
         print(json.dumps(result, indent=2))
         if not result['passed']:
             raise SystemExit(3)
+    elif args.run_recovery:
+        if args.parent is None or args.workspace or args.reviewed_source_sha256:
+            parser.error('--run-recovery requires ordinary --parent and refuses privileged inputs')
+        print(json.dumps(recovery_fixture(args.parent, args.release_inputs), indent=2))
     elif args.run:
         if args.parent is None:
             parser.error('--run requires --parent')
