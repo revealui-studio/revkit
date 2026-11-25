@@ -16,7 +16,7 @@ import tempfile
 import tomllib
 import uuid
 
-from codex_adapter_lib import (Refused, contains_home, encode, is_link, path_flavor, private_directory,
+from codex_adapter_lib import (Refused, contains_home, encode, is_link, is_storage_container, path_flavor, private_directory,
                                parsed_path, rebase_storage, references, require, storage_relative, toml_edit)
 from codex_adapter_lib import windows_access_batch, windows_access_inventory
 
@@ -264,7 +264,7 @@ def database_snapshot(connection):
 
 def classify_document(relative, text, old_home):
     name = Path(relative).name.casefold()
-    if Path(relative).parts[0] in {"sessions", "archived_sessions"} or name in {"history.jsonl"}:
+    if is_storage_container(Path(relative).parts, path_flavor(old_home)) or name in {"history.jsonl"}:
         return []
     try:
         value = tomllib.loads(text) if name.endswith(".toml") else json.loads(text)
@@ -470,13 +470,13 @@ def plan(source, target):
             path = source / relative
             if entry["kind"] == "file" and (path.suffix.casefold() in {".sqlite", ".db", ".sqlite3", ".json", ".toml"}
                                               or path.name.casefold().endswith(("-wal", "-shm"))):
-                if Path(relative).parts[0] in {"sessions", "archived_sessions"}:
+                if is_storage_container(Path(relative).parts, path_flavor(str(source))):
                     continue
                 dest = scratch / relative
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(path, dest)
         for relative, entry in manifest.items():
-            if entry["kind"] == "file" and Path(relative).parts[0] in {"sessions", "archived_sessions"}:
+            if entry["kind"] == "file" and is_storage_container(Path(relative).parts, path_flavor(str(source))):
                 dest = scratch / relative
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.touch()
@@ -580,7 +580,7 @@ def verify(target):
     for row in receipt["rollout_baseline"]:
         relative = PurePosixPath(row["relative"])
         parts = relative.parts
-        require(not relative.is_absolute() and len(parts) >= 2 and parts[0] in {"sessions", "archived_sessions"}
+        require(not relative.is_absolute() and len(parts) >= 2 and is_storage_container(parts, path_flavor(receipt["source"]))
                 and ".." not in parts and "/".join(parts) == row["relative"]
                 and row["presence"] in {"present", "missing"}, "invalid rollout baseline path or state")
         require(rollout_presence(receipt["source"], parts) == row["presence"]

@@ -37,7 +37,59 @@ This does not prove application adoption. Verify actual manager/cache consumers
 in an ordinary agent child after the supported application reload/restart. Tests
 using manually injected values establish adapter behavior only.
 
+## Reviewed native Linux shell actions
+
+The native user config can contain an owner startup entry that was never emitted
+by a maintained generator. Matching its value does not establish deployment
+ownership. `retire-reviewed-startup` is a separate reviewed policy retirement;
+ordinary runtime-home projection continues to preserve owner `BASH_ENV` and
+reject new startup assignments.
+
+Apply these actions in this order from the reviewed maintained adapter:
+
+1. Run `project-native-session --config ~/.codex/config.toml --platform linux`.
+   It derives only `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` from canonical
+   `/run/user/<current UID>`. It requires an owned, nonlinked mode-0700 directory
+   and an owned nonlinked Unix socket with a live listener, using a bounded
+   connect-only probe. It starts no manager and sends no bus messages. Identical
+   owner entries are retained; conflicts or filter exclusions refuse. No PATH,
+   SSH socket or credential fields are projected.
+2. Review that dry run, then rerun it with `--apply --reviewed-sha256 <before hash>`.
+   This projects the verified session before removing its previous startup route.
+3. Run a fresh `retire-reviewed-startup --config ~/.codex/config.toml --platform
+   linux --expected-value '~/.config/shell/env.sh'` dry run. Only the exact
+   `shell_environment_policy.set.BASH_ENV` entry with that reviewed literal is
+   eligible. Unknown values, other startup overrides, noncanonical config paths
+   and unreviewed metadata refuse. The verified native session must already be
+   projected before retirement can proceed.
+4. Review that new dry run, then add `--apply --reviewed-sha256 <new before hash>`.
+   The earlier projection hash is stale and cannot authorize retirement.
+
+Both actions default to dry runs and retain core inheritance, byte-exact private
+backups, owner settings and the existing atomic ACL-preserving write boundary.
+They never edit the push admission boundary or clear variables for one command.
+Actual adoption still requires ordinary fresh child commands and native bus,
+package-manager, hook, Git/signing and service checks. An absent SSH socket is a
+consumer result to investigate; these actions do not project an SSH agent.
+
 ## Offline state copy
+
+The supported set includes seven CLI databases and the two distinct desktop
+layouts at `sqlite/codex.db` and `sqlite/codex-dev.db`. Both desktop versions are
+34, with separate 40/33-entry migration ledgers. Exact relative paths, schemas
+and migration checksums are validated; both descriptor byte hashes are sealed in
+the receipt. Desktop rows, account assignments, schedules and historical messages
+are unchanged. Current workspace/environment fields receive named review actions.
+
+Indexed rollout absence is measured before copying against normalized source
+paths and the source manifest. Permission errors and linked ancestry refuse;
+copying cannot turn a present rollout into a recorded preexisting absence.
+Missing JSONL alone does not establish missing history. Preserve database-backed
+history and unprojected baseline limitations; do not fabricate files or drop rows.
+The copied root configuration projects its adopted `CODEX_HOME` to ordinary
+children while preserving core inheritance and refusing owner identity/filter
+conflicts. See [offline cutover and acceptance](codex-offline-cutover.md) for the
+supported Quit, registration, reload, resume-first and rollback sequence.
 
 Use `scripts/codex-home-migrate.py plan --source <old-home> --target <new-home>`
 before `prepare` with the same arguments. Both require no writers, a recognized

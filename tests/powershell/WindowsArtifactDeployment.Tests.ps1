@@ -90,6 +90,8 @@ Describe 'Explicit fleet profile reconciliation' {
     BeforeAll {
         $script:FleetProfile = @'
 # Owner preferences stay intact
+if ($env:_PROFILE_LOADED) { return }
+$env:_PROFILE_LOADED = '1'
 $ownerModel = 'owner-model'
 # Always use Ubuntu (historical location comment)
 wsl --set-default Ubuntu >$null 2>&1
@@ -106,6 +108,8 @@ function Owner-Command { 'keep me' }
         $changed = Update-RevkitWindowsFleetProfile -Content $script:FleetProfile
         $changed.Contains('--set-default') | Should -BeFalse
         $changed.Contains('function revealfleet') | Should -BeFalse
+        $changed.Contains('$env:_PROFILE_LOADED') | Should -BeFalse
+        $changed.Contains('$script:_RevkitProfilePid = $PID') | Should -BeTrue
         $changed.Contains("`$ownerModel = 'owner-model'") | Should -BeTrue
         $changed.Contains("function Owner-Command { 'keep me' }") | Should -BeTrue
         Update-RevkitWindowsFleetProfile -Content $changed | Should -BeExactly $changed

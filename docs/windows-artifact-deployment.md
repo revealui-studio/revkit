@@ -26,6 +26,8 @@ The module exports the canonical `revealfleet` entry point, which launches only
 when the owner invokes it. No compatibility alias is installed. Unknown launcher
 customizations refuse adoption; unrelated owner functions and preferences stay.
 The bootstrap route exposes the same switch and packaged-source manifest pin.
+The recognized exported boolean startup guard becomes a script-scoped PID guard,
+so a fresh child process cannot inherit a flag that skips its own profile.
 
 The native `scripts/build-windows-artifacts.py` builder packages files from
 Git's tracked index after verifying they match committed `HEAD`. It reads the

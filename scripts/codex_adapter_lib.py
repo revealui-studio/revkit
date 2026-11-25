@@ -12,6 +12,9 @@ class Refused(ValueError):
     pass
 
 
+TOML_DELETE = object()
+
+
 def require(condition, reason):
     if not condition:
         raise Refused(reason)
@@ -68,6 +71,10 @@ def parsed_path(value, flavor=None):
     return path
 
 
+def is_storage_container(parts, flavor):
+    return bool(parts) and (parts[0].casefold() if flavor == "windows" else parts[0]) in {"sessions", "archived_sessions"}
+
+
 def storage_relative(value, old_home):
     flavor = path_flavor(old_home)
     old = parsed_path(old_home, flavor)
@@ -76,9 +83,10 @@ def storage_relative(value, old_home):
         relative = value_path.relative_to(old)
     except ValueError:
         raise Refused("storage path is outside the source home") from None
-    require(relative.parts and relative.parts[0] in {"sessions", "archived_sessions"},
+    require(is_storage_container(relative.parts, flavor),
             "indexed rollout is not in a supported storage directory")
-    require(relative.suffix == ".jsonl", "indexed rollout has an unsupported extension")
+    suffix = relative.suffix.casefold() if flavor == "windows" else relative.suffix
+    require(suffix == ".jsonl", "indexed rollout has an unsupported extension")
     return relative.parts
 
 
@@ -392,12 +400,18 @@ def toml_edit(text, edits):
                 for key in edit[len(path):-1]:
                     require(isinstance(cursor.get(key), dict), "unsupported nested TOML edit")
                     cursor = cursor[key]
-                cursor[edit[-1]] = changes.pop(edit)
-        replacement = statement[:split + 1] + " " + toml_literal(value) + "\n"
+                requested = changes.pop(edit)
+                if requested is TOML_DELETE:
+                    require(edit[-1] in cursor, "TOML deletion target is missing")
+                    del cursor[edit[-1]]
+                else:
+                    cursor[edit[-1]] = requested
+        replacement = "" if value is TOML_DELETE else statement[:split + 1] + " " + toml_literal(value) + "\n"
         replacements.append((start, end, replacement))
     if changes:
         grouped = {}
         for path, value in changes.items():
+            require(value is not TOML_DELETE, "TOML deletion target was not located")
             grouped.setdefault(path[:-1], []).append((path[-1], value))
         for table, entries in grouped.items():
             header = ".".join(toml_literal(p) for p in table)
@@ -419,7 +433,24 @@ def toml_edit(text, edits):
         cursor = expected
         for key in path[:-1]:
             cursor = cursor.setdefault(key, {})
-        cursor[path[-1]] = value
-    require(tomllib.loads(text) == expected, "TOML edit did not preserve unrelated settings")
+        if value is TOML_DELETE:
+            require(path[-1] in cursor, "TOML deletion target is missing")
+            del cursor[path[-1]]
+        else:
+            cursor[path[-1]] = value
+    actual = tomllib.loads(text)
+    for path, value in edits.items():
+        if value is not TOML_DELETE:
+            continue
+        for length in range(len(path) - 1, 0, -1):
+            parent = expected
+            observed = actual
+            for key in path[:length - 1]:
+                parent = parent[key]
+                observed = observed.get(key, {})
+            key = path[length - 1]
+            if parent.get(key) == {} and key not in observed:
+                del parent[key]
+    require(actual == expected, "TOML edit did not preserve unrelated settings")
     return text
 

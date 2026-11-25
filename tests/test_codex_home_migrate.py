@@ -148,6 +148,17 @@ class MigrationTests(unittest.TestCase):
             with self.subTest(text=text), self.assertRaises(Refused):
                 ADAPTER.project_copied_home(text, str(self.source), str(self.target))
 
+    @unittest.skipUnless(os.name == "nt", "requires native Windows filesystem case equivalence")
+    def test_case_equivalent_session_paths_plan_prepare_and_verify(self):
+        (self.source / "sessions").rename(self.source / "SESSIONS")
+        relative = self.rollout.relative_to(self.source)
+        mixed = self.source.joinpath(*[part.upper() for part in relative.parts])
+        with closing(sqlite3.connect(self.source / "state_5.sqlite")) as connection, connection:
+            connection.execute("UPDATE threads SET rollout_path=?", (str(mixed),))
+        self.assertEqual(ADAPTER.plan(self.source, self.target)["status"], "planned")
+        ADAPTER.prepare(self.source, self.target)
+        self.assertEqual(ADAPTER.verify(self.target)["status"], "verified")
+
     def test_prepare_rebases_only_index_and_preserves_history_auth_and_rows(self):
         before = ADAPTER.inventory(self.source)
         connection = sqlite3.connect(self.source / "state_5.sqlite")
@@ -391,6 +402,14 @@ class MigrationTests(unittest.TestCase):
 
 
 class PathTests(unittest.TestCase):
+    def test_windows_storage_case_equivalence_preserves_spelling(self):
+        old, new = r"C:\fixture\codex", r"E:\fixture\codex"
+        value = old + r"\SESSIONS\2026\ROLLOUT.JSONL"
+        self.assertEqual(rebase_storage(value, old, new), new + r"\SESSIONS\2026\ROLLOUT.JSONL")
+        self.assertEqual(ADAPTER.classify_document("SESSIONS/history.json", old, old), [])
+        with self.assertRaises(Refused):
+            storage_relative("/synthetic/native/SESSIONS/rollout.JSONL", "/synthetic/native")
+
     def test_ordinary_extended_and_case_insensitive_windows_paths(self):
         old = r"C:\Synthetic\owner\.codex"
         new = r"E:\AI\windows\codex"

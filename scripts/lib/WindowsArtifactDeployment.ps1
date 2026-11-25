@@ -46,6 +46,15 @@ function Update-RevkitWindowsFleetProfile {
     foreach ($edit in @($edits | Sort-Object Start -Descending)) {
         $Content = $Content.Substring(0, $edit.Start) + $Content.Substring($edit.End)
     }
+    $guard = @'
+if ((Get-Variable -Name _RevkitProfilePid -Scope Script -ErrorAction SilentlyContinue) -and $script:_RevkitProfilePid -eq $PID) { return }
+$script:_RevkitProfilePid = $PID
+'@
+    foreach ($newline in @("`n", "`r`n")) {
+        $oldGuard = 'if ($env:_PROFILE_LOADED) { return }' + $newline + '$env:_PROFILE_LOADED = ''1'''
+        $Content = $Content.Replace($oldGuard, $guard)
+    }
+    if ($Content.Contains('$env:_PROFILE_LOADED')) { throw 'Unknown inherited profile guard requires source review.' }
     return $Content.Replace('# Lives on C: drive so it works without external drives', '# Local entry point loads the reviewed Windows artifact release.')
 }
 
