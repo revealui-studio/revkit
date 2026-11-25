@@ -27,6 +27,10 @@
     "scripts/codex_adapter_lib.py",
     "scripts/codex-state-layout-v1.json",
     "scripts/codex-desktop-layout-v1.json",
-    "scripts/lib/WslBackupTransport.cs"
+    "scripts/lib/WslBackupTransport.cs",
+    "scripts/lib/WslColdProtocol.cs",
+    "scripts/lib/wsl_cold_container.py",
+    "scripts/wsl-cold-worker.py",
+    "scripts/lib/WslColdSourceLease.cs"
   ]
 }

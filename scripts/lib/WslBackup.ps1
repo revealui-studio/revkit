@@ -787,3 +787,56 @@ function Initialize-WslBackupBinaryTransport {
         Add-Type -Path (Join-Path $PSScriptRoot 'WslBackupTransport.cs') -ErrorAction Stop
     }
 }
+
+function Initialize-WslColdWorkerProtocol {
+    [CmdletBinding()]
+    param()
+    if (-not ('Revealfleet.Backup.ColdProtocol' -as [type])) {
+        Add-Type -Path (Join-Path $PSScriptRoot 'WslColdProtocol.cs')
+        Add-Type -Path (Join-Path $PSScriptRoot 'WslColdSourceLease.cs')
+    }
+}
+
+function Get-WslColdWorkerLaunchPlan {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$WorkerDistro,
+          [Parameter(Mandatory)][Guid]$WorkerRegistrationId,
+          [Parameter(Mandatory)][Guid]$SourceRegistrationId,
+          [Parameter(Mandatory)][Guid]$ProtectedRegistrationId)
+    Assert-WslBackupLeaf $WorkerDistro
+    if ($WorkerRegistrationId -eq [Guid]::Empty -or $SourceRegistrationId -eq [Guid]::Empty -or
+        $ProtectedRegistrationId -eq [Guid]::Empty -or $WorkerRegistrationId -eq $SourceRegistrationId -or
+        $WorkerRegistrationId -eq $ProtectedRegistrationId) { throw 'Worker registration must be distinct from source and protected recovery.' }
+    # A plan is not a Process or authority to start a distribution. No registry or
+    # wsl.exe access, default-distribution selection, shell strings or environment secrets.
+    [pscustomobject]@{
+        Protocol = 'revkit-cold-worker-v1'; Profile = 'cold-vhd-container-v1'; CanExecute = $false
+        FileName = 'wsl.exe'; UseShellExecute = $false; CreateNoWindow = $true
+        ArgumentList = @('--distribution',$WorkerDistro,'--exec','/usr/bin/python3','-I','-B',
+            '/opt/revkit/wsl-cold-worker.py','--serve')
+        WorkerRegistrationId = $WorkerRegistrationId.ToString('D')
+        MissingAdmission = @('immutable worker/runtime deployment','authoritative registration and final-handle cold source lease',
+            'actual selected-worker Windows protocol acceptance','exclusive repository/native lock plan',
+            'fresh capacity and source-outage plan','independent key recovery custody')
+    }
+}
+
+function Resolve-WslColdRegistrationBinding {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Distro,[Parameter(Mandatory)][Guid]$ExpectedRegistrationId)
+    if (-not $IsWindows) { throw 'Authoritative WSL registration resolution requires Windows.' }
+    Assert-WslBackupLeaf $Distro
+    if ($ExpectedRegistrationId -eq [Guid]::Empty) { throw 'Explicit registered UUID required.' }
+    $rows = @(Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss' -ErrorAction Stop |
+        ForEach-Object { Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction Stop } |
+        Where-Object { $_.DistributionName -ceq $Distro })
+    if ($rows.Count -ne 1 -or [Guid]$rows[0].PSChildName -ne $ExpectedRegistrationId) { throw 'Distribution registration binding is missing, changed or ambiguous.' }
+    $row=$rows[0]
+    $leaf=if ($row.PSObject.Properties.Name -contains 'VhdFileName') { [string]$row.VhdFileName } else { 'ext4.vhdx' }
+    Assert-WslBackupLeaf $leaf
+    if ([string]::IsNullOrWhiteSpace([string]$row.BasePath)) { throw 'Registered VHD base path is absent.' }
+    $path=[IO.Path]::GetFullPath((Join-Path $row.BasePath $leaf))
+    if ($path.StartsWith('\\?\',[StringComparison]::Ordinal) -and $path.Length -gt 6 -and $path[5] -eq ':') { $path=$path.Substring(4) }
+    if ($path.Length -lt 4 -or $path[1] -ne ':' -or $path[2] -ne '\') { throw 'Registered VHD must resolve to a local drive path.' }
+    [pscustomobject]@{Distro=$Distro;RegistrationId=$ExpectedRegistrationId.ToString('D');CanonicalCandidate=$path;ColdProved=$false;LeaseHeld=$false}
+}

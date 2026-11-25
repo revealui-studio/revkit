@@ -797,8 +797,9 @@ and stage exact reviewed runtime/source in immutable non-user-writable custody
 where privileged consumers require it. Test the maintained transport through that
 explicit worker using a NEW synthetic source BEFORE any real VHD. Existing native
 --run-container can prove that worker's Borg/crypto path after approved isolated
-staging, but does not test wsl.exe pipe/sharing behavior. A fixed operational worker
-protocol/launch wrapper and its actual Windows integration are still missing;
+staging, but does not test wsl.exe pipe/sharing behavior. The fixed worker engine
+and binary protocol are implemented below; immutable production admission and
+actual selected-worker Windows integration are still missing;
 there is intentionally no production --create/--restore arbitrary-path CLI.
 
 ### Ordered real-operation gates and reviewable transaction design
@@ -845,3 +846,184 @@ worker, attach a disk, create real keys/repositories or change runtime/security/
 services. Production execution stays unavailable until a reviewed operational
 implementation and actual named gates exist. No extra guest census is imposed
 on opaque byte custody, and no filesystem-profile gate is removed.
+
+### Worker protocol increment: implemented engine, admission still closed
+
+The next maintained increment extends WslBackup, not a second backup framework.
+WslColdProtocol.cs owns the .NET framed binary exchange; wsl_cold_container.py
+owns fixed Borg commands, process lifetime and durable journals. WslColdSourceLease.cs
+owns Windows final-handle/file-ID/read-share mechanics. Existing BinaryTransport
+remains unchanged for existing callers. Get-WslColdWorkerLaunchPlan returns a fixed
+ArgumentList, never launches wsl.exe. Resolve-WslColdRegistrationBinding resolves
+one exact name/UUID in the owner's registry, honoring registered VhdFileName (only
+absent property defaults to ext4.vhdx). A resolved path is NOT stopped/cold proof.
+
+This is a finite source increment, **not a completed production controller**.
+weekly-wsl-backup -RecoveryBackend borg-container-readiness -Execute still refuses
+before touching a source, worker or repository. wsl-cold-worker.py --serve also
+refuses before reading stdin/secrets or touching a backend. --readiness is the
+only supported worker command and exits3 with named missing gates. No wire field,
+fixture flag, observation boolean or imported test harness grants admission.
+Engine Session is deployment-internal, not an arbitrary-path operational CLI.
+Test helpers under tests/helpers are supplemental tests and MUST NOT be deployed
+as runtime dependencies. The existing fixture observer remains synthetic-only.
+
+#### Versioned binary transaction
+
+revkit-cold-worker-v1 binds cold-vhd-container-v1, a controller-reviewed binding
+SHA256, unique operation UUID, explicit archive UUID, phase, full byte count and
+lowercase SHA256. Backup requires archive UUID == operation UUID; restore uses a
+new operation UUID and an explicitly identified existing archive UUID. The binding
+must eventually cover authoritative source/worker/protected registrations, source
+canonical handle/file identity, repository identity/native archive identity,
+immutable runtime/source hashes, capacity/custody/outage receipts and the profile.
+No name such as latest, arbitrary backend command or shell string is accepted.
+The current engine binds the supplied digest; it does NOT certify those missing
+external facts. Receipts explicitly say productionAccepted=false.
+
+Each frame has one ASCII kind byte and uint32 little-endian payload length, then
+exactly that many bytes. R/E/K/A/Z/F JSON is <=16KiB, D binary <=64KiB, S private
+secure input <=1024 bytes, H heartbeat and C cancel have zero payload. Strict JSON
+rejects duplicate/unknown fields and substituted versions/profiles/identities;
+Python rejects nonfinite numbers, booleans as byte counts and malformed UTF8.
+A two-item input queue bounds buffering. Finite whole-transaction and inter-frame
+idle deadlines are separate. Heartbeats are serialized with data/control writes.
+EOF, excess/truncation, diagnostic overflow, nonzero exit or wrong hashes refuse.
+No PowerShell text pipeline carries container or secret bytes.
+
+Backup order: R,S,D*,E; worker performs create, check --verify-data and extract
+--stdout; worker emits D* then A. Controller independently checks all readback
+bytes/hash and awaits producer completion. It sends K bound to the exact A bytes;
+only then does worker fsync a committed journal record and emit identical Z,
+then EOF/exit0. A alone is NOT final acceptance. Secret input goes to an anonymous
+private memfd inherited only by Borg; argv/environment contain FD NUMBER only.
+No passphrase environment-value fallback or child diagnostics are emitted.
+Secret input must omit newline/NUL; the worker supplies Borg's terminating newline.
+Neither implementation claims to scrub every managed-language memory copy.
+
+Restore order uses R,S,E(empty input), check and D*/A/K/Z for the explicit archive.
+The .NET restore exchange refuses without a caller verification callback before K.
+That future caller must CreateNew a private dense NTFS file, Flush(true), verify
+attributes/final path/file identity and independently rehash its entire contents
+under retained handles before returning from the callback. Generic FlushAsync
+alone is not durable restore acceptance. Independent key import/recovery is a
+SEPARATE prepare/recover phase; the engine never initializes a real repo, exports
+real keys, guesses missing keys or selects an archive. The current CLI cannot
+execute any of these phases. Native tests create only new synthetic repo/keys.
+
+Borg arguments are fixed: create --chunker-params=fixed,4194304
+--files-cache=disabled --compression=none --stdin-name=ext4.vhdx REPO::cold-UUID -;
+check --verify-data REPO; extract --stdout REPO::cold-UUID ext4.vhdx. Native Borg
+repository locks are respected at EACH command, --lock-wait=1, no bypass/break/repair.
+A private nonblocking worker lock and create-new UUID journal serialize this worker;
+events are create-new0600, file+directory fsynced, never rewritten/deleted. Existing
+attempts, failed partial archives, cache and last-good archives remain. This worker
+lock is **not** a continuous native Borg lock against other clients. Production
+needs reviewed exclusive repository access across phases and immutable deployment;
+wrapping nested Borg with with-lock can contend with Borg's own locks. Do not add
+a bypass to resolve that. [Borg's supported lock semantics](https://borgbackup.readthedocs.io/en/1.4.5/usage/lock.html)
+are a separate resource/ownership requirement, not synthetic acceptance.
+
+Each Borg starts in its own Linux process group. The worker establishes the
+process-local Linux child-subreaper attribute and reaps ONLY its adopted group
+children. This is needed for the pinned standalone bootloader's fork. On cancel,
+EOF, timeout or failure it kills ONLY its owned group, waits/reaps and verifies
+that group absent before F may assert linuxChildrenExited=true. No kill-all,
+service/account/security-policy change or stale-lock removal occurs.
+[Linux subreaper semantics](https://man7.org/linux/man-pages/man2/PR_SET_CHILD_SUBREAPER.2const.html)
+explain why a launcher-only wait was insufficient. The first real native attempt
+correctly refused with group exit unconfirmed; it is retained. If F/Z is missing,
+false or unbound, Windows MUST retain the source lease/custody and reconcile the
+journal; killing/stopping wsl.exe or observing its exit proves no Linux lifetime.
+The .NET failure path settles stream tasks, sends C under an independent bounded
+teardown budget and requires the bound Linux acknowledgment and child exit. An
+unsettled stream or absent acknowledgment remains an explicit refusal.
+
+#### Windows lease and unfinished production admission
+
+ColdSourceLease requires Windows/NTFS, a reviewed canonical local drive path and
+reviewed volume+file index, one hardlink, no reparse components, exact final handle
+path and positive length. FileShare.Read rejects existing writers and excludes
+new writes/deletes. ValidateUnchanged rechecks held-handle identity, length,
+write-time/attributes, final path and reparse components. Caller owns this SAME
+handle through readback, archive verification and final receipt; the protocol
+never disposes it. Review-only identity inspection is not the transaction lease.
+The class does not resolve registry, save work, stop a distro, establish quiescence,
+verify ACL/capacity or prove a race-free registration/power-state admission by itself.
+No code here silently performs those actions. Actual new Windows sharing tests
+must run on reviewed synthetic files; native compilation is not Windows evidence.
+
+Concrete remaining CODE gate: an immutable deployment/admission owner must bind
+fresh authoritative registration/power state before AND after lease acquisition,
+source/protected/worker identities (including actual final handles), repository
+hardware/exclusive custody/native archive IDs, source-outage plan and capacity/key
+receipts, then keep that binding live through commit. It must stage a pinned worker
+interpreter/source/tool in non-user-writable custody, validate worker-side mounted
+repository identity and independent key FD recovery, and supply the durable dense
+restore verifier. Neither Get-WslColdWorkerLaunchPlan nor --readiness implements
+that authority. Source/worker selection, immutable deployment and actual selected
+Windows-to-WSL acceptance remain controller operations, not test flag capabilities.
+A production --serve invocation is therefore NOT ready to run. The exact fixed
+future argv is documented by Get-WslColdWorkerLaunchPlan; it presently refuses.
+
+#### Bounded validation and capacity limits
+
+Run the maintained tests with retained SIGNED PUBLIC release inputs and a private
+ext4 parent outside Git; all cases create NEW custody and preserve earlier attempts:
+
+```sh
+python3 -B tests/test_wsl_cold_worker.py --retained-release-inputs /approved/public-borg-inputs --private-fixture-parent /approved/private-ext4-parent -v
+```
+
+No production data/repository/key arguments exist on that test runner. It verifies
+all three release hashes/signature/version through the existing synthetic observer,
+then exercises actual encrypted stdin/check/stdout, .NET-to-native Python framing,
+Linux cancellation/EOF/idle/nonzero/producer refusal, retained journals, independent
+synthetic key export, missing-key44/wrong-passphrase52 and fresh-client restore.
+The native .NET child is fixed /usr/bin/python3 -I -B plus a TEST-ONLY helper;
+no distro is launched. Only a small ~1MiB mixed binary fixture is streamed per
+successful roundtrip. Native receipts do not prove Windows-to-WSL, source outage,
+off-laptop recovery, full image or VHD validity/boot. Runtime/key descriptors and
+all secrets remain private and outside Git; only nonsecret receipt paths/counts
+are reported. All attempts remain in their new private UUID custody.
+
+Windows staging: build a fresh committed-source package, verify EVERY manifest
+file hash and source commit, stage all FOUR tests/powershell/Wsl{Backup,HostScripts,
+ColdContainer,ColdWorker}.Tests.ps1 plus the signed static compact-task fixture at
+its normal relative path. Run fresh ordinary pwsh with no profile:
+
+```powershell
+pwsh -NoProfile -NonInteractive -Command 'Invoke-Pester -Path ./tests/powershell/WslBackup.Tests.ps1,./tests/powershell/WslHostScripts.Tests.ps1,./tests/powershell/WslColdContainer.Tests.ps1,./tests/powershell/WslColdWorker.Tests.ps1 -Output Detailed -CI'
+```
+
+These are disposable synthetic files/processes only. Retain XML, exact staged
+source/test hashes and runtime versions. Package PowerShell bytes intentionally
+follow committed CRLF archive attributes; raw blob and artifact hashes are separate
+identities. Actual selected-worker integration needs the missing reviewed immutable
+admission/test staging first; neither this command nor old60/60 Windows tests close
+that NEW gate. Do not start the spare distro or substitute tests/helpers as a
+production worker. Controller review/staging is the next action, not activation.
+
+Capacity stays full container bytes for repository AND dense restore plus separately
+measured repository/index/cache/security/journal/temp/runtime overhead and >=64GiB
+reserve per filesystem, aggregating shared domains. No sparse, dedup or compression
+credit. Existing bounded readiness calculations remain owning. Check --verify-data
+can read the ENTIRE repository, not just the new member; its I/O/time/cache cost
+needs measurement/planning. The current controller requires a known full input
+hash; a real first archive would need a full prehash under the SAME lease, then a
+second read to stream plus archive verification/readback. Budget that I/O explicitly.
+Queue/frame limits are not a bound on Borg's memory, caches or repository indexes.
+No guest census is needed for opaque custody; cold size, filesystem free space,
+repository history/index cardinality, all overhead and durations remain unmeasured
+for production. Narrow provisional restore margin is not capacity acceptance.
+
+Ordered remaining production gates: finish controller retirement and remeasure;
+review/complete the immutable admission and dense-restore/key boundaries above;
+actual Windows synthetic tests and selected-worker duplex/lifetime/lease acceptance;
+independent repository/key custody and per-filesystem capacity approval; saved work,
+source-outage/cold confirmation and continuous lease; separately admitted full
+backup/readback; independently recovered key and source-unavailable dense restore;
+all-byte file acceptance, then separately approved isolated import/boot and services.
+E restore is an isolated test sharing source/protected hardware, not a third-hardware
+copy. Filesystem candidate remains REJECTED. Google Password Manager and Apple
+Passwords remain owner-selected; no paid vault or production secret was created.
