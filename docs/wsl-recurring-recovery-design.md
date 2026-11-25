@@ -239,8 +239,9 @@ python3 -B scripts/wsl-borg-fixture.py --run --parent /absolute/approved/ext4/de
 
 It requires non-root Linux x86_64, an existing canonical owner directory on ext4,
 and at least1GiB free, outside any Git source checkout. It creates only a unique0700 child with a fixed dataset
-under33MiB logical data. No operator source/repository/archive arguments, root,
-mount, production disk/key or system install is supported. It creates an
+under33MiB logical data. Ordinary mode accepts no root execution or operator
+source/repository/archive arguments. No mode mounts or changes real backup
+devices, creates production keys or installs system tools. It creates an
 **unencrypted synthetic repository**, with no encryption secret/key recovery
 claim. Download, unpack, HOME, Borg config/cache/security and GnuPG files remain
 inside that private child. Results and failed attempts remain for review; no
@@ -267,7 +268,7 @@ OS-enforced disk isolation, a continuously held source/Borg transaction lease,
 or a full consistency proof. No fixture observation is automatically admitted
 to production readiness/evidence. `fullRestoreAccepted` stays false.
 
-Privileged cases remain unavailable: foreign UID/GID restoration, devices,
+Actual privileged receipts remain unavailable: foreign UID/GID restoration, devices,
 security/trusted xattrs/capabilities, immutable/append-only flags. There is no
 sudo, user namespace workaround, permission change or fake privileged observation.
 The sandbox's one-UID map cannot represent the named ACL subject; actual ACL
@@ -319,3 +320,71 @@ preserved. The controller reports the system manager degraded only because
 revealfleet-agent-updates.service refuses "tool executable differs from explicitly
 reviewed binding"; user failed units are empty. Preserve that guard. No
 reset-failed, rebind, service change or claim of overall migration completion.
+
+
+## Controller-only privileged metadata fixture (unproved until executed)
+
+The ordinary `--run` guard still refuses root. New `--run-privileged` is a
+separate controller-only protocol, never an elevation/override of that guard.
+No privileged operation was run by the native source agent. Obtain the exact
+reviewed source/release hashes and controller argument array without writes:
+
+```sh
+python3 -B scripts/wsl-borg-fixture.py --privileged-plan
+```
+
+After source/signature review, the controller must stage that exact source and
+the three retained release inputs (borg, borg-linux-glibc231-x86_64.asc,
+release-key.asc) as regular root-owned, non-group/world-writable files beneath
+`/var/lib/revkit-synthetic-fixture-tools/<sourceSha256>/`. Copy source from the
+reviewed signed commit, not a subsequently editable checkout. Verify every
+reported SHA256 before any root execution; public key bytes are pinned in this
+mode as well as the upstream full signer fingerprint. Root must not execute
+user-writable source or nvm tools. Use a trusted root launcher with clean loader
+environment; do not use an interactive shell or bypass controller approval.
+The generated argv uses system Python with -I -B and a clean process environment.
+
+The controller creates the staging base `/var/lib/revkit-synthetic-fixtures`
+root-owned mode0700 beforehand, on the existing native root ext4 filesystem.
+Only a NEW canonical UUID child is accepted; even an existing empty directory
+refuses. The example UUID in the plan is single-use; select a fresh UUID if that
+leaf exists. Never remove/overwrite an earlier attempt to reuse a name. Symlink,
+unsafe ownership/mode, Git, subordinate/bind-mount ancestors, non-ext4 and low
+space refuse before workspace creation. Arbitrary source/repository/backup paths
+are not accepted. Native initial user namespace is required; no namespace or
+kernel/security-policy workaround is provided. Root preflight uses only fixed
+staging paths, reviewed input files, mount metadata and system tool identities.
+No download, host account/service/mount/device configuration is supported.
+
+The fixed ordinary dataset is extended with non-executable foreign numeric
+UID65534/GID65533 data, block/character nodes with device number0:0, a
+non-executable security.capability file (revision2 CAP_NET_BIND_SERVICE metadata),
+a trusted synthetic xattr, and separate immutable/append-only data files.
+The observer uses lstat/rdev and xattr metadata for nodes, never content reads,
+open, ioctl or execution on device nodes. Borg commands are fixed and never use
+--read-special; its default archives node metadata rather than device streams.
+Only regular files/directories are opened for content/flags. No SELinux/AppArmor
+labels, host capabilities, accounts or security policy are changed. Capability
+and inode-flag operations affect only newly generated private synthetic files.
+
+Each case records preparation/unavailable errno. Prepared properties must also
+be observed in the source inventory before backup, then match the actual restored
+inventory. A successful syscall alone is insufficient. verifiedPrivilegedCases
+reports only round-trip-compared cases. Any unavailable case means passed=false,
+privilegedMetadataVerified=false and CLI exit3, even if other cases compare.
+Unexpected errors/warnings leave failed.json and refuse. EIO/ENOSPC are not
+converted into capability gaps. Immutable/append files and all attempts remain;
+no cleanup, flag clearing, prune, repair or lock breaking is implemented.
+Production execution/full restore remain false; encrypted key recovery, offline
+consistent-source backup and full WSL/hardware recovery remain separate gates.
+
+Sparse semantics are unchanged: `sparse` means logical size exceeds allocated
+blocks, not identical extent layout or identical block count. allocatedBytes is
+now retained separately, and different allocated amounts are allowed only when
+all semantic metadata/content AND the sparse boolean still match. A sparse source
+restored fully allocated still refuses, including the retained8MiB failure.
+Allocation reporting budgets the full logical bytes with zero sparse credit;
+metadata/reserve are additional. No older receipt is rewritten or promoted.
+The later32MiB-hole success does not resolve the small-hole failure. Windows
+PowerShell evidence remains strict on its existing sparse property and is not
+changed by this Python-only increment; prior Windows receipts remain historical.

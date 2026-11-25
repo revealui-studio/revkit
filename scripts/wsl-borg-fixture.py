@@ -8,6 +8,10 @@ import argparse
 import array
 import datetime
 import fcntl
+import errno
+import struct
+import uuid
+import sys
 import hashlib
 import json
 import os
@@ -30,6 +34,9 @@ GIB = 1024 ** 3
 GETFLAGS = 0x80086601
 SETFLAGS = 0x40086602
 NODUMP = 0x40
+PRIVILEGED_BASE = Path("/var/lib/revkit-synthetic-fixtures")
+PRIVILEGED_TOOLS = Path("/var/lib/revkit-synthetic-fixture-tools")
+PUBLIC_KEY_SHA256 = "01fcff7ffea31147c63c242ff70c78c846056e4805c35ab9e740c09ac43f37b9"
 
 
 def digest(path):
@@ -123,6 +130,7 @@ def observe(tree, env):
         info = path.lstat()
         kind = ('file' if stat.S_ISREG(info.st_mode) else 'directory' if stat.S_ISDIR(info.st_mode)
                 else 'symlink' if stat.S_ISLNK(info.st_mode) else 'fifo' if stat.S_ISFIFO(info.st_mode)
+                else 'block' if stat.S_ISBLK(info.st_mode) else 'character' if stat.S_ISCHR(info.st_mode)
                 else 'unsupported')
         if kind == 'unsupported':
             raise ValueError('Unsupported fixture entry')
@@ -148,13 +156,19 @@ def observe(tree, env):
                         'linkTarget': os.readlink(path) if kind == 'symlink' else '',
                         'hardlinkGroup': sorted(group),
                         'flags': flags(path) if kind in ('file', 'directory') else None,
+                        'deviceMajor': os.major(info.st_rdev) if kind in ('block', 'character') else 0,
+                        'deviceMinor': os.minor(info.st_rdev) if kind in ('block', 'character') else 0,
+                        'allocatedBytes': info.st_blocks * 512 if kind == 'file' else None,
                         'sparse': kind == 'file' and info.st_size > info.st_blocks * 512})
     return entries
 
 
 def compare(source, restored):
     """Compare actual observations, including relational hardlink identity."""
-    if source != restored:
+    # Allocation amount is observational, never an exact extent-layout promise.
+    def semantic(rows):
+        return [{k: v for k, v in row.items() if k != 'allocatedBytes'} for row in rows]
+    if semantic(source) != semantic(restored):
         left = {row['path']: row for row in source}
         right = {row['path']: row for row in restored}
         differences = []
@@ -163,8 +177,16 @@ def compare(source, restored):
                 differences.append(name + ': missing entry')
             else:
                 differences.extend(name + ': ' + key for key in left[name]
-                                   if left[name][key] != right[name].get(key))
+                                   if key != 'allocatedBytes' and left[name][key] != right[name].get(key))
         raise ValueError('Actual round-trip differs: ' + ', '.join(differences))
+    files = [row for row in restored if row['type'] == 'file']
+    source_allocated = sum(row.get('allocatedBytes', 0) or 0 for row in source if row['type'] == 'file')
+    restored_allocated = sum(row.get('allocatedBytes', 0) or 0 for row in files)
+    return {'sourceAllocatedBytes': source_allocated,
+            'allocationGrowthBytes': restored_allocated - source_allocated,
+            'logicalAllocationUpperBoundBytes': sum(row['size'] for row in files),
+            'restoredAllocatedBytes': sum(row.get('allocatedBytes', 0) or 0 for row in files),
+            'sparseCreditBytes': 0}
 
 
 def make_source(tree, env):
@@ -207,28 +229,147 @@ def private_env(root):
             'BORG_SECURITY_DIR': str(root / 'security'), 'BORG_CONFIG_DIR': str(root / 'config')}
 
 
-def fixture(parent, release_inputs=None):
-    if platform.system() != 'Linux' or platform.machine() != 'x86_64' or os.geteuid() == 0:
-        raise ValueError('Fixture requires non-root Linux x86_64')
-    parent = Path(parent).absolute()
-    if parent.resolve() != parent or not parent.is_dir() or parent.stat().st_uid != os.getuid():
-        raise ValueError('Fixture parent must be an existing canonical owner directory')
-    if any((directory / '.git').exists() for directory in (parent, *parent.parents)):
-        raise ValueError('Retained private fixture evidence must be outside source checkouts; explicit custody approval required')
-    fs = subprocess.run(['/usr/bin/findmnt', '--noheadings', '--output', 'FSTYPE', '--target', str(parent)],
+def require_root_custody(path):
+    path = Path(path).absolute()
+    for part in (path, *path.parents):
+        info = part.lstat()
+        if stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise ValueError('Privileged inputs require root-owned non-writable canonical custody')
+    return path
+
+
+def privileged_workspace(path, release_inputs, reviewed_source_sha256):
+    if os.geteuid() != 0:
+        raise ValueError('Explicit privileged mode requires controller root execution')
+    path = Path(path).absolute()
+    if path.parent != PRIVILEGED_BASE or str(uuid.UUID(path.name)) != path.name:
+        raise ValueError('Privileged workspace must be a new UUID leaf under the fixed synthetic base')
+    if path.exists() or path.is_symlink():
+        raise ValueError('Privileged workspace must not already exist, even empty')
+    base = require_root_custody(path.parent)
+    if stat.S_IMODE(base.stat().st_mode) != 0o700:
+        raise ValueError('Synthetic base must be private mode0700')
+    bundle = Path(release_inputs).absolute()
+    if (not reviewed_source_sha256 or len(reviewed_source_sha256) != 64 or
+        any(ch not in '0123456789abcdef' for ch in reviewed_source_sha256) or
+        bundle != PRIVILEGED_TOOLS / reviewed_source_sha256 or
+        Path(__file__).absolute() != bundle / 'wsl-borg-fixture.py'):
+        raise ValueError('Privileged execution requires the fixed reviewed source-addressed tool bundle')
+    if not sys.flags.isolated:
+        raise ValueError('Controller must invoke the system interpreter in isolated mode (-I)')
+    require_root_custody(Path(sys.executable).resolve())
+    for tool in ('gpg', 'gpgv', 'getfacl', 'setfacl', 'findmnt'):
+        require_root_custody(Path('/usr/bin') / tool)
+    source = require_root_custody(Path(__file__))
+    if not reviewed_source_sha256 or digest(source) != reviewed_source_sha256:
+        raise ValueError('Privileged source differs from reviewed SHA256')
+    mapping = [tuple(map(int, row.split())) for row in Path('/proc/self/uid_map').read_text().splitlines()]
+    if mapping != [(0, 0, 4294967295)]:
+        raise ValueError('Privileged fixture requires native initial user namespace; no namespace workaround')
+    bundle = require_root_custody(release_inputs)
+    for name, expected in (('borg', SHA256), (ASSET + '.asc', SIGNATURE_SHA256),
+                           ('release-key.asc', PUBLIC_KEY_SHA256)):
+        item = require_root_custody(bundle / name)
+        if not item.is_file() or item.stat().st_size > (40 * 1024 * 1024 if name == 'borg' else 1024 * 1024) or digest(item) != expected:
+            raise ValueError('Privileged release bundle differs from pinned bytes')
+    mounts = [line.split()[4] for line in Path('/proc/self/mountinfo').read_text().splitlines()]
+    # Fixed paths contain no escapes. Reject all subordinate/bind mount ancestors.
+    if any(m != '/' and (str(target) == m or str(target).startswith(m + '/'))
+           for target in (path, bundle) for m in mounts):
+        raise ValueError('Mounted production/source/backup paths are forbidden')
+    if any((d / '.git').exists() for d in (base, *base.parents)):
+        raise ValueError('Synthetic workspace must be outside Git')
+    fs = subprocess.run(['/usr/bin/findmnt', '-n', '-o', 'FSTYPE', '-T', str(base)],
                         capture_output=True, check=True, text=True).stdout.strip()
-    if fs != 'ext4':
-        raise ValueError('Real metadata fixture requires ext4, no mount will be created')
-    if shutil.disk_usage(parent).free < GIB:
-        raise ValueError('Fixture requires 1 GiB free reserve; fixed dataset is under 33 MiB')
-    root = Path(tempfile.mkdtemp(prefix='.revkit-borg-fixture-', dir=parent))
+    if fs != 'ext4' or shutil.disk_usage(base).free < GIB:
+        raise ValueError('Privileged fixture requires existing ext4 and1GiB free reserve')
+    path.mkdir(mode=0o700)  # atomic refusal on collision; never adopts a directory
+    return path
+
+
+def make_privileged_source(tree):
+    cases = []
+    def attempt(name, operation):
+        try:
+            operation()
+            cases.append({'case': name, 'status': 'prepared'})
+        except OSError as error:
+            if error.errno not in (errno.EPERM, errno.EACCES, errno.EOPNOTSUPP, errno.EINVAL, errno.ENOSYS):
+                raise
+            cases.append({'case': name, 'status': 'unavailable', 'errno': error.errno})
+    foreign = tree / 'foreign-owner'
+    foreign.write_bytes(b'foreign numeric metadata only')
+    foreign.chmod(0o600)
+    attempt('foreign-uid-gid', lambda: os.chown(foreign, 65534, 65533))
+    for name, kind in (('block-node', stat.S_IFBLK), ('char-node', stat.S_IFCHR)):
+        # Major0 is not an operational host-device binding. Never open these nodes.
+        attempt(name, lambda name=name, kind=kind: os.mknod(tree / name, kind | 0o600, os.makedev(0, 0)))
+    capability = tree / 'capability-data'
+    capability.write_bytes(b'non-executable capability metadata fixture')
+    capability.chmod(0o600)
+    attempt('security.capability', lambda: os.setxattr(capability, 'security.capability',
+            struct.pack('<5I', 0x02000001, 1 << 10, 0, 0, 0)))
+    attempt('trusted-xattr', lambda: os.setxattr(capability, 'trusted.revkit-fixture', b'synthetic'))
+    for name, bit in (('immutable', 0x10), ('append-only', 0x20)):
+        target = tree / name
+        target.write_bytes(b'non-executable inode flag fixture')
+        target.chmod(0o600)
+        def set_flag(target=target, bit=bit):
+            with target.open('rb') as stream:
+                fcntl.ioctl(stream.fileno(), SETFLAGS, array.array('L', [flags(target) | bit]))
+        attempt(name, set_flag)
+    return cases
+
+
+def privileged_complete(entries, cases):
+    rows = {row['path']: row for row in entries}
+    expected = {
+        'foreign-uid-gid': lambda: (rows['foreign-owner']['uid'], rows['foreign-owner']['gid']) == (65534, 65533),
+        'block-node': lambda: rows['block-node']['type'] == 'block' and rows['block-node']['deviceMajor'] == rows['block-node']['deviceMinor'] == 0,
+        'char-node': lambda: rows['char-node']['type'] == 'character' and rows['char-node']['deviceMajor'] == rows['char-node']['deviceMinor'] == 0,
+        'security.capability': lambda: rows['capability-data']['xattrs'].get('security.capability') == struct.pack('<5I', 0x02000001, 1 << 10, 0, 0, 0).hex(),
+        'trusted-xattr': lambda: rows['capability-data']['xattrs'].get('trusted.revkit-fixture') == b'synthetic'.hex(),
+        'immutable': lambda: bool(rows['immutable']['flags'] & 0x10),
+        'append-only': lambda: bool(rows['append-only']['flags'] & 0x20),
+    }
+    if {c['case'] for c in cases} != set(expected):
+        raise ValueError('Incomplete privileged case inventory')
+    for case in cases:
+        if case['status'] == 'prepared' and not expected[case['case']]():
+            raise ValueError('Privileged source property was not actually observed: ' + case['case'])
+    return all(c['status'] == 'prepared' for c in cases)
+
+
+def fixture(parent=None, release_inputs=None, *, privileged=False, workspace=None, reviewed_source_sha256=None):
+    if privileged:
+        if platform.system() != 'Linux' or platform.machine() != 'x86_64' or not workspace or not release_inputs:
+            raise ValueError('Privileged mode requires explicit Linux workspace and reviewed release bundle')
+        root = privileged_workspace(workspace, release_inputs, reviewed_source_sha256)
+        fs = 'ext4'
+    else:
+        if platform.system() != 'Linux' or platform.machine() != 'x86_64' or os.geteuid() == 0:
+            raise ValueError('Fixture requires non-root Linux x86_64')
+        parent = Path(parent).absolute()
+        if parent.resolve() != parent or not parent.is_dir() or parent.stat().st_uid != os.getuid():
+            raise ValueError('Fixture parent must be an existing canonical owner directory')
+        if any((directory / '.git').exists() for directory in (parent, *parent.parents)):
+            raise ValueError('Retained private fixture evidence must be outside source checkouts; explicit custody approval required')
+        fs = subprocess.run(['/usr/bin/findmnt', '--noheadings', '--output', 'FSTYPE', '--target', str(parent)],
+                            capture_output=True, check=True, text=True).stdout.strip()
+        if fs != 'ext4':
+            raise ValueError('Real metadata fixture requires ext4, no mount will be created')
+        if shutil.disk_usage(parent).free < GIB:
+            raise ValueError('Fixture requires1GiB reserve; fixed dataset under33MiB')
+        root = Path(tempfile.mkdtemp(prefix='.revkit-borg-fixture-', dir=parent))
     env = private_env(root)
     receipt = {'schemaVersion': 1, 'scope': 'synthetic-borg-ext4-fixture', 'root': str(root),
+               'observerSha256': digest(Path(__file__)), 'privilegedMode': privileged,
                'createdAt': datetime.datetime.now(datetime.timezone.utc).isoformat(),
                'filesystem': fs, 'uid': os.getuid(), 'fullRestoreAccepted': False,
                'hardwareScope': 'single-filesystem developer fixture; no physical identity proof',
                'encryptedRepository': False, 'privilegedMetadataVerified': False,
                'productionExecutionAllowed': False, 'passed': False,
+               'unprovedGates': ['encrypted key recovery', 'offline consistent source', 'full WSL restore', 'independent hardware recovery'],
                'unavailable': ['foreign UID/GID ownership (requires CAP_CHOWN)',
                                'block/character devices (requires CAP_MKNOD)',
                                'security/trusted xattrs and capabilities (privileged)',
@@ -255,8 +396,11 @@ def fixture(parent, release_inputs=None):
         receipt['tool'] = verify_tool(root, binary, signature, public_key, env)
         tree = root / 'source'
         make_source(tree, env)
+        cases = make_privileged_source(tree) if privileged else []
+        receipt['privilegedCases'] = cases
         before = observe(tree, env)
         write_json(root / 'source-inventory.json', before)
+        privileged_ready = privileged_complete(before, cases) if privileged else False
         archive = str(root / 'repository') + '::synthetic'
         steps = []
         receipt['steps'] = steps
@@ -280,8 +424,13 @@ def fixture(parent, release_inputs=None):
         borg('extract', '--numeric-ids', '--sparse', archive, cwd=restored)
         after = observe(restored / 'source', env)
         write_json(root / 'restored-inventory.json', after)
-        compare(before, after)
-        receipt.update(passed=True, steps=steps, entries=len(before), sourcePathAbsent=not tree.exists(),
+        receipt['allocationBudget'] = compare(before, after)
+        receipt['verifiedPrivilegedCases'] = [case['case'] for case in cases if case['status'] == 'prepared']
+        complete = not privileged or privileged_ready
+        receipt['privilegedMetadataVerified'] = privileged and complete
+        if privileged:
+            receipt['unavailable'] = [case['case'] for case in cases if case['status'] != 'prepared']
+        receipt.update(passed=complete, steps=steps, entries=len(before), sourcePathAbsent=not tree.exists(),
                        sourceUnavailableProof='renamed synthetic source; not OS-enforced disk isolation',
                        sparseLimitation='Chunk-based sparse output does not preserve every original hole; logical allocation bounds remain required',
                        coverage=['content SHA256, case-sensitive filenames, size',
@@ -293,17 +442,43 @@ def fixture(parent, release_inputs=None):
         return receipt
     except Exception as exc:
         receipt['failure'] = str(exc)
+        receipt['failureErrno'] = getattr(exc, 'errno', None)
         write_json(root / 'failed.json', receipt)
         raise RuntimeError(f'Fixture refused; retained evidence at {root}: {exc}') from exc
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--privileged-plan', action='store_true', help='Read-only source/release hashes and controller argv')
+    parser.add_argument('--run-privileged', action='store_true', help='Controller-only synthetic root metadata mode')
+    parser.add_argument('--workspace', type=Path, help='NEW UUID leaf under fixed root-owned synthetic base')
+    parser.add_argument('--reviewed-source-sha256')
     parser.add_argument('--run', action='store_true', help='Download/verify tool and run fixed synthetic fixture only')
     parser.add_argument('--parent', type=Path, help='Existing private ext4 development directory, never a real disk root')
     parser.add_argument('--release-inputs', type=Path, help='Optional retained downloads; all provenance is reverified')
     args = parser.parse_args()
-    if args.run:
+    if args.privileged_plan:
+        sha = digest(Path(__file__))
+        workspace = PRIVILEGED_BASE / '00000000-0000-4000-8000-000000000001'
+        bundle = PRIVILEGED_TOOLS / sha
+        print(json.dumps({'sourceSha256': sha, 'binarySha256': SHA256, 'signatureSha256': SIGNATURE_SHA256,
+            'publicKeySha256': PUBLIC_KEY_SHA256, 'bundle': str(bundle), 'workspaceMustBeNew': str(workspace),
+            'controllerArgv': ['/usr/bin/env', '-i', 'PATH=/usr/bin:/bin', '/usr/bin/python3', '-I', '-B',
+                str(bundle / 'wsl-borg-fixture.py'), '--run-privileged', '--workspace', str(workspace),
+                '--release-inputs', str(bundle), '--reviewed-source-sha256', sha],
+            'productionExecutionAllowed': False}, indent=2))
+        return
+    if args.run and args.run_privileged:
+        parser.error('Ordinary and privileged modes are mutually exclusive')
+    if args.run_privileged:
+        if args.parent:
+            parser.error('Privileged mode does not accept an ordinary parent')
+        result = fixture(release_inputs=args.release_inputs, privileged=True, workspace=args.workspace,
+                         reviewed_source_sha256=args.reviewed_source_sha256)
+        print(json.dumps(result, indent=2))
+        if not result['passed']:
+            raise SystemExit(3)
+    elif args.run:
         if args.parent is None:
             parser.error('--run requires --parent')
         print(json.dumps(fixture(args.parent, args.release_inputs), indent=2))
