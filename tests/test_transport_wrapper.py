@@ -106,24 +106,31 @@ class TransportWrapperTests(unittest.TestCase):
                 started = time.monotonic()
                 pid_file = root / "child.pid"
                 process = subprocess.Popen(["bash", str(helper)],
-                                           env={**os.environ, "PATH": str(root / "bin") + ":/usr/bin:/bin",
+                                           env={"HOME": str(root), "PATH": str(root / "bin") + ":/usr/bin:/bin",
                                                 "TEST_CHILD_PID": str(pid_file)},
                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                            start_new_session=True)
                 try:
                     process.communicate(timeout=5)
+                    self.assertIn(process.returncode, (137, -9))
+                    self.assertLess(time.monotonic() - started, 3)
+                    self.assertTrue(pid_file.exists(), "resistant child must actually start")
+                    child_stat = Path("/proc") / pid_file.read_text() / "stat"
+                    if child_stat.exists():
+                        self.assertIn(child_stat.read_text().split()[2], ("Z", "X"))
                 finally:
                     try:
                         os.killpg(process.pid, signal.SIGKILL)
                     except ProcessLookupError:
                         pass
                     process.wait(timeout=2)
-                self.assertIn(process.returncode, (137, -9))
-                self.assertLess(time.monotonic() - started, 3)
-                self.assertTrue(pid_file.exists(), "resistant child must actually start")
-                child_stat = Path("/proc") / pid_file.read_text() / "stat"
-                if child_stat.exists():
-                    self.assertIn(child_stat.read_text().split()[2], ("Z", "X"))
+                    if pid_file.exists():
+                        try:
+                            os.kill(int(pid_file.read_text()), signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    process.stdout.close()
+                    process.stderr.close()
 
 
 if __name__ == "__main__":

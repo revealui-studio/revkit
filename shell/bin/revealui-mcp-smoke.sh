@@ -2,12 +2,12 @@
 # revealui-mcp-smoke — fleet-owned; never prints secrets.
 # MCP initialization and discovery only; no tool execution or permission proof.
 # Exit: 0 discovery passed, 1 protocol/auth failure, 2 network/config error.
-# GNU timeout exits 124 or 137 on deadline. Cleanup may be skipped on termination;
+# timeout exits 124 or 137 on deadline. Cleanup may be skipped on termination;
 # abandoned sessions rely on the server TTL. Tokens remain private process data.
 set -euo pipefail
 command -v timeout >/dev/null || { echo "FAIL  timeout required" >&2; exit 2; }
 # Bound loader/vault lookup as well as HTTP, with forced group termination.
-exec timeout --kill-after=5s 60s bash -s -- "$(dirname "${BASH_SOURCE[0]}")" <<'SH_MCP'
+timeout --kill-after=5s 60s bash -s -- "$(dirname "${BASH_SOURCE[0]}")" <<'SH_MCP' &
 set -euo pipefail
 # Keep the supervised shell alive through TERM so timeout kills its entire group
 # after the grace period, including any vault child that ignores TERM.
@@ -184,3 +184,15 @@ if __name__ == "__main__":
         sys.exit(2)
 PY_MCP
 SH_MCP
+_mcp_supervisor=$!
+# Some timeout implementations kill the direct child but leave grandchildren
+# holding pipes open. The wrapper owns final cleanup of the monitor's group.
+_mcp_cleanup() { kill -KILL -- "-$_mcp_supervisor" "$_mcp_supervisor" 2>/dev/null || true; }
+trap _mcp_cleanup EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+if wait "$_mcp_supervisor"; then
+  exit 0
+else
+  exit "$?"
+fi
