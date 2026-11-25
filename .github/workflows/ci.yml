@@ -561,3 +561,24 @@ jobs:
           python3 -B -m unittest discover -s tests -p 'test_wsl_disk_identity.py'
           python3 -B -m unittest discover -s tests -p 'test_windows_artifacts.py'
           python3 -B -m unittest discover -s tests -p 'test_codex_*.py'
+
+  windows-artifact-acls:
+    name: Native Windows artifact directory ACLs
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Install Pester 5
+        shell: pwsh
+        run: |
+          Install-Module -Name Pester -RequiredVersion 5.5.0 -Force -SkipPublisherCheck -Scope CurrentUser
+          Import-Module Pester -RequiredVersion 5.5.0
+      - name: Verify actual private directory reconciliation
+        shell: pwsh
+        run: |
+          $config = New-PesterConfiguration
+          $config.Run.Path = './tests/powershell/WindowsArtifactDeployment.Tests.ps1'
+          $config.Run.Exit = $true
+          $config.Output.Verbosity = 'Detailed'
+          Invoke-Pester -Configuration $config

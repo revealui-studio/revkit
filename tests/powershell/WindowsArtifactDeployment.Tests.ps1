@@ -135,3 +135,35 @@ function Owner-Command { 'keep me' }
         { Update-RevkitWindowsFleetProfile -Content ($script:FleetProfile.Replace('-- bash -lc claude', '-- bash -lc claude --custom-option')) } | Should -Throw
     }
 }
+
+Describe 'Private Windows artifact directories' {
+    It 'reconciles a new then existing protected directory without changing owner or group' -Skip:(-not $IsWindows) {
+        $path = Join-Path $TestDrive 'private-artifacts'
+        $null = [IO.Directory]::CreateDirectory($path)
+        $sections = [Security.AccessControl.AccessControlSections]::Access -bor [Security.AccessControl.AccessControlSections]::Owner -bor [Security.AccessControl.AccessControlSections]::Group
+        $item = Get-Item -LiteralPath $path
+        $original = [IO.FileSystemAclExtensions]::GetAccessControl($item, $sections)
+        $owner = $original.GetOwner([Security.Principal.SecurityIdentifier])
+        $group = $original.GetGroup([Security.Principal.SecurityIdentifier])
+        $first = $null
+        foreach ($attempt in 1..3) {
+            Set-RevkitPrivateDirectory -Path $path
+            $after = [IO.FileSystemAclExtensions]::GetAccessControl($item, $sections)
+            $after.GetOwner([Security.Principal.SecurityIdentifier]) | Should -Be $owner
+            $after.GetGroup([Security.Principal.SecurityIdentifier]) | Should -Be $group
+            $after.AreAccessRulesProtected | Should -BeTrue
+            $rules = @($after.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+            $rules.Count | Should -Be 3
+            $allowed = @([Security.Principal.WindowsIdentity]::GetCurrent().User.Value, 'S-1-5-18', 'S-1-5-32-544')
+            foreach ($rule in $rules) {
+                $rule.IdentityReference.Value | Should -BeIn $allowed
+                $rule.AccessControlType | Should -Be 'Allow'
+                $rule.FileSystemRights | Should -Be ([Security.AccessControl.FileSystemRights]::FullControl)
+                $rule.InheritanceFlags | Should -Be ([Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit')
+                $rule.IsInherited | Should -BeFalse
+            }
+            $dacl = $after.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access)
+            if ($attempt -eq 1) { $first = $dacl } else { $dacl | Should -BeExactly $first }
+        }
+    }
+}

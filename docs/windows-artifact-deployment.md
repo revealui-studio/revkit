@@ -109,3 +109,10 @@ ACL enforcement, release deployment, profile/module loading, GitHub CLI account
 preservation, ignore behavior and actual dismount remain controller acceptance
 checks. A generated plan or passing synthetic test does not establish runtime
 adoption.
+
+Private artifact directory reconciliation writes only the reviewed DACL through
+.NET's modified-section persistence API. It never reads or writes audit entries
+or changes owner/group. Applying the same policy to an existing protected root
+is idempotent and requires no security-audit privilege. Native Windows regression
+coverage includes repeated application, exact three-principal FullControl rules,
+protection/inheritance and unchanged owner/group; Linux skips that platform case.

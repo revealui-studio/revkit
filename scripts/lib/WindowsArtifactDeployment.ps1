@@ -196,5 +196,22 @@ function Set-RevkitPrivateDirectory {
         $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
         $acl.AddAccessRule($rule)
     }
-    Set-Acl -LiteralPath $Path -AclObject $acl -ErrorAction Stop
+    # Set-Acl's provider tries all security sections, including Audit. Its
+    # fallback can require SeSecurityPrivilege on an already protected directory.
+    # Import only the reviewed DACL into a freshly read descriptor; .NET persists
+    # only modified sections. Owner, group and the unread SACL remain untouched.
+    $access = [Security.AccessControl.AccessControlSections]::Access
+    $sections = $access -bor [Security.AccessControl.AccessControlSections]::Owner -bor [Security.AccessControl.AccessControlSections]::Group
+    $current = [IO.FileSystemAclExtensions]::GetAccessControl($item, $sections)
+    $owner = $current.GetOwner([Security.Principal.SecurityIdentifier])
+    $group = $current.GetGroup([Security.Principal.SecurityIdentifier])
+    $expected = $acl.GetSecurityDescriptorSddlForm($access)
+    $current.SetSecurityDescriptorSddlForm($expected, $access)
+    [IO.FileSystemAclExtensions]::SetAccessControl($item, $current)
+    $verified = [IO.FileSystemAclExtensions]::GetAccessControl($item, $sections)
+    if ($verified.GetSecurityDescriptorSddlForm($access) -cne $expected -or
+        $verified.GetOwner([Security.Principal.SecurityIdentifier]) -ne $owner -or
+        $verified.GetGroup([Security.Principal.SecurityIdentifier]) -ne $group) {
+        throw 'Private artifact directory access or ownership verification failed.'
+    }
 }
