@@ -85,3 +85,32 @@ Describe 'Windows deployment accepts the exact native package without Git linkag
         { Get-RevkitWindowsArtifactFiles -SourceRoot $script:Package -ExpectedSourceManifestSha256 $hash } | Should -Throw
     }
 }
+
+Describe 'Explicit fleet profile reconciliation' {
+    BeforeAll {
+        $script:FleetProfile = @'
+# Owner preferences stay intact
+$ownerModel = 'owner-model'
+# Always use Ubuntu (historical location comment)
+wsl --set-default Ubuntu >$null 2>&1
+# Historical launcher documentation
+function revealfleet {
+    param([string]$Sub = '')
+    $target = if ($Sub) { "~/revealfleet/$Sub" } else { '~/revealfleet' }
+    wsl.exe -d Ubuntu --cd $target -- bash -lc claude
+}
+function Owner-Command { 'keep me' }
+'@
+    }
+    It 'removes recognized import-time distro mutation and launcher definition without invoking either' {
+        $changed = Update-RevkitWindowsFleetProfile -Content $script:FleetProfile
+        $changed.Contains('--set-default') | Should -BeFalse
+        $changed.Contains('function revealfleet') | Should -BeFalse
+        $changed.Contains("`$ownerModel = 'owner-model'") | Should -BeTrue
+        $changed.Contains("function Owner-Command { 'keep me' }") | Should -BeTrue
+        Update-RevkitWindowsFleetProfile -Content $changed | Should -BeExactly $changed
+    }
+    It 'refuses a customized WSL launcher instead of silently replacing owner behavior' {
+        { Update-RevkitWindowsFleetProfile -Content ($script:FleetProfile.Replace('-- bash -lc claude', '-- bash -lc claude --custom-option')) } | Should -Throw
+    }
+}

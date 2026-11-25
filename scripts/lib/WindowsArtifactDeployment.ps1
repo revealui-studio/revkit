@@ -1,8 +1,58 @@
 #Requires -Version 7.0
 
-function Update-RevkitWindowsProfile {
+function Update-RevkitWindowsFleetProfile {
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Content)
+    $tokens = $null; $errors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseInput($Content, [ref]$tokens, [ref]$errors)
+    if ($errors.Count -gt 0) { throw 'Profile parse failed before launcher reconciliation.' }
+    $edits = @()
+    $legacyBody = @'
+{
+    param([string]$Sub = '')
+    $target = if ($Sub) { "~/__FLEET__/$Sub" } else { '~/__FLEET__' }
+    wsl.exe -d Ubuntu --cd $target -- bash -lc claude
+}
+'@
+    foreach ($statement in $ast.EndBlock.Statements) {
+        $remove = $false
+        if ($statement -is [Management.Automation.Language.FunctionDefinitionAst]) {
+            $name = $statement.Name
+            $safeName = $name.Length -gt 0
+            foreach ($character in $name.ToCharArray()) {
+                if (-not 'abcdefghijklmnopqrstuvwxyz0123456789-'.Contains([string]$character)) { $safeName = $false }
+            }
+            $body = $statement.Body.Extent.Text.Replace("`r`n", "`n").Trim()
+            if ($safeName -and $body -ceq $legacyBody.Replace('__FLEET__', $name).Trim()) { $remove = $true }
+            elseif ($statement.Extent.Text.Contains('-- bash -lc claude') -and $statement.Extent.Text.Contains('wsl.exe')) {
+                throw 'Unknown owner WSL launcher requires source review; profile remains unchanged.'
+            }
+        } elseif ($statement.Extent.Text.Trim() -ceq 'wsl --set-default Ubuntu >$null 2>&1') { $remove = $true }
+        if ($remove) {
+            $start = $statement.Extent.StartOffset
+            # Contiguous comments document this recognized retired definition.
+            while ($start -gt 0) {
+                $lineEnd = $start
+                if ($Content[$lineEnd - 1] -eq "`n") { $lineEnd-- }
+                if ($lineEnd -gt 0 -and $Content[$lineEnd - 1] -eq "`r") { $lineEnd-- }
+                $previous = $Content.LastIndexOf("`n", [Math]::Max(0, $lineEnd - 1)) + 1
+                $line = $Content.Substring($previous, $lineEnd - $previous).Trim()
+                if ($line -and -not $line.StartsWith('#')) { break }
+                $start = $previous
+            }
+            $edits += @{ Start = $start; End = $statement.Extent.EndOffset }
+        }
+    }
+    foreach ($edit in @($edits | Sort-Object Start -Descending)) {
+        $Content = $Content.Substring(0, $edit.Start) + $Content.Substring($edit.End)
+    }
+    return $Content.Replace('# Lives on C: drive so it works without external drives', '# Local entry point loads the reviewed Windows artifact release.')
+}
+
+function Update-RevkitWindowsProfile {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Content, [switch]$ReconcileFleetLauncher)
+    if ($ReconcileFleetLauncher) { $Content = Update-RevkitWindowsFleetProfile -Content $Content }
     $startMarker = '# generated-by-revkit windows-module:start'
     $endMarker = '# generated-by-revkit windows-module:end'
     $replacement = @'

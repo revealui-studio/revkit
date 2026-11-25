@@ -19,6 +19,14 @@ it never rewrites patterns or uses the live cross-WSL link as the Windows Git
 startup dependency. `core.excludesFile` points to the private Windows-local
 release data file after successful activation. The old file/link remains.
 
+`-ReconcileFleetLauncher` is an explicit additional profile-adoption boundary.
+It removes only the recognized historical WSL launcher definition and its
+documentation, plus the recognized import-time default-distribution mutation.
+The module exports the canonical `revealfleet` entry point, which launches only
+when the owner invokes it. No compatibility alias is installed. Unknown launcher
+customizations refuse adoption; unrelated owner functions and preferences stay.
+The bootstrap route exposes the same switch and packaged-source manifest pin.
+
 The native `scripts/build-windows-artifacts.py` builder packages files from
 Git's tracked index after verifying they match committed `HEAD`. It reads the
 same `scripts/windows-artifact-scope.json` policy as the Windows adapter.
@@ -75,6 +83,11 @@ The original standalone module remains preserved. Its `Get-Secret` parameters
 differ from the maintained explicit output-mode API; the controller must verify
 actual shell consumers before retiring that original. Credential values and
 Windows/native identities remain separate throughout this source deployment.
+The maintained bridge delegates store selection to the existing native RevVault
+client configuration. `REVEALUI_ROOT` selects code only; no artifact-relative
+vault store is created or forwarded. The opaque entry name remains the only
+projected value, and plaintext/SecureString output still requires explicit mode
+selection. No environment-export capability is added by this repair.
 
 ## Zed and remaining acceptance
 

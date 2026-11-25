@@ -11,6 +11,8 @@ param(
     [switch]$Force,
     [switch]$DeployWindowsArtifacts,
     [switch]$ApplyWindowsArtifacts,
+    [switch]$ReconcileFleetLauncher,
+    [string]$ExpectedSourceManifestSha256,
     [string]$ArtifactRoot = 'E:\AI\windows\revkit',
     [string]$GhConfigDir = 'E:\AI\windows\gh',
     [string]$IgnorePatternsSource,
@@ -19,7 +21,7 @@ param(
 
 if ($DeployWindowsArtifacts) {
     if ([string]::IsNullOrWhiteSpace($IgnorePatternsSource)) { throw 'Provide preserved Windows ignore patterns as a regular data file.' }
-    & (Join-Path $PSScriptRoot 'scripts\Deploy-WindowsArtifacts.ps1') -SourceRoot $PSScriptRoot -ArtifactRoot $ArtifactRoot -GhConfigDir $GhConfigDir -IgnorePatternsSource $IgnorePatternsSource -ProfilePath $WindowsProfilePath -Apply:$ApplyWindowsArtifacts
+    & (Join-Path $PSScriptRoot 'scripts\Deploy-WindowsArtifacts.ps1') -SourceRoot $PSScriptRoot -ExpectedSourceManifestSha256 $ExpectedSourceManifestSha256 -ArtifactRoot $ArtifactRoot -GhConfigDir $GhConfigDir -IgnorePatternsSource $IgnorePatternsSource -ProfilePath $WindowsProfilePath -ReconcileFleetLauncher:$ReconcileFleetLauncher -Apply:$ApplyWindowsArtifacts
     return
 }
 

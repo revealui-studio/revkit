@@ -4,6 +4,7 @@
 param(
     [string]$SourceRoot = (Join-Path $PSScriptRoot '..'),
     [string]$ExpectedSourceManifestSha256,
+    [switch]$ReconcileFleetLauncher,
     [string]$ArtifactRoot = 'E:\AI\windows\revkit',
     [string]$GhConfigDir = 'E:\AI\windows\gh',
     [Parameter(Mandatory)][string]$IgnorePatternsSource,
@@ -20,7 +21,7 @@ if ($ignore.PSIsContainer -or ($ignore.Attributes -band [IO.FileAttributes]::Rep
 }
 $profileExists = Test-Path -LiteralPath $ProfilePath
 $oldProfile = if ($profileExists) { [IO.File]::ReadAllText($ProfilePath) } else { '' }
-$newProfile = Update-RevkitWindowsProfile -Content $oldProfile
+$newProfile = Update-RevkitWindowsProfile -Content $oldProfile -ReconcileFleetLauncher:$ReconcileFleetLauncher
 $sourceRef = $files[0].SourceCommit
 $manifest = [ordered]@{
     schemaVersion = 1; sourceCommit = $sourceRef
