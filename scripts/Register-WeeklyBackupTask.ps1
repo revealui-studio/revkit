@@ -1,5 +1,5 @@
 # Register-WeeklyBackupTask.ps1
-# Re-registers RevealUI-WSL-Weekly-Backup with a headless console and WakeToRun.
+# Registers the headless backup task disabled until recovery acceptance passes.
 # Run elevated (admin). Idempotent.
 #
 # Bare pwsh.exe flashes a window when Windows Terminal is the default console host.
@@ -11,7 +11,7 @@
 [CmdletBinding()]
 param(
   [string]$TaskName = 'RevealUI-WSL-Weekly-Backup',
-  [string]$ScriptPath = (Join-Path $env:USERPROFILE '.revealui\scripts\weekly-wsl-backup.ps1')
+  [string]$ScriptPath = (Join-Path $PSScriptRoot 'weekly-wsl-backup.ps1')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -21,7 +21,8 @@ $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIde
 if (-not $isAdmin) {
   $self = $PSCommandPath
   Start-Process -FilePath 'pwsh.exe' -Verb RunAs -Wait -ArgumentList @(
-    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $self
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $self,
+    '-TaskName', $TaskName, '-ScriptPath', $ScriptPath
   )
   exit $LASTEXITCODE
 }
@@ -41,6 +42,7 @@ $settings = New-ScheduledTaskSettingsSet `
   -DontStopIfGoingOnBatteries `
   -StartWhenAvailable `
   -WakeToRun `
+  -Disable `
   -ExecutionTimeLimit (New-TimeSpan -Hours 4)
 
 # LogonType lives on the principal, not Register-ScheduledTask (PS 7 ScheduledTasks).
@@ -59,6 +61,6 @@ Register-ScheduledTask `
   -Force | Out-Null
 
 $t = Get-ScheduledTask -TaskName $TaskName
-Write-Host "Registered $TaskName"
+Write-Host "Registered $TaskName disabled; recurring backup acceptance requires verified recovery and adequate staging capacity."
 Write-Host "  Execute: $($t.Actions.Execute) $($t.Actions.Arguments)"
 Write-Host "  WakeToRun: $($t.Settings.WakeToRun)"

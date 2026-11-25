@@ -24,16 +24,14 @@ function Register-DevMountTask {
         return
     }
 
-    # Inline module discovery + Mount-WSLDev command
-    $command = @'
-$r = Get-Volume | Where-Object DriveLetter | ForEach-Object { "$($_.DriveLetter):\.revealui"; "$($_.DriveLetter):\professional\.revealui" } |
-  Where-Object { Test-Path "$_\powershell\Modules\RevealUI.RevStation" } | Select-Object -First 1
-if ($r) {
-  $env:PSModulePath = (Join-Path $r 'powershell\Modules') + ';' + $env:PSModulePath
-  Import-Module RevealUI.RevStation
-  Mount-WSLDev -TriggerSource scheduled
-} else { Write-Error 'RevealUI.RevStation module not found on any drive' }
-'@
+    $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..' '..' '..' '..'))
+    $manifest = Join-Path $root 'powershell\Modules\RevealUI.RevStation\RevealUI.RevStation.psd1'
+    if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { throw 'Active maintained Windows module artifact is unavailable.' }
+    $quotedManifest = $manifest.Replace("'", "''")
+    $command = @"
+Import-Module -Name '$quotedManifest' -Force -ErrorAction Stop
+Mount-WSLDev -TriggerSource scheduled
+"@
 
     # Base64 encode to avoid XML escaping issues
     $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($command))
@@ -67,7 +65,7 @@ if ($r) {
   <Principals>
     <Principal id="Author">
       <UserId>$($env:USERDOMAIN)\$($env:USERNAME)</UserId>
-      <LogonType>InteractiveToken</LogonType>
+      <LogonType>S4U</LogonType>
       <RunLevel>HighestAvailable</RunLevel>
     </Principal>
   </Principals>
@@ -79,8 +77,8 @@ if ($r) {
     <StartWhenAvailable>true</StartWhenAvailable>
     <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
     <AllowStartOnDemand>true</AllowStartOnDemand>
-    <Enabled>true</Enabled>
-    <Hidden>false</Hidden>
+    <Enabled>false</Enabled>
+    <Hidden>true</Hidden>
     <RunOnlyIfIdle>false</RunOnlyIfIdle>
     <ExecutionTimeLimit>PT5M</ExecutionTimeLimit>
     <Priority>7</Priority>
@@ -103,7 +101,7 @@ if ($r) {
 
     try {
         Register-ScheduledTask -TaskName $taskName -Xml $taskXml -Force | Out-Null
-        Write-DevLog "Scheduled task '$taskName' registered successfully" -Source 'TaskReg'
+        Write-DevLog "Scheduled task '$taskName' registered disabled; approved identity and device acceptance are required before activation" -Source 'TaskReg'
     } catch {
         $err = [System.Management.Automation.ErrorRecord]::new(
             $_.Exception, 'TaskRegistrationFailed',

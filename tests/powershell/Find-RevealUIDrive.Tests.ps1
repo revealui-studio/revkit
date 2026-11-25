@@ -5,6 +5,8 @@ BeforeAll {
     $script:ModuleRoot = Join-Path $script:RepoRoot 'powershell' 'Modules' 'RevealUI.RevStation'
     Import-Module (Join-Path $script:ModuleRoot 'RevealUI.RevStation.psd1') -Force 6> $null
 
+    Mock Get-SavedRevkitRoot { $null } -ModuleName RevealUI.RevStation
+
     # Build a fake .revealui structure that contains the marker file the function looks for.
     $script:Marker = Join-Path 'powershell' 'Modules' 'RevealUI.RevStation' 'RevealUI.RevStation.psd1'
     $script:FakeRoot = Join-Path ([IO.Path]::GetTempPath()) "revkit-test-$([Guid]::NewGuid())"
@@ -52,5 +54,17 @@ Describe 'Find-RevealUIDrive (Layer 2 — USERPROFILE fallback)' {
         } finally {
             Remove-Item -Recurse -Force $userP -ErrorAction SilentlyContinue
         }
+    }
+}
+
+Describe 'Find-RevealUIDrive configured artifact ownership' {
+    It 'uses the persisted artifact root even when the process omitted its variable' {
+        Mock Get-SavedRevkitRoot { $script:FakeRoot } -ModuleName RevealUI.RevStation
+        $env:REVEALUI_ROOT = 'stale-process-root'
+        Find-RevealUIDrive | Should -Be $script:FakeRoot
+    }
+    It 'refuses a missing configured release instead of rediscovering the old checkout' {
+        Mock Get-SavedRevkitRoot { 'missing-configured-release' } -ModuleName RevealUI.RevStation
+        { Find-RevealUIDrive } | Should -Throw
     }
 }

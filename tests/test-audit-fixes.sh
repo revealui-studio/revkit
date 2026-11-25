@@ -39,7 +39,7 @@ else
   fail "archive-park slash: rc=$rc out=$out"
 fi
 
-echo "--- mount helper refuses an unlabeled disk ---"
+echo "--- mount helper requires approved identity ---"
 BIN="$(mktemp -d)"
 cat >"$BIN/blkid" <<'EOF'
 #!/usr/bin/env bash
@@ -61,9 +61,9 @@ EOF
 chmod +x "$BIN/blkid" "$BIN/mount" "$BIN/mountpoint" "$BIN/umount"
 STAMP="$TMP/mount-stamp"
 : >"$STAMP"
-out="$(PATH="$BIN:/usr/bin:/bin" MOUNT_STAMP="$STAMP" SANDBOX_LABEL_RETRIES=1 SANDBOX_LABEL_RETRY_SLEEP=0 bash "$ROOT/shell/bin/mount-sandbox-drive.sh" --mount-only 2>&1)" && rc=0 || rc=$?
-if [ "$rc" -ne 0 ] && [[ "$out" == *"Refusing to guess"* ]] && ! grep -q 'mount-called' "$STAMP"; then
-  pass "mount helper exits when the Sandbox label is missing and does not mount"
+out="$(PATH="$BIN:/usr/bin:/bin" MOUNT_STAMP="$STAMP" bash "$ROOT/shell/bin/mount-sandbox-drive.sh" --mount-only 2>&1)" && rc=0 || rc=$?
+if [ "$rc" -ne 0 ] && [[ "$out" == *"Configure the approved Sandbox identity"* ]] && ! grep -q 'mount-called' "$STAMP"; then
+  pass "mount helper exits without approved identity and does not mount"
 else
   fail "mount helper: rc=$rc out=$out stamp=$(cat "$STAMP")"
 fi
