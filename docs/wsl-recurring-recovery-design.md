@@ -289,14 +289,15 @@ ctime/inode identity and a third physical device are outside this fixture.
 
 The first source push was refused by the normal private-path leak hook because
 retained fixture/cache receipts under the development checkout contain absolute
-private paths. Those successful/failed attempts remain intact; no exclusion,
-hook bypass, deletion, receipt rewrite or evidence relocation was used. The
+private paths. No exclusion, hook bypass, deletion or receipt rewrite was used. The
 runner now refuses a parent inside a Git checkout before creating files, fixing
-future evidence placement. An explicitly approved private ext4 custody location
-outside published source, and a reviewed preservation/disposition of the existing
-attempts, are required before further fixture runs/source publication. The real
-round-trip receipt predates this placement-only guard; its observation/backend
-logic is unchanged. This gate does not authorize writing a real backup disk.
+future evidence placement. Normal automatic approval subsequently allowed a
+dedicated private ext4 custody directory outside Git and same-filesystem rename
+of only this turn's four attempts. Before/after manifests verified unchanged
+file bytes, modes, IDs, inode/hardlink identity and mtimes; receipts/cache records
+retain their original bytes and historical paths. This corrects artifact custody,
+not scanner policy. Future runs use the approved private location; publication
+still must pass the unchanged normal hook. This grants no real backup-disk writes.
 
 ## References and retained exceptions
 
