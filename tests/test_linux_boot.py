@@ -56,6 +56,51 @@ class BootTests(unittest.TestCase):
             self.assertTrue(link.is_symlink())
 
 
+class ColdBootReportTests(unittest.TestCase):
+    def receipt(self):
+        return {'recorded_at': '2026-11-25T08:17:00Z', 'commands': [
+            {'command': ['systemd-analyze', 'time'], 'exit_code': 0,
+             'stdout': 'Startup finished in 1min 14.639s (userspace)'},
+            {'command': ['systemd-analyze', 'critical-chain'], 'exit_code': 0,
+             'stdout': 'multi-user.target @52.099s\n└─libvirtd.service @43.492s +8.606s'},
+            {'command': ['systemd-analyze', '--user', 'critical-chain'], 'exit_code': 1,
+             'stdout': ''}]}
+
+    def test_saved_report_preserves_consumers_and_separates_desktop_adoption(self):
+        data = json.dumps(self.receipt()).encode()
+        result = boot.coldboot_report(data)
+        self.assertEqual(result['evidenceSha256'], hashlib.sha256(data).hexdigest())
+        self.assertEqual(result['services'], 'preserved')
+        self.assertIn('unverified', result['desktopAdoption'])
+        self.assertEqual(result['criticalChain'][1], {
+            'unit': 'libvirtd.service', 'startedAfter': '43.492s', 'duration': '8.606s'})
+
+    def test_missing_failed_duplicate_or_empty_command_refuses(self):
+        for mode in ['missing', 'failed', 'duplicate', 'empty']:
+            receipt = self.receipt()
+            if mode == 'missing':
+                receipt['commands'].pop(0)
+            elif mode == 'failed':
+                receipt['commands'][0]['exit_code'] = 1
+            elif mode == 'duplicate':
+                receipt['commands'].append(receipt['commands'][0])
+            else:
+                receipt['commands'][1]['stdout'] = 'no unit timing'
+            with self.subTest(mode=mode), self.assertRaises(ValueError):
+                boot.coldboot_report(json.dumps(receipt).encode())
+
+    def test_report_refuses_provisioning_before_opening_files(self):
+        with patch('sys.argv', ['provision-wsl-boot.py', '--apply', '--boot-evidence', '/missing']), \
+                patch.object(boot, 'proposed_files') as proposed:
+            with self.assertRaises(SystemExit):
+                boot.main()
+            proposed.assert_not_called()
+
+    def test_report_rejects_oversized_input(self):
+        with self.assertRaises(ValueError):
+            boot.coldboot_report(b' ' * (4 * 1024 * 1024 + 1))
+
+
 class ShellTests(unittest.TestCase):
     def test_nix_guard_sources_once_under_strict_shell(self):
         with tempfile.TemporaryDirectory() as directory:

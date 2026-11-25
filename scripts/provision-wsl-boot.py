@@ -42,12 +42,61 @@ def seed_missing(dest, data):
     return True
 
 
+
+def coldboot_report(data):
+    """Analyze an existing receipt only; this does not probe or change the host."""
+    if len(data) > 4 * 1024 * 1024:
+        raise ValueError('Boot evidence exceeds report limit')
+    receipt = json.loads(data)
+    if not isinstance(receipt, dict):
+        raise ValueError('Boot evidence requires a receipt object')
+    commands = receipt.get('commands')
+    if not isinstance(commands, list):
+        raise ValueError('Boot evidence requires a commands array')
+    selected = {}
+    for command in [('systemd-analyze', 'time'), ('systemd-analyze', 'critical-chain')]:
+        matches = [row for row in commands if isinstance(row, dict)
+                   and row.get('command') == list(command)]
+        if len(matches) != 1 or matches[0].get('exit_code') != 0:
+            raise ValueError('Boot evidence requires one successful ' + ' '.join(command))
+        output = matches[0].get('stdout')
+        if not isinstance(output, str) or not output.strip():
+            raise ValueError('Boot evidence has no successful output')
+        selected[command[-1]] = output
+    units = []
+    for line in selected['critical-chain'].splitlines():
+        name, separator, timing = line.lstrip(' │└├─').partition(' @')
+        if not separator:
+            continue
+        if not name or any(char not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.@:-\\' for char in name):
+            raise ValueError('Malformed critical-chain unit')
+        started, _, duration = timing.partition(' +')
+        units.append({'unit': name, 'startedAfter': started, 'duration': duration or None})
+    if not units:
+        raise ValueError('Boot evidence has no critical-chain units')
+    return {'schema': 1, 'mode': 'saved-boot-evidence-report',
+            'evidenceSha256': hashlib.sha256(data).hexdigest(),
+            'recordedAt': receipt.get('recorded_at'),
+            'startup': selected['time'].strip(), 'criticalChain': units,
+            'services': 'preserved', 'configuration': 'preserved',
+            'desktopAdoption': 'unverified; separate controller cold-start receipt required',
+            'nextEvidence': 'Review unit dependencies and per-unit boot journals before proposing consumer readiness changes'}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--apply', action='store_true')
     parser.add_argument('--windows-home', type=Path)
     parser.add_argument('--revert', action='store_true')
+    parser.add_argument('--boot-evidence', type=Path, help='Report from a saved native startup JSON receipt; no live commands')
     args = parser.parse_args()
+    if args.boot_evidence is not None:
+        if args.apply or args.revert or args.windows_home is not None:
+            parser.error('--boot-evidence is report-only and cannot be combined with provisioning')
+        with args.boot_evidence.open('rb') as stream:
+            data = stream.read(4 * 1024 * 1024 + 1)
+        print(json.dumps(coldboot_report(data), indent=2))
+        return
     if args.revert:
         parser.error('Historical optimization has no prior-state receipt. Refusing to guess service or configuration settings.')
     source = Path(__file__).resolve().parents[1] / 'shell' / 'config'

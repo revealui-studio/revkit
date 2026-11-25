@@ -51,3 +51,50 @@ reconnection evidence.
 | `/etc/bash.bashrc`, `/etc/profile.d/nix.sh` duplicate Nix preambles | Package-checksummed shell reconciler; retained before/after digest receipt and login/nonlogin shell verification |
 | Existing masks, disabled units and default target left by historical boot script | Explicit owner-state reconciliation; boot provisioning now preserves choices and never reapplies the old blanket policy |
 | Manual disk helper deployment | Explicit SHA256-bound root-custody installer; helper digest and ownership verification before any disk adoption |
+
+## Saved cold-start evidence
+
+`python3 -B scripts/provision-wsl-boot.py --boot-evidence RECEIPT.json`
+reports the existing native receipt's `systemd-analyze time` and
+`systemd-analyze critical-chain` results. It runs no host commands, hashes the
+receipt, rejects missing/failed/ambiguous command results, and cannot be combined
+with provisioning. The output deliberately leaves desktop adoption unverified.
+
+The 2026-11-25 baseline recorded 74.639 seconds of userspace startup and
+`multi-user.target` at 52.099 seconds. Its chain includes `systemd-machined`
+(15.829 seconds), `libvirtd` (8.606 seconds), AppArmor (7.094 seconds), and
+`snapd.apparmor` (1.157 seconds). The `/run/user/1000` mount appears at 45.942
+seconds. These observations identify units for dependency and boot-journal
+review; chain timings alone do not establish why a unit waited. Preserve
+virtualization consumers, socket activation, confinement, and owner resource
+and network settings while reviewing their readiness contracts.
+
+The controller's separate 85.266-second desktop discovery result exceeded the
+30-second app probe. A successful CLI resume and a running native user bus do
+not establish desktop reconnection. No service disable, target change, host
+resource override, or restart is part of this report. The inference consumer's
+readiness fix is proposed separately in RevealUI PR3174; cold acceptance remains
+behind the coordinated controller boundary.
+
+## Remaining native configuration dispositions
+
+- Docker's disabled Noble source stays disabled pending an upstream supported
+  suite and an explicit consumer decision. Do not retarget the suite by name.
+- The disabled Kisak Mesa and Turtle feeds stay disabled; their filenames name
+  Jammy while their contents select Noble. Neither filename nor a distribution
+  upgrade justifies reactivation.
+- GitHub CLI and Microsoft `.list.disabled` files remain ignored by APT.
+  Chrome's signed stable source remains active. No signing-key or feed changes
+  are required by the evidence collected here.
+- The bounded Python consumer scan found no environments in the inspected
+  pipx, uv, pyenv, or project roots. It is incomplete evidence, so no venv
+  rebuild or Python alias substitution is authorized by that scan.
+- Zed's custom RevealUI agent still references its old fnm path. The intended
+  project ACP script is absent and provider/model ownership is unresolved.
+  Preserve the custom entry until its owning launcher and credential contract
+  are established; a generic agent entry is not an equivalent replacement.
+- GitHub CLI's configured `github.com` host and SSH alias resolve the same
+  repository. Approved native shell and ordinary-child `gh repo view` both
+  succeeded. Earlier sandboxed child inference errors do not justify login,
+  credential migration, or host/auth configuration edits. Use the maintained
+  Git rule's explicit `-R owner/repo` form for deterministic repository scope.
