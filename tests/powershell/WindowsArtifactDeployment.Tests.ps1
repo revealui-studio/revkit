@@ -170,7 +170,7 @@ Describe 'Private Windows artifact directories' {
 
 Describe 'Cold authority deployment is distinct from private user artifacts' {
     It 'plans only a new protected namespace without touching profiles, ACLs or source files' {
-        $file=Join-Path $TestDrive 'public-runtime';[IO.File]::WriteAllBytes($file,[byte[]]::new(512))
+        $file=Join-Path $TestDrive '.public-runtime';[IO.File]::WriteAllBytes($file,[byte[]]::new(512))
         Mock Get-RevkitWindowsArtifactFiles { @([pscustomobject]@{SourcePath=$file;SourceCommit=('a'*40);RelativePath='scripts/public';Sha256=('b'*64)}) }
         $plan=Install-RevkitColdAuthority -SourceRoot $TestDrive -ExpectedSourceManifestSha256 ('c'*64)
         $plan.PayloadBytes|Should -Be 512
@@ -179,14 +179,14 @@ Describe 'Cold authority deployment is distinct from private user artifacts' {
         $plan.ExistingPathsChanged.Count|Should -Be 0
         $plan.PolicyInstalled|Should -BeFalse
         $plan.Applied|Should -BeFalse
-        (Get-ChildItem -LiteralPath $TestDrive).Count|Should -Be 1
+        (Get-ChildItem -LiteralPath $TestDrive -Force).Count|Should -Be 1
         [IO.File]::ReadAllBytes($file).Length|Should -Be 512
     }
     It 'refuses package provenance before any provisioning' {
-        $before=@(Get-ChildItem -LiteralPath $TestDrive).Count
+        $before=@(Get-ChildItem -LiteralPath $TestDrive -Force).Count
         Mock Get-RevkitWindowsArtifactFiles { throw 'manifest mismatch' }
         {Install-RevkitColdAuthority -SourceRoot $TestDrive -ExpectedSourceManifestSha256 ('c'*64) -Apply}|Should -Throw -ExpectedMessage '*manifest mismatch*'
-        (Get-ChildItem -LiteralPath $TestDrive).Count|Should -Be $before
+        (Get-ChildItem -LiteralPath $TestDrive -Force).Count|Should -Be $before
     }
 }
 

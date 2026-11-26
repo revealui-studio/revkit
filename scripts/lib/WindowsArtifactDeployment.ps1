@@ -172,7 +172,7 @@ function Get-RevkitWindowsArtifactFiles {
             continue
         }
         $path = Join-Path $SourceRoot $relative
-        $item = Get-Item -LiteralPath $path -ErrorAction Stop
+        $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
         if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Windows source artifacts must be regular files.' }
         $hash = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
         if ($manifestFiles.Count -gt 0 -and $manifestFiles[$relative] -cne $hash) { throw 'Native Windows source package checksum differs.' }
@@ -231,7 +231,7 @@ function Install-RevkitColdAuthority {
     # Unlike the user artifact/profile adapter, this owner NEVER edits an
     # existing namespace or inherits authority from a hash-verified E package.
     $files=@(Get-RevkitWindowsArtifactFiles $SourceRoot $ExpectedSourceManifestSha256)
-    $bytes=[long]0;foreach($file in $files){$bytes+=(Get-Item -LiteralPath $file.SourcePath).Length}
+    $bytes=[long]0;foreach($file in $files){$bytes+=(Get-Item -LiteralPath $file.SourcePath -Force).Length}
     $commit=$files[0].SourceCommit
     $plan=[ordered]@{SchemaVersion=1;Kind='protected-cold-authority-v1';SourceCommit=$commit;
         SourceManifestSha256=$ExpectedSourceManifestSha256;Files=$files.Count;PayloadBytes=$bytes;
