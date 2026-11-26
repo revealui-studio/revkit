@@ -28,7 +28,7 @@ def policy():
             workerVhdx=dict(path='X:\\worker.vhdx',hardware={}),restore=dict(path='X:\\restore.vhdx',hardware={},overheadBytes=1024,hardwareGuarantee='isolated-restore-test',archiveReceiptSha256='',nativeArchiveId='',imageBytes=1024)),
         worker=dict(registrationId='44444444-4444-4444-8444-444444444444',distro='worker',machineId='machine',bootId='boot',
             interpreter='/usr/bin/python3.14',interpreterSha256='c'*64,files={},borg='/opt/revkit/borg',borgSha256=a.BORG_SHA,state='/var/lib/revkit-cold'),
-        repository=dict(path='/synthetic/mount/repository',id='d'*64,mountPath='/synthetic/mount',fsUuid='55555555-5555-4555-8555-555555555555',partitionUuid='66666666-6666-4666-8666-666666666666',deviceSerial='test',deviceBytes=4096,partitionBytes=2048),
+        repository=dict(path='/synthetic/mount/repository',id='d'*64,mountPath='/synthetic/mount',fsUuid='55555555-5555-4555-8555-555555555555',partitionUuid='66666666-6666-4666-8666-666666666666',deviceSerial='test',deviceModel='synthetic USB',deviceBytes=4096,partitionBytes=2048,partitionOffsetBytes=512,filesystemLabel='synthetic'),
         budget=dict(repositoryAdditionalBytes=2048,workspaceAdditionalBytes=1024,reserveBytes=64*1024**3,timeoutSeconds=120),
         acceptance=dict(windowsReceiptSha256='e'*64,selectedWorkerReceiptSha256='f'*64,custodyReceiptSha256='a'*64,capacityReceiptSha256='b'*64))
 
@@ -125,3 +125,35 @@ class AdmissionTests(unittest.TestCase):
             (root/'cgroup.procs').write_text(str(os.getpid())+'\n');deployment.children_absent()
             (root/'cgroup.stat').write_text('nr_descendants 1\n')
             with self.assertRaises(a.AdmissionError):deployment.children_absent()
+
+class RepositoryCorrelationTests(unittest.TestCase):
+    def test_exact_guest_mount_and_kernel_continuity_detect_rebind_without_usb_serial(self):
+        p=policy();repo=p['repository'];device=os.makedev(8,17);disk=os.makedev(8,16)
+        observed={'mountState':'MOUNTED','diskPath':'/dev/ephemeral','partitionPath':'/dev/ephemeral1','serial':repo['deviceSerial']}
+        row={'fstype':'ext4','target':repo['mountPath'],'source':'/dev/ephemeral1','uuid':repo['fsUuid'],'partuuid':repo['partitionUuid'],'maj:min':'8:17','id':42,'fsroot':'/'}
+        def info(path,*args,**kwargs):
+            if str(path)=='/dev/ephemeral':return mock.Mock(st_mode=0o060000,st_rdev=disk,st_ino=100)
+            if str(path)=='/dev/ephemeral1':return mock.Mock(st_mode=0o060000,st_rdev=device,st_ino=101)
+            return mock.Mock(st_dev=device,st_ino=102)
+        with mock.patch.object(a,'disk_probe',return_value=observed) as probe,mock.patch.object(a,'command',side_effect=lambda *args,**kw:json.dumps({'filesystems':[row]}).encode()),mock.patch.object(a.os,'stat',side_effect=info),mock.patch.object(Path,'read_text',return_value='10\n') as sequence:
+            baseline=a.filesystem_observation(p,Path(repo['path']))
+            self.assertEqual(probe.call_args.args[0]['serial'],repo['deviceSerial'])
+            self.assertEqual(baseline[6:8],(10,42))
+            sequence.return_value='11\n'
+            self.assertNotEqual(baseline,a.filesystem_observation(p,Path(repo['path'])))
+            sequence.return_value='10\n';row['id']=43
+            self.assertNotEqual(baseline,a.filesystem_observation(p,Path(repo['path'])))
+            for field,value in [('uuid','wrong'),('partuuid','wrong'),('source','/dev/absent'),('maj:min','8:18'),('fsroot','/bind-subdir')]:
+                prior=row[field];row[field]=value
+                with self.subTest(field=field),self.assertRaises(a.AdmissionError):a.filesystem_observation(p,Path(repo['path']))
+                row[field]=prior
+            observed['mountState']='NOT_MOUNTED'
+            with self.assertRaises(a.AdmissionError):a.filesystem_observation(p,Path(repo['path']))
+            observed['mountState']='MOUNTED';sequence.side_effect=FileNotFoundError('detached')
+            with self.assertRaises(FileNotFoundError):a.filesystem_observation(p,Path(repo['path']))
+
+    def test_continuity_drift_refuses_in_existing_transaction_check(self):
+        deployment=object.__new__(a.Deployment);deployment.policy=policy();deployment.observation=('original',)
+        with mock.patch.object(a,'repository_observation',return_value=('rebound',)),mock.patch.object(deployment,'reserve') as reserve:
+            with self.assertRaises(a.AdmissionError):deployment.check()
+            reserve.assert_not_called()

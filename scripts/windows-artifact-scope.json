@@ -33,6 +33,9 @@
     "scripts/wsl-cold-worker.py",
     "scripts/lib/WslColdSourceLease.cs",
     "scripts/lib/wsl_cold_admission.py",
-    "scripts/Invoke-WslColdContainer.ps1"
+    "scripts/Invoke-WslColdContainer.ps1",
+    "scripts/wsl-disk-identity.py",
+    "scripts/lib/WslDiskIdentity.ps1",
+    "scripts/Test-WslColdHardware.ps1"
   ]
 }

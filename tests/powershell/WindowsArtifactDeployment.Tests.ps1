@@ -167,3 +167,44 @@ Describe 'Private Windows artifact directories' {
         }
     }
 }
+
+Describe 'Cold authority deployment is distinct from private user artifacts' {
+    It 'plans only a new protected namespace without touching profiles, ACLs or source files' {
+        $file=Join-Path $TestDrive 'public-runtime';[IO.File]::WriteAllBytes($file,[byte[]]::new(512))
+        Mock Get-RevkitWindowsArtifactFiles { @([pscustomobject]@{SourcePath=$file;SourceCommit=('a'*40);RelativePath='scripts/public';Sha256=('b'*64)}) }
+        $plan=Install-RevkitColdAuthority -SourceRoot $TestDrive -ExpectedSourceManifestSha256 ('c'*64)
+        $plan.PayloadBytes|Should -Be 512
+        $plan.Parent|Should -Be '%ProgramFiles%'
+        $plan.Owner|Should -Be 'S-1-5-32-544'
+        $plan.ExistingPathsChanged.Count|Should -Be 0
+        $plan.PolicyInstalled|Should -BeFalse
+        $plan.Applied|Should -BeFalse
+        (Get-ChildItem -LiteralPath $TestDrive).Count|Should -Be 1
+        [IO.File]::ReadAllBytes($file).Length|Should -Be 512
+    }
+    It 'refuses package provenance before any provisioning' {
+        $before=@(Get-ChildItem -LiteralPath $TestDrive).Count
+        Mock Get-RevkitWindowsArtifactFiles { throw 'manifest mismatch' }
+        {Install-RevkitColdAuthority -SourceRoot $TestDrive -ExpectedSourceManifestSha256 ('c'*64) -Apply}|Should -Throw -ExpectedMessage '*manifest mismatch*'
+        (Get-ChildItem -LiteralPath $TestDrive).Count|Should -Be $before
+    }
+}
+
+Describe 'Atomic authority namespace creation on actual Windows only' {
+    It 'refuses existing paths without changing their descriptor or contents' -Skip:(-not $IsWindows) {
+        . (Join-Path $PSScriptRoot '..' '..' 'scripts' 'lib' 'WslBackup.ps1')
+        Initialize-WslColdWorkerProtocol
+        $path=Join-Path $TestDrive 'new-synthetic-authority'
+        $descriptor=[Security.AccessControl.DirectorySecurity]::new()
+        $descriptor.SetAccessRuleProtection($true,$false)
+        $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User
+        $descriptor.SetOwner($sid)
+        $descriptor.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
+        [Revealfleet.Backup.ColdSourceLease]::CreateProtectedDirectory($path,$descriptor.GetSecurityDescriptorBinaryForm())
+        $sentinel=Join-Path $path 'synthetic-public';[IO.File]::WriteAllText($sentinel,'preserve')
+        $before=(Get-Acl -LiteralPath $path).Sddl
+        {[Revealfleet.Backup.ColdSourceLease]::CreateProtectedDirectory($path,$descriptor.GetSecurityDescriptorBinaryForm())}|Should -Throw
+        (Get-Acl -LiteralPath $path).Sddl|Should -BeExactly $before
+        [IO.File]::ReadAllText($sentinel)|Should -BeExactly 'preserve'
+    }
+}

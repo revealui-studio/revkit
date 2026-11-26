@@ -114,7 +114,7 @@ def inspect(identity, *, deadline_seconds=30, runner=None, now=time.monotonic, s
             raise IdentityError('Mountpoint belongs to another filesystem')
         state = 'MOUNTED'
     return {'schemaVersion': 1, 'identityVerified': True, 'serial': identity['serial'],
-            'model': identity['model'], 'diskBytes': identity['diskBytes'],
+            'model': identity['model'], 'serialModelAuthority': 'configured-windows-identity-correlated-by-geometry', 'diskBytes': identity['diskBytes'],
             'partitionBytes': identity['partitionBytes'], 'partitionUuid': identity['partitionUuid'],
             'filesystemUuid': identity['filesystemUuid'], 'diskPath': disk['path'],
             'partitionPath': partition['path'], 'mountPoint': identity['mountPoint'],

@@ -1,5 +1,5 @@
 #Requires -Version 7.0
-BeforeAll {. (Join-Path $PSScriptRoot '..' '..' 'scripts' 'lib' 'WslBackup.ps1');Initialize-WslColdWorkerProtocol}
+BeforeAll {if(-not (Get-Command Get-Disk -ErrorAction SilentlyContinue)){function Get-Disk {throw 'No native Windows storage provider'};function Get-Partition {throw 'No native Windows storage provider'}};. (Join-Path $PSScriptRoot '..' '..' 'scripts' 'lib' 'WslBackup.ps1');Initialize-WslColdWorkerProtocol}
 Describe 'Operational controller admission precedes side effects' {
     It 'refuses invalid admission before registry, source or worker operations' {
         Mock Read-WslColdAdmission {throw 'signature refused'}
@@ -89,5 +89,47 @@ Describe 'Standard creator inheritance does not authorize another data reader' {
         {Assert-WslColdAclGrants -Entries @($creator) -Allowed @('owner') -Leaf -PrivateData}|Should -Not -Throw
         $public=[pscustomobject]@{Sid='S-1-1-0';Rights=[Security.AccessControl.FileSystemRights]::ReadData;Allow=$true;InheritOnly=$true}
         {Assert-WslColdAclGrants -Entries @($creator,$public) -Allowed @('owner') -Leaf -PrivateData}|Should -Throw
+    }
+}
+
+Describe 'Exact filesystem capacity domains on MBR and GPT' {
+    BeforeEach {
+        $script:disk=[pscustomobject]@{PartitionStyle='MBR';SerialNumber='synthetic serial  ';FriendlyName='synthetic USB';Size=2000000000L;Signature=389383;LogicalSectorSize=512;PhysicalSectorSize=4096}
+        $script:part=[pscustomobject]@{Offset=1048576L;Size=1900000000L;MbrType=7}
+        $script:vol=[pscustomobject]@{UniqueId='\\?\Volume{0005f107-0000-0000-0000-100000000000}\';AllocationUnitSize=4096;FileSystem='NTFS'}
+    }
+    It 'accepts a fully observed MBR disk without a GPT GUID and shares the volume domain' {
+        $expected=Get-WslColdVolumeIdentity $disk $part $vol
+        $expected.diskId|Should -Be 389383
+        $expected.Contains('partitionUuid')|Should -BeFalse
+        (Assert-WslColdVolumeObservation $disk $part $vol $expected)|Should -Be '0005f107-0000-0000-0000-100000000000'
+        $vol|Add-Member DriveLetter 'Z'
+        (Assert-WslColdVolumeObservation $disk $part $vol $expected)|Should -Be $expected.volumeUuid
+    }
+    It 'rejects every changed hardware/geometry/filesystem field rather than accepting a capacity alias' {
+        $expected=Get-WslColdVolumeIdentity $disk $part $vol
+        foreach($field in @('serial','model','diskBytes','diskId','logicalSectorBytes','physicalSectorBytes','partitionOffsetBytes','partitionBytes','partitionType','volumeUuid','allocationUnitBytes')) {
+            $changed=[ordered]@{};foreach($key in $expected.Keys){$changed[$key]=$expected[$key]}
+            $changed[$field]=if($changed[$field] -is [string]){'different'}else{$changed[$field]+1}
+            {Assert-WslColdVolumeObservation $disk $part $vol $changed}|Should -Throw
+        }
+        $disk.Signature=$null
+        {Get-WslColdVolumeIdentity $disk $part $vol}|Should -Throw
+    }
+    It 'requires exact nonempty GPT disk, partition and type identities too' {
+        $disk.PartitionStyle='GPT';$disk|Add-Member Guid '11111111-1111-4111-8111-111111111111'
+        $part|Add-Member Guid '22222222-2222-4222-8222-222222222222';$part|Add-Member GptType 'ebd0a0a2-b9e5-4433-87c0-68b6b72699c7'
+        $expected=Get-WslColdVolumeIdentity $disk $part $vol
+        (Assert-WslColdVolumeObservation $disk $part $vol $expected)|Should -Be $expected.volumeUuid
+        $part.Guid=[Guid]::Empty
+        {Assert-WslColdVolumeObservation $disk $part $vol $expected}|Should -Throw
+    }
+    It 'observes Windows USB hardware independently of Linux serial echo' {
+        Mock Get-Disk { @([pscustomobject]@{Number=7;SerialNumber='synthetic';FriendlyName='synthetic USB';Size=4096;BusType='USB';PartitionStyle='GPT';IsBoot=$false;IsSystem=$false}) }
+        Mock Get-Partition { @([pscustomobject]@{DiskNumber=7;Offset=512;Size=2048;Guid='66666666-6666-4666-8666-666666666666';GptType='0fc63daf-8483-4772-8e79-3d69d8477de4';DriveLetter=[char]0}) }
+        $repository=@{deviceSerial='synthetic';deviceModel='synthetic USB';deviceBytes=4096;partitionOffsetBytes=512;partitionBytes=2048;partitionUuid='66666666-6666-4666-8666-666666666666'}
+        {Assert-WslColdRepositoryHardware $repository}|Should -Not -Throw
+        $repository.deviceSerial='changed Windows device'
+        {Assert-WslColdRepositoryHardware $repository}|Should -Throw
     }
 }

@@ -74,6 +74,19 @@ namespace Revealfleet.Backup {
             } catch { stream.Dispose(); throw; }
         }
         [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool CreateDirectoryW(string path,IntPtr security);
+        // Atomic NEW namespace with its descriptor at creation. Existing paths
+        // fail ERROR_ALREADY_EXISTS; no create-then-ACL replacement window.
+        [StructLayout(LayoutKind.Sequential)] struct SecurityAttributes { public uint Length; public IntPtr Descriptor; public int Inherit; }
+        public static void CreateProtectedDirectory(string path,byte[] descriptor) {
+            if(!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
+            IntPtr sd=Marshal.AllocHGlobal(descriptor.Length),attributes=IntPtr.Zero;
+            try {
+                Marshal.Copy(descriptor,0,sd,descriptor.Length);
+                var value=new SecurityAttributes { Length=(uint)Marshal.SizeOf<SecurityAttributes>(),Descriptor=sd,Inherit=0 };
+                attributes=Marshal.AllocHGlobal((int)value.Length);Marshal.StructureToPtr(value,attributes,false);
+                if(!CreateDirectoryW(path,attributes)) throw new Win32Exception(Marshal.GetLastWin32Error());
+            } finally { if(attributes!=IntPtr.Zero)Marshal.FreeHGlobal(attributes);Marshal.FreeHGlobal(sd); }
+        }
         public static void CreateTransactionDirectory(string path) {
             if(!CreateDirectoryW(path,IntPtr.Zero)) throw new Win32Exception(Marshal.GetLastWin32Error());
         }
@@ -103,6 +116,7 @@ namespace Revealfleet.Backup {
         readonly RegistryKey[] keys=new RegistryKey[3];
         readonly CancellationTokenSource cancellation;
         Task monitor; bool disposed;
+        string hardwareHost,hardwareScript,hardwarePolicy,hardwareDigest;
         [DllImport("advapi32.dll",SetLastError=true)] static extern int RegNotifyChangeKeyValue(SafeRegistryHandle key,bool subtree,uint filter,SafeWaitHandle signal,bool asynchronous);
         public ColdCommitGuard(ColdSourceLease heldSource,FileStream destination,string path,string sha,byte[] policyBytes,CancellationTokenSource stop) {
             source=heldSource; target=destination; targetPath=path; expectedHash=sha; cancellation=stop;
@@ -124,9 +138,18 @@ namespace Revealfleet.Backup {
             source.ValidateUnchanged();
             if(DateTimeOffset.UtcNow.ToUnixTimeSeconds()>=policy.RootElement.GetProperty("expiresAt").GetInt64()) throw new IOException("Live policy expired");
         }
+        public void ConfigureHardwareProbe(string host,string script,string path,string digest) {
+            if(monitor!=null || hardwareHost!=null) throw new InvalidOperationException("Hardware observer already bound");
+            hardwareHost=host;hardwareScript=script;hardwarePolicy=path;hardwareDigest=digest;
+        }
+        async Task HardwareAsync() {
+            if(hardwareHost==null) throw new IOException("Continuous Windows hardware observer required");
+            var result=await ColdProtocol.RunControlAsync(hardwareHost,new[]{"-NoLogo","-NoProfile","-NonInteractive","-File",hardwareScript,"-PolicyPath",hardwarePolicy,"-ReviewedPolicySha256",hardwareDigest},Array.Empty<byte>(),15000).ConfigureAwait(false);
+            if(result!="windows-hardware-bound-v1") throw new IOException("Windows hardware continuity refused");
+        }
         public void StartMonitor() {
             monitor=Task.Run(async ()=>{
-                try { while(!cancellation.IsCancellationRequested) { Validate(); Capacity(); await Task.Delay(500,cancellation.Token).ConfigureAwait(false); } }
+                try { while(!cancellation.IsCancellationRequested) { Validate(); Capacity(); await HardwareAsync().ConfigureAwait(false); await Task.Delay(1000,cancellation.Token).ConfigureAwait(false); } }
                 catch(OperationCanceledException) when(cancellation.IsCancellationRequested) { }
                 catch { cancellation.Cancel(); }
             });
@@ -140,7 +163,7 @@ namespace Revealfleet.Backup {
             string workerRoot=Path.GetPathRoot(c.GetProperty("workerVhdx").GetProperty("path").GetString());
             long restoreOverhead=c.GetProperty("restore").GetProperty("overheadBytes").GetInt64();
             long workspace=p.GetProperty("budget").GetProperty("workspaceAdditionalBytes").GetInt64();
-            if(String.Equals(restoreRoot,workerRoot,StringComparison.OrdinalIgnoreCase)) {
+            if(String.Equals(c.GetProperty("restore").GetProperty("hardware").GetProperty("volumeUuid").GetString(),c.GetProperty("workerVhdx").GetProperty("hardware").GetProperty("volumeUuid").GetString(),StringComparison.Ordinal)) {
                 if(new DriveInfo(restoreRoot).AvailableFreeSpace < checked(remaining+restoreOverhead+workspace+reserve)) throw new IOException("Live shared-volume reserve refused");
             } else {
                 if(new DriveInfo(restoreRoot).AvailableFreeSpace < checked(remaining+restoreOverhead+reserve) ||
@@ -175,7 +198,7 @@ namespace Revealfleet.Backup {
                 target.Position=expected;
                 ColdSourceLease.ValidateDenseDestination(target,targetPath,expected);
             }
-            Validate(); Capacity();
+            await HardwareAsync().ConfigureAwait(false); Validate(); Capacity();
         }
         public async Task StopAsync() { cancellation.Cancel(); if(monitor!=null) await monitor.ConfigureAwait(false); }
         public void Dispose() {

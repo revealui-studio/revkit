@@ -5,15 +5,21 @@ param(
     [string]$SourceRoot = (Join-Path $PSScriptRoot '..'),
     [string]$ExpectedSourceManifestSha256,
     [switch]$ReconcileFleetLauncher,
+    [switch]$ColdAuthority,
     [string]$ArtifactRoot = 'E:\AI\windows\revkit',
     [string]$GhConfigDir = 'E:\AI\windows\gh',
-    [Parameter(Mandatory)][string]$IgnorePatternsSource,
+    [string]$IgnorePatternsSource,
     [string]$ProfilePath = (Join-Path $env:USERPROFILE '.config\shell\profile.ps1'),
     [string]$LegacyModulePath = (Join-Path ([IO.Path]::GetDirectoryName($PROFILE.CurrentUserCurrentHost)) 'Modules\RevealUI.RevStation\RevealUI.RevStation.psm1'),
     [switch]$Apply
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib' 'WindowsArtifactDeployment.ps1')
+if($ColdAuthority) {
+    Install-RevkitColdAuthority -SourceRoot $SourceRoot -ExpectedSourceManifestSha256 $ExpectedSourceManifestSha256 -Apply:$Apply -WhatIf:$WhatIfPreference | ConvertTo-Json -Depth 8
+    return
+}
+if([string]::IsNullOrWhiteSpace($IgnorePatternsSource)){throw 'User artifact deployment requires explicit preserved ignore patterns.'}
 $files = @(Get-RevkitWindowsArtifactFiles -SourceRoot $SourceRoot -ExpectedSourceManifestSha256 $ExpectedSourceManifestSha256)
 $ignore = Get-Item -LiteralPath $IgnorePatternsSource -ErrorAction Stop
 if ($ignore.PSIsContainer -or ($ignore.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {

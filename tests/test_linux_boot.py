@@ -56,6 +56,62 @@ class BootTests(unittest.TestCase):
             self.assertTrue(link.is_symlink())
 
 
+class SelectedWorkerBootTests(unittest.TestCase):
+    def policy(self,original):
+        return {'schemaVersion':1,'role':'cold-backup-worker-v1','registrationId':'11111111-1111-4111-8111-111111111111',
+                'distro':'spare-worker','rootfsUuid':'22222222-2222-4222-8222-222222222222',
+                'defaultUser':'joshu','defaultUid':1000,'initTimeoutMs':60000,'wslConfSha256':hashlib.sha256(original).hexdigest()}
+
+    def test_selected_role_adds_only_timeout_and_preserves_owner_bytes(self):
+        original=b'# owner\r\n[boot]\r\nsystemd=true\r\n[user]\r\ndefault=joshu\r\n[network]\r\ngenerateResolvConf=false\r\n'
+        policy=self.policy(original)
+        plan,desired=boot.worker_boot_plan(boot.worker_policy(json.dumps(policy)),original,root_uuid=policy['rootfsUuid'],account_uid=1000)
+        self.assertEqual(desired,original.replace(b'[user]',b'initTimeout=60000\r\n[user]'))
+        self.assertFalse(plan['coldStartAccepted']);self.assertEqual(plan['startupWarningCause'],'unproved')
+        policy['wslConfSha256']=hashlib.sha256(desired).hexdigest()
+        repeat,new=boot.worker_boot_plan(policy,desired,root_uuid=policy['rootfsUuid'],account_uid=1000)
+        self.assertFalse(repeat['changed']);self.assertEqual(desired,new)
+
+    def test_role_account_rootfs_and_prior_bytes_are_fail_closed(self):
+        original=b'[boot]\nsystemd=true\n[user]\ndefault=joshu\n'
+        policy=self.policy(original)
+        for key,value in [('distro','Ubuntu'),('distro','Ubuntu-Recovery-20261124'),('initTimeoutMs',True),('initTimeoutMs',9999),('defaultUid',0)]:
+            changed=dict(policy);changed[key]=value
+            with self.subTest(key=key),self.assertRaises(ValueError):boot.worker_policy(json.dumps(changed))
+        for uid,root,data in [(0,policy['rootfsUuid'],original),(1000,'wrong',original),(1000,policy['rootfsUuid'],original+b'# drift')]:
+            with self.assertRaises(ValueError):boot.worker_boot_plan(policy,data,root_uuid=root,account_uid=uid)
+        policy['defaultUser']='renamed'
+        with self.assertRaises(ValueError):boot.worker_boot_plan(policy,original,root_uuid=policy['rootfsUuid'],account_uid=1000)
+
+    def test_failed_worker_publication_retains_actual_original_and_new_attempt(self):
+        original=b'[boot]\nsystemd=true\n[user]\ndefault=joshu\n';policy=self.policy(original)
+        plan,desired=boot.worker_boot_plan(policy,original,root_uuid=policy['rootfsUuid'],account_uid=1000)
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);path=root/'wsl.conf';path.write_bytes(original);state=root/'custody'
+            actual_lstat=Path.lstat
+            def observed(path):
+                info=actual_lstat(path)
+                return type('Info',(),{'st_uid':0,'st_mode':info.st_mode & ~0o022})()
+            with patch.object(Path,'lstat',observed),patch.object(boot.os,'replace',side_effect=OSError('publication failed')):
+                with self.assertRaises(OSError):boot.apply_worker_plan(policy,plan,desired,path,state)
+            self.assertEqual(path.read_bytes(),original)
+            attempts=list(state.iterdir());self.assertEqual(len(attempts),1)
+            self.assertEqual((attempts[0]/'original-wsl.conf').read_bytes(),original)
+            self.assertEqual(json.loads((attempts[0]/'plan.json').read_text())['beforeSha256'],plan['beforeSha256'])
+            self.assertEqual(len(list(root.glob('.revkit-worker-*'))),1)
+
+    def test_readiness_requires_actual_system_manager_and_user_session_not_timeout_assumption(self):
+        original=b'[boot]\nsystemd=true\ninitTimeout=60000\n[user]\ndefault=joshu\n';policy=self.policy(original)
+        def query(argv,**kwargs):
+            value=b'running\n' if argv[-1]=='is-system-running' else b'ActiveState=active\nSubState=running\nResult=success\n'
+            return subprocess.CompletedProcess(argv,0,stdout=value,stderr=b'')
+        with patch.object(boot,'selected_worker_context',return_value=(policy['rootfsUuid'],1000)),patch.object(boot.subprocess,'run',side_effect=query),patch.object(Path,'stat',return_value=type('Info',(),{'st_mode':0o140000})()),patch.object(Path,'read_text',return_value='synthetic-boot'):
+            result=boot.worker_readiness(policy,original)
+            self.assertTrue(result['readyNow']);self.assertFalse(result['coldStartAccepted'])
+            with patch.object(boot.subprocess,'run',return_value=subprocess.CompletedProcess([],0,stdout=b'degraded',stderr=b'')):
+                with self.assertRaises(ValueError):boot.worker_readiness(policy,original)
+
+
 class ColdBootReportTests(unittest.TestCase):
     def receipt(self):
         return {'recorded_at': '2026-11-25T08:17:00Z', 'commands': [

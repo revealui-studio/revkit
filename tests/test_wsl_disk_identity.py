@@ -65,6 +65,38 @@ class DiskIdentityTests(unittest.TestCase):
         self.assertTrue(result['identityVerified'])
         self.assertTrue(all(c[0] in ['lsblk', 'sfdisk', 'blkid', 'findmnt'] for c in self.commands))
 
+    def test_absent_guest_serial_is_not_misrepresented_as_observed_windows_serial(self):
+        original=self.runner
+        def runner(command,timeout):
+            result=original(command,timeout)
+            if command[0]=='lsblk':
+                value=json.loads(result.stdout)
+                for row in value['blockdevices']:row['serial']=None
+                result.stdout=json.dumps(value)
+            return result
+        self.runner=runner
+        result=self.inspect()
+        self.assertEqual(result['serialModelAuthority'],'configured-windows-identity-correlated-by-geometry')
+        self.assertEqual(result['serial'],self.identity['serial'])
+
+    def test_changed_parent_geometry_and_ambiguous_equal_sized_disks_refuse(self):
+        original=self.runner
+        for mode in ('parent-size','ambiguous','offset'):
+            def runner(command,timeout):
+                result=original(command,timeout)
+                if command[0]=='lsblk':
+                    value=json.loads(result.stdout)
+                    if mode=='parent-size':value['blockdevices'][0]['size']+=512
+                    elif mode=='ambiguous':value['blockdevices']*=2
+                    result.stdout=json.dumps(value)
+                elif command[0]=='sfdisk' and mode=='offset':
+                    value=json.loads(result.stdout);value['partitiontable']['partitions'][0]['start']+=1
+                    result.stdout=json.dumps(value)
+                return result
+            self.runner=runner
+            with self.subTest(mode=mode),self.assertRaises(MODULE.IdentityError):self.inspect(deadline=1)
+        self.runner=original
+
     def test_exact_mounted_identity_passes(self):
         self.mounted = True
         self.assertEqual(self.inspect()['mountState'], 'MOUNTED')

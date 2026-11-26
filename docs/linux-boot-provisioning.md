@@ -98,3 +98,58 @@ behind the coordinated controller boundary.
   succeeded. Earlier sandboxed child inference errors do not justify login,
   credential migration, or host/auth configuration edits. Use the maintained
   Git rule's explicit `-R owner/repo` form for deterministic repository scope.
+
+## Explicit selected cold-worker role
+
+`provision-wsl-boot.py --worker-policy POLICY.json` is separate from generic seed
+mode. It plans only the named `cold-backup-worker-v1` role, refusing main Ubuntu
+and protected recovery names. The exact policy fields are `schemaVersion:1`,
+`role`, `registrationId`, `distro`, `rootfsUuid`, `defaultUser`, `defaultUid`,
+`initTimeoutMs` (10000..120000), and original `wslConfSha256`. Bind the controller's
+selected registration BEFORE invoking this command in that distro. The Linux
+owner independently observes root filesystem UUID and the existing passwd UID;
+it cannot attest the Windows registration by echoing it. Preserve worker `joshu`
+UID1000. No account rename or user-session keeper is used.
+
+The parser requires existing `[boot]systemd=true` and the exact default user. It
+preserves every unrelated byte, including owner network/memory choices, and
+inserts/replaces only the explicit `initTimeout` key. Plan output includes before/
+after hashes and canonical `planSha256`. Root can apply only that exact plan via
+`--apply --reviewed-plan-sha256 HASH` from an immutable root-owned provisioner.
+Apply rechecks root custody/config bytes, retains/fsyncs the original and plan in
+a NEW UUID under `/var/lib/revkit/worker-boot`, and atomically publishes the single
+file. Failure retains attempts/temporary publication; no guessed rollback occurs.
+Rollback requires root's byte review of the saved original and the unchanged
+published hash; never overwrite later owner edits. No running lifecycle changes
+are made. Root reviews the mutation before applying and later owns cold restart.
+
+[Microsoft documents initTimeout](https://learn.microsoft.com/en-us/windows/wsl/wsl-config)
+as systemd initialization waiting, default10000ms. The selected worker's observed
+20.697s userspace time and root session warning make a reviewed60000ms policy
+reasonable to test; they do not establish causation. Main's setting is preserved.
+
+After root's separately coordinated cold start, the SAME immutable provisioner
+with `--worker-policy POLICY.json --worker-readiness` observes the bound rootfs,
+account and config, a running system manager, active/running/success `user@0`,
+and the actual root bus socket. It does not start units/buses or hide diagnostics.
+This is ready-now evidence with boot ID; a controller must separately record the
+cold launch warning/exit, registration/path, user/session readiness, timed startup
+and selected-worker binary pipes/lifetime. It is not desktop or production
+admission. Borg's temporary diagnostic binary is never installed by this owner;
+root must deploy the exact signature-verified release under immutable custody and
+pin system Python plus all FOUR worker runtime hashes before signed preparation.
+
+Controller review sequence, not native execution:
+
+```text
+Windows: verify exact selected registration UUID/path; stage reviewed immutable source in that worker.
+Selected worker root: python3 -I -B /opt/revkit-wsl-backup/COMMIT/scripts/provision-wsl-boot.py --worker-policy POLICY.json
+Selected worker root: SAME --worker-policy POLICY.json --apply --reviewed-plan-sha256 REVIEWED_HASH
+Controller: coordinated selected-worker cold start and warning/timing capture, main/recovery untouched.
+Selected worker root: SAME --worker-policy POLICY.json --worker-readiness
+```
+
+Actual elevated provisioning, cold acceptance and selected-worker production
+installation remain unperformed source gates. The native tests exercise private
+configuration fixtures, refusal/drift, failure retention and mocked readiness;
+they do not mutate the host configuration or prove actual worker readiness.

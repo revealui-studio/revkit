@@ -792,8 +792,7 @@ function Initialize-WslColdWorkerProtocol {
     [CmdletBinding()]
     param()
     if (-not ('Revealfleet.Backup.ColdProtocol' -as [type])) {
-        Add-Type -Path (Join-Path $PSScriptRoot 'WslColdProtocol.cs')
-        Add-Type -Path (Join-Path $PSScriptRoot 'WslColdSourceLease.cs')
+        Add-Type -Path @((Join-Path $PSScriptRoot 'WslColdProtocol.cs'),(Join-Path $PSScriptRoot 'WslColdSourceLease.cs')) -ErrorAction Stop
     }
 }
 
@@ -881,16 +880,61 @@ function Invoke-WslColdFixedProcess {
     [Revealfleet.Backup.ColdProtocol]::RunControlAsync($FileName,$Arguments,$InputBytes,$TimeoutMilliseconds).GetAwaiter().GetResult()
 }
 
+function Get-WslColdVolumeIdentity {
+    param($Disk,$Partition,$Volume)
+    $style=$Disk.PartitionStyle.ToString()
+    if($style -cnotin @('MBR','GPT')){throw 'Explicit MBR or GPT disk required.'}
+    $volumePath=[string]$Volume.UniqueId
+    if(-not $volumePath.StartsWith('\\?\Volume{',[StringComparison]::Ordinal) -or -not $volumePath.EndsWith('}\',[StringComparison]::Ordinal)){throw 'Canonical Windows volume identity required.'}
+    $volumeId=([Guid]$volumePath.Substring(11,36)).ToString('D')
+    if($volumeId -ceq [Guid]::Empty.ToString()){throw 'Empty filesystem capacity identity refused.'}
+    $o=[ordered]@{serial=$Disk.SerialNumber.Trim();model=$Disk.FriendlyName;diskBytes=[long]$Disk.Size;
+        partitionStyle=$style;logicalSectorBytes=[long]$Disk.LogicalSectorSize;physicalSectorBytes=[long]$Disk.PhysicalSectorSize;
+        partitionOffsetBytes=[long]$Partition.Offset;partitionBytes=[long]$Partition.Size;
+        volumeUuid=$volumeId;allocationUnitBytes=[long]$Volume.AllocationUnitSize}
+    if($style -ceq 'GPT') {
+        $o.diskId=([Guid]$Disk.Guid).ToString('D');$o.partitionUuid=([Guid]$Partition.Guid).ToString('D');$o.partitionType=([Guid]$Partition.GptType).ToString('D')
+        if(@($o.diskId,$o.partitionUuid,$o.partitionType) -contains [Guid]::Empty.ToString()){throw 'Empty GPT identity refused.'}
+    } else {
+        if($null -eq $Disk.Signature -or [long]$Disk.Signature -le 0 -or [long]$Disk.Signature -gt [uint32]::MaxValue -or $null -eq $Partition.MbrType -or [long]$Partition.MbrType -le 0 -or [long]$Partition.MbrType -gt 255){throw 'Exact MBR signature/type required.'}
+        $o.diskId=[long]$Disk.Signature;$o.partitionType=[long]$Partition.MbrType
+    }
+    foreach($key in @('diskBytes','logicalSectorBytes','physicalSectorBytes','partitionOffsetBytes','partitionBytes','allocationUnitBytes')){Assert-WslRecoveryInteger $o[$key] 1}
+    if([string]::IsNullOrWhiteSpace($o.serial) -or [string]::IsNullOrWhiteSpace($o.model) -or $Volume.FileSystem.ToString() -cne 'NTFS'){throw 'Complete hardware and NTFS volume identity required.'}
+    return $o
+}
+
+function Assert-WslColdVolumeObservation {
+    param($Disk,$Partition,$Volume,$Expected)
+    $actual=Get-WslColdVolumeIdentity $Disk $Partition $Volume
+    Assert-WslRecoveryFields $Expected @($actual.Keys) 'Windows hardware'
+    foreach($key in $actual.Keys){if($actual[$key] -is [string]){if($Expected[$key] -isnot [string]){throw 'Expected exact identity string.'}}else{Assert-WslRecoveryInteger $Expected[$key] 1};if($actual[$key] -cne $Expected[$key]){throw ('Windows hardware/volume drift: '+$key)}}
+    # A capacity domain is an observed filesystem volume, not a partition GUID
+    # or drive letter. Aliases share the same budget for MBR and GPT alike.
+    return $actual.volumeUuid
+}
+
 function Assert-WslColdWindowsHardware {
     param([string]$Path,$Expected)
-    Assert-WslRecoveryFields $Expected @('serial','model','diskBytes','partitionUuid') 'Windows hardware'
     $root=[IO.Path]::GetPathRoot($Path)
     if($root.Length -ne 3 -or $root[1] -ne ':'){throw 'Local Windows volume required.'}
     $partition=@(Get-Partition -DriveLetter $root[0] -ErrorAction Stop)
-    if($partition.Count -ne 1 -or [Guid]$partition[0].Guid -ne [Guid]$Expected.partitionUuid){throw 'Windows target partition identity differs.'}
+    if($partition.Count -ne 1){throw 'Windows target partition missing or ambiguous.'}
     $disk=Get-Disk -Number $partition[0].DiskNumber -ErrorAction Stop
-    if($disk.SerialNumber.Trim() -cne $Expected.serial -or $disk.FriendlyName -cne $Expected.model -or $disk.Size -ne $Expected.diskBytes){throw 'Windows hardware differs.'}
-    [pscustomobject]@{Domain=$partition[0].Guid.ToString();Free=[IO.DriveInfo]::new($root).AvailableFreeSpace;Root=$root}
+    $volume=@($partition[0]|Get-Volume -ErrorAction Stop)
+    if($volume.Count -ne 1){throw 'Windows filesystem volume missing or ambiguous.'}
+    $domain=Assert-WslColdVolumeObservation $disk $partition[0] $volume[0] $Expected
+    [pscustomobject]@{Domain=$domain;Free=[IO.DriveInfo]::new($root).AvailableFreeSpace;Root=$root}
+}
+
+function Assert-WslColdRepositoryHardware {
+    param($Repository)
+    # This is a fresh Windows observation, never a serial echoed by Linux.
+    . (Join-Path $PSScriptRoot 'WslDiskIdentity.ps1')
+    $identity=@{schemaVersion=1;serial=$Repository.deviceSerial;model=$Repository.deviceModel;diskBytes=$Repository.deviceBytes;
+        partitionBytes=$Repository.partitionBytes;partitionStartSectors=$Repository.partitionOffsetBytes/512;
+        partitionSectors=$Repository.partitionBytes/512;partitionUuid=$Repository.partitionUuid}
+    [void](Assert-WslDiskHardwareIdentity -Identity $identity -Disks @(Get-Disk -ErrorAction Stop) -Partitions @(Get-Partition -ErrorAction Stop))
 }
 
 function Read-WslColdAdmission {
@@ -922,7 +966,7 @@ function Read-WslColdAdmission {
         [void](Assert-WslColdProtectedPath $path)
         if((Get-FileHash -LiteralPath $path).Hash.ToLowerInvariant() -cne $p.controller.files[$path]){throw 'Controller runtime bytes differ from signed deployment.'}
     }
-    $required=@((Join-Path $PSScriptRoot 'WslBackup.ps1'),(Join-Path $PSScriptRoot 'WslColdProtocol.cs'),(Join-Path $PSScriptRoot 'WslColdSourceLease.cs'))
+    $required=@((Join-Path $PSScriptRoot 'WslBackup.ps1'),(Join-Path $PSScriptRoot 'WslColdProtocol.cs'),(Join-Path $PSScriptRoot 'WslColdSourceLease.cs'),(Join-Path $PSScriptRoot 'WslDiskIdentity.ps1'),(Join-Path $PSScriptRoot '..' 'Test-WslColdHardware.ps1'))
     foreach($path in $required){if(-not $p.controller.files.Contains($path)){throw 'Signed controller source closure incomplete.'}}
     if($p.worker.registrationId -in @($p.controller.source.registrationId,$p.controller.protected.registrationId) -or $p.worker.distro -in @($p.controller.source.distro,$p.controller.protected.distro)){throw 'Worker aliases source/protected registration.'}
     Assert-WslRecoveryDisjoint @($p.controller.source.vhdx,$p.controller.protected.vhdx,$p.controller.workerVhdx.path,$p.controller.restore.path)
@@ -944,6 +988,7 @@ function Assert-WslColdBindings {
     # Source unavailability for restore is established by a continuously held
     # writer-excluding handle too: a stopped registration cannot open its VHD.
     if($RequireSourceAbsent -and $null -eq $script:WslColdActiveLease){throw 'Restore requires retained source exclusion through destination commit.'}
+    Assert-WslColdRepositoryHardware $Policy.repository
     $domains=@{}
     foreach($part in @(
         @{Path=$Policy.controller.restore.path;Hardware=$Policy.controller.restore.hardware;Bytes=([decimal]$Policy.controller.restore.imageBytes-$RestoredBytes+$Policy.controller.restore.overheadBytes)},
@@ -1058,6 +1103,10 @@ function Invoke-WslColdContainerOperation {
             $sha=$restore.imageSha256;$bytes=$restore.imageBytes;$incoming=[IO.Stream]::Null
         } else {$target=$null;$sha=$null;$bytes=$lease.Length;$incoming=$lease.Bytes}
         $guard=[Revealfleet.Backup.ColdCommitGuard]::new($lease,$target,$p.controller.restore.path,$sha,([IO.File]::ReadAllBytes($PolicyPath)),$cts)
+        $probeScript=Join-Path $PSScriptRoot '..' 'Test-WslColdHardware.ps1'
+        $probeHost=(Get-Process -Id $PID).Path
+        [void](Assert-WslColdProtectedPath $probeHost)
+        $guard.ConfigureHardwareProbe($probeHost,$probeScript,$PolicyPath,$doc.Sha256)
         $guard.StartMonitor()
         if($Phase -ceq 'backup') {
             $sha=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashDataAsync($incoming,$cts.Token).GetAwaiter().GetResult()).ToLowerInvariant()

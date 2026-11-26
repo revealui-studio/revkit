@@ -224,3 +224,65 @@ function Set-RevkitPrivateDirectory {
         throw 'Private artifact directory access or ownership verification failed.'
     }
 }
+
+function Install-RevkitColdAuthority {
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)][string]$SourceRoot,[Parameter(Mandatory)][string]$ExpectedSourceManifestSha256,[switch]$Apply)
+    # Unlike the user artifact/profile adapter, this owner NEVER edits an
+    # existing namespace or inherits authority from a hash-verified E package.
+    $files=@(Get-RevkitWindowsArtifactFiles $SourceRoot $ExpectedSourceManifestSha256)
+    $bytes=[long]0;foreach($file in $files){$bytes+=(Get-Item -LiteralPath $file.SourcePath).Length}
+    $commit=$files[0].SourceCommit
+    $plan=[ordered]@{SchemaVersion=1;Kind='protected-cold-authority-v1';SourceCommit=$commit;
+        SourceManifestSha256=$ExpectedSourceManifestSha256;Files=$files.Count;PayloadBytes=$bytes;
+        Parent='%ProgramFiles%';Namespace='RevKitCold';Release=$commit;
+        Owner='S-1-5-32-544';WritePrincipals=@('S-1-5-18','S-1-5-32-544');OtherRead=$true;
+        ExistingPathsChanged=@();ProfileChanged=$false;PolicyInstalled=$false;Activated=$false;Applied=$false;
+        Rollback='Retain partial new namespace. After review and no running controller, remove only this newly created namespace; no prior ACL/settings to restore.'}
+    if(-not $Apply){return [pscustomobject]$plan}
+    if(-not $IsWindows){throw 'Protected authority provisioning requires Windows.'}
+    $principal=[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+    if(-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw 'Protected authority provisioning requires an elevated administrator.'}
+    . (Join-Path $PSScriptRoot 'WslBackup.ps1')
+    $parent=[IO.Path]::GetFullPath([Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles))
+    [void](Assert-WslColdProtectedPath $parent -Directory)
+    $root=Join-Path $parent 'RevKitCold'
+    if(Test-Path -LiteralPath $root){throw 'Authority namespace already exists; replacement/repair is outside provisioning.'}
+    if(-not $PSCmdlet.ShouldProcess($root,'Create NEW administrator-owned cold authority namespace; copy verified release; no policy or activation')){return [pscustomobject]$plan}
+    $acl=[Security.AccessControl.DirectorySecurity]::new()
+    $acl.SetAccessRuleProtection($true,$false)
+    $acl.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
+    foreach($sid in @('S-1-5-18','S-1-5-32-544')){
+        $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid),'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
+    }
+    $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new('S-1-5-32-545'),'ReadAndExecute','ContainerInherit,ObjectInherit','None','Allow'))
+    # Create with the protected descriptor, not create-then-fix inheritance.
+    Initialize-WslColdWorkerProtocol
+    [Revealfleet.Backup.ColdSourceLease]::CreateProtectedDirectory($root,$acl.GetSecurityDescriptorBinaryForm())
+    [void](Assert-WslColdProtectedPath $root -Directory)
+    function Set-ColdCreatedOwner([string]$Path) {
+        $item=Get-Item -LiteralPath $Path -Force
+        $ownerAcl=[IO.FileSystemAclExtensions]::GetAccessControl($item,[Security.AccessControl.AccessControlSections]::Owner)
+        $ownerAcl.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
+        [IO.FileSystemAclExtensions]::SetAccessControl($item,$ownerAcl)
+    }
+    $release=Join-Path $root $commit
+    [void][IO.Directory]::CreateDirectory($release)
+    Set-ColdCreatedOwner $release
+    foreach($file in $files){
+        $dest=Join-Path $release $file.RelativePath
+        [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($dest))
+        [IO.File]::Copy($file.SourcePath,$dest,$false)
+        Set-ColdCreatedOwner $dest
+        $directory=[IO.Path]::GetDirectoryName($dest)
+        while($directory -ine $root){Set-ColdCreatedOwner $directory;$directory=[IO.Path]::GetDirectoryName($directory)}
+        [void](Assert-WslColdProtectedPath $dest)
+        if((Get-FileHash -LiteralPath $dest).Hash.ToLowerInvariant() -cne $file.Sha256){throw 'Authority copy differs; partial namespace retained, no activation.'}
+    }
+    [IO.File]::Copy((Join-Path $SourceRoot 'artifact-source-manifest.json'),(Join-Path $release 'artifact-source-manifest.json'),$false)
+    Set-ColdCreatedOwner (Join-Path $release 'artifact-source-manifest.json')
+    [void](Assert-WslColdProtectedPath (Join-Path $release 'artifact-source-manifest.json'))
+    if((Get-FileHash -LiteralPath (Join-Path $release 'artifact-source-manifest.json')).Hash.ToLowerInvariant() -cne $ExpectedSourceManifestSha256){throw 'Authority manifest changed; partial namespace retained.'}
+    $plan.Applied=$true;$plan.Parent=$parent;$plan.Release=$release
+    return [pscustomobject]$plan
+}

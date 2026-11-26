@@ -1064,7 +1064,7 @@ commit, one operation/transaction/archive UUID, expiry <=24h, exact Windows
 controller runtime hashes, source/worker/protected registrations and canonical
 paths, source file identity/cold size, physical hardware/partition IDs, repository
 native ID/ext4 UUID/PARTUUID/USB serial+geometry, selected worker machine+boot ID,
-root-owned interpreter real path+SHA256, exact three Python source hashes, pinned
+root-owned interpreter real path+SHA256, exact four Python source hashes, pinned
 Borg release hash, root-private state, per-filesystem budgets and four reviewed
 acceptance/custody/capacity receipt hashes. Those hashes must refer to actual
 reviewed evidence for THIS implementation; a supplied bool cannot replace them.
@@ -1081,8 +1081,8 @@ registration/capacity observations. Ordinary users may create siblings in a volu
 root but cannot replace protected existing deployment ancestors. Linux requires
 root, isolated -I/-B system Python, immutable root-owned canonical runtime paths,
 exact hash pins and signature, no loader/secret env fallback. It validates the
-actual selected machine/boot, mounted ext4 filesystem and parent block serial/
-geometry with bounded fixed findmnt/lsblk queries, native repository ID and root-
+actual selected machine/boot, mounted ext4 filesystem and correlated Windows identity/parent geometry
+with bounded maintained disk-probe queries, native repository ID and root-
 only0700 repository/state without named/default ACL grants. There is no nvm root
 execution, install, mount, attachment or permission modification in these tools.
 
@@ -1268,3 +1268,12 @@ admits the explicit current owner but rejects other-user ReadData as well as
 mutation rights at the private leaf, including inherited child grants. The tool
 checks ACLs; it never changes them. Parent traversal/public code read is not
 misclassified as access to private image contents.
+
+
+The hardware/authority follow-up in `windows-recovery-maintenance.md` owns the
+expanded MBR/GPT volume schema, missing-guest-serial correlation, DISKSEQ/mount
+continuity, fixed Windows observer and protected C authority provisioning plan.
+`linux-boot-provisioning.md` owns selected-worker-only timeout/readiness planning.
+Earlier three-file worker closures and serial-equality policies do not admit the
+new four-file runtime. E private-data ancestor custody remains an explicit code/
+acceptance blocker; no authority provisioner changes that data trust contract.

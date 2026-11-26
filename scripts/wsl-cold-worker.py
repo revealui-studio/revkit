@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 """Fixed signed-policy worker. Does not provision, mount, initialize or schedule."""
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -36,6 +37,7 @@ def main(arguments):
         if arguments!=['--serve']:
             print(json.dumps({'profile':policy['profile'],'bindingSha256':binding,'runtimeAdmitted':True,
                               'backendExecuted':False,'repositoryId':policy['repository']['id'],'repositoryInitialized':observed is not None,
+                              'repositoryObservationSha256':hashlib.sha256(json.dumps(observed,separators=(',',':')).encode()).hexdigest() if observed is not None else None,
                               'fullBackupAccepted':False,'fullRestoreAccepted':False}))
             return 0
         if policy['operation']=='prepare': return 3

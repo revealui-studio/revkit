@@ -1,6 +1,7 @@
 """Signed, root-owned cold worker deployment admission. No provisioning actions."""
 import configparser
 import hashlib
+import importlib.util
 import json
 import os
 import selectors
@@ -58,13 +59,13 @@ def digest(path):
         return hashlib.file_digest(stream,'sha256').hexdigest()
 
 
-def command(argv, *, data=None, limit=65536):
+def command(argv, *, data=None, limit=65536, timeout_seconds=15):
     # Only fixed internal OS/SSH queries; bounded simultaneous pipes, no shell.
     data=data or b''
     if len(data)>1048576: raise AdmissionError('control-input-bound')
     child=subprocess.Popen(argv,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
         start_new_session=True,env={'PATH':'/usr/bin:/bin','LANG':'C.UTF-8'})
-    selector=None; outputs={'out':bytearray(),'err':bytearray()};position=0;deadline=time.monotonic()+15
+    selector=None; outputs={'out':bytearray(),'err':bytearray()};position=0;deadline=time.monotonic()+timeout_seconds
     try:
         selector=selectors.DefaultSelector()
         for pipe,label in ((child.stdin,'in'),(child.stdout,'out'),(child.stderr,'err')):
@@ -113,7 +114,7 @@ def validate(policy, *, allow_expired=False):
     positive(policy['expiresAt'])
     if not allow_expired and not time.time()<policy['expiresAt']<=time.time()+86400: raise AdmissionError('policy-expired-or-too-long')
     fields(policy['worker'],('registrationId','distro','machineId','bootId','interpreter','interpreterSha256','files','borg','borgSha256','state'))
-    fields(policy['repository'],('path','id','mountPath','fsUuid','partitionUuid','deviceSerial','deviceBytes','partitionBytes'))
+    fields(policy['repository'],('path','id','mountPath','fsUuid','partitionUuid','deviceSerial','deviceModel','deviceBytes','partitionBytes','partitionOffsetBytes','filesystemLabel'))
     fields(policy['budget'],('repositoryAdditionalBytes','workspaceAdditionalBytes','reserveBytes','timeoutSeconds'))
     fields(policy['acceptance'],('windowsReceiptSha256','selectedWorkerReceiptSha256','custodyReceiptSha256','capacityReceiptSha256'))
     fields(policy['controller'],('packageManifestSha256','files','source','protected','workerVhdx','restore','journalDirectory'))
@@ -130,7 +131,9 @@ def validate(policy, *, allow_expired=False):
     for key in ('repositoryAdditionalBytes','workspaceAdditionalBytes'): positive(policy['budget'][key])
     positive(policy['budget']['reserveBytes'],64*1024**3)
     if not 1<=policy['budget']['timeoutSeconds']<=86400: raise AdmissionError('timeout-bound')
-    for key in ('deviceBytes','partitionBytes'): positive(repository[key])
+    for key in ('deviceBytes','partitionBytes','partitionOffsetBytes'): positive(repository[key])
+    if repository['partitionBytes']%512 or repository['partitionOffsetBytes']%512 or repository['partitionBytes']+repository['partitionOffsetBytes']>repository['deviceBytes']: raise AdmissionError('repository-geometry')
+    if any(not isinstance(repository[k],str) or not repository[k].strip() or repository[k]!=repository[k].strip() for k in ('deviceSerial','deviceModel','filesystemLabel')): raise AdmissionError('repository-windows-identity')
     if not repository['deviceSerial'].strip() or (len(repository['id'])!=64 and not (policy['operation']=='prepare' and repository['id']=='')): raise AdmissionError('repository-identity')
     fields(policy['controller']['source'],('distro','registrationId','vhdx','fileIdentity','containerBytes','hardware'))
     fields(policy['controller']['protected'],('distro','registrationId','vhdx','hardware'))
@@ -162,24 +165,48 @@ def repository_observation(policy):
     return filesystem_observation(policy,repo)
 
 
+def disk_probe(identity):
+    # Reuse the maintained geometry/blkid observer. Its serial/model fields are
+    # explicitly Windows policy claims, NOT Linux USB observations.
+    spec=importlib.util.spec_from_file_location('revkit_disk_identity',Path(__file__).parent.parent/'wsl-disk-identity.py')
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    def run(argv,remaining):
+        # Commands originate only in the maintained probe, never policy strings.
+        executable={'lsblk':'/usr/bin/lsblk','sfdisk':'/usr/sbin/sfdisk','blkid':'/usr/sbin/blkid','findmnt':'/usr/bin/findmnt'}[argv[0]]
+        if argv[0]=='findmnt':
+            # inspect() allows a not-mounted result; production refuses it below.
+            return subprocess.CompletedProcess(argv,0,command([executable,*argv[1:]],timeout_seconds=min(15,remaining)).decode())
+        return subprocess.CompletedProcess(argv,0,command([executable,*argv[1:]],timeout_seconds=min(15,remaining)).decode())
+    return module.inspect(identity,deadline_seconds=15,runner=run)
+
+
 def filesystem_observation(policy,target):
-    mount=bounded_json(command(['/usr/bin/findmnt','--json','--target',str(target),'--output','TARGET,SOURCE,FSTYPE,UUID,PARTUUID,MAJ:MIN']))
+    expected=policy['repository']
+    identity=dict(schemaVersion=1,serial=expected['deviceSerial'],model=expected['deviceModel'],
+        diskBytes=expected['deviceBytes'],partitionBytes=expected['partitionBytes'],
+        partitionStartSectors=expected['partitionOffsetBytes']//512,partitionSectors=expected['partitionBytes']//512,
+        partitionUuid=expected['partitionUuid'],filesystemUuid=expected['fsUuid'],
+        filesystemLabel=expected['filesystemLabel'],mountPoint=expected['mountPath'])
+    observed=disk_probe(identity)
+    if observed['mountState']!='MOUNTED': raise AdmissionError('repository-not-mounted')
+    mount=bounded_json(command(['/usr/bin/findmnt','--json','--target',str(target),'--output','TARGET,SOURCE,FSTYPE,UUID,PARTUUID,MAJ:MIN,ID,FSROOT']))
     rows=mount.get('filesystems',[])
     if len(rows)!=1: raise AdmissionError('repository-mount-ambiguous')
-    row=rows[0]; expected=policy['repository']
-    if row['fstype']!='ext4' or row['target']!=expected['mountPath'] or row['uuid']!=expected['fsUuid'] or row['partuuid']!=expected['partitionUuid']:
+    row=rows[0]
+    if (row['fstype']!='ext4' or row['target']!=expected['mountPath'] or row['uuid']!=expected['fsUuid'] or
+            row['partuuid']!=expected['partitionUuid'] or row['fsroot']!='/'):
         raise AdmissionError('repository-mounted-filesystem')
-    block=bounded_json(command(['/usr/bin/lsblk','--json','--bytes','--nodeps','--output','SERIAL,SIZE,PKNAME,PARTUUID',row['source']]))
-    devices=block.get('blockdevices',[])
-    if len(devices)!=1 or devices[0]['size']!=expected['partitionBytes'] or devices[0]['partuuid']!=expected['partitionUuid']:
-        raise AdmissionError('repository-partition')
-    parent=devices[0]['pkname']
-    if not isinstance(parent,str) or '/' in parent or not parent: raise AdmissionError('repository-parent-device')
-    disk=bounded_json(command(['/usr/bin/lsblk','--json','--bytes','--nodeps','--output','SERIAL,SIZE','/dev/'+parent]))['blockdevices']
-    if len(disk)!=1 or str(disk[0]['serial']).strip()!=expected['deviceSerial'] or disk[0]['size']!=expected['deviceBytes']:
-        raise AdmissionError('repository-disk')
-    info=Path(target).stat()
-    return (info.st_dev,info.st_ino,row['maj:min'],row['source'],row['target'])
+    device=os.stat(observed['partitionPath']); disk=os.stat(observed['diskPath']);info=Path(target).stat()
+    if (not stat.S_ISBLK(device.st_mode) or not stat.S_ISBLK(disk.st_mode) or
+            info.st_dev!=device.st_rdev or os.stat(row['source']).st_rdev!=device.st_rdev or
+            row['maj:min']!=str(os.major(device.st_rdev))+':'+str(os.minor(device.st_rdev))):
+        raise AdmissionError('repository-device-mount-custody')
+    # DISKSEQ increments on kernel disk (re)registration. Mount ID detects a
+    # remount, even if UUID/geometry and /dev name were copied or reused.
+    sequence=(Path('/sys/dev/block')/(str(os.major(disk.st_rdev))+':'+str(os.minor(disk.st_rdev)))/'diskseq').read_text().strip()
+    if not sequence.isdecimal() or int(sequence)<=0 or type(row['id']) is not int or row['id']<=0:
+        raise AdmissionError('repository-kernel-continuity-unavailable')
+    return (info.st_dev,info.st_ino,device.st_rdev,device.st_ino,disk.st_rdev,disk.st_ino,int(sequence),row['id'],row['source'],row['target'])
 
 
 def capacity(policy):
@@ -213,7 +240,7 @@ def load(*, allow_expired=False):
         raise AdmissionError('interpreter-binding')
     for path,expected in worker['files'].items():
         if digest(protected(path))!=expected: raise AdmissionError('worker-source-binding')
-    expected_files={str(Path(__file__).resolve()),str(Path(__file__).with_name('wsl_cold_container.py').resolve()),str(Path(__file__).parent.parent/'wsl-cold-worker.py')}
+    expected_files={str(Path(__file__).resolve()),str(Path(__file__).with_name('wsl_cold_container.py').resolve()),str(Path(__file__).parent.parent/'wsl-cold-worker.py'),str(Path(__file__).parent.parent/'wsl-disk-identity.py')}
     if set(worker['files'])!=expected_files: raise AdmissionError('worker-runtime-closure')
     if digest(protected(worker['borg']))!=BORG_SHA: raise AdmissionError('borg-binding')
     protected(worker['state'],directory=True)

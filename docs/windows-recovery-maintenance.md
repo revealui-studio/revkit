@@ -186,3 +186,120 @@ ACL and device behavior remain controller acceptance checks.
 
 References: [WSL supported commands](https://learn.microsoft.com/en-us/windows/wsl/basic-commands)
 and the selected [Borg recovery contract](wsl-recurring-recovery-design.md).
+
+## Cold-container hardware and authority follow-up
+
+The operational profile remains `cold-vhd-container-v1`, with independent
+`keyfile-blake2-independent-v1` custody. Its signed admission now requires the
+expanded identity fields below; an earlier policy/package cannot silently adopt
+this runtime. Historical synthetic filesystem rejection and all earlier receipts
+remain unchanged. Native tests do not accept Windows or the selected worker.
+
+### Cross-host repository binding
+
+`repository` adds `deviceModel`, `partitionOffsetBytes` and `filesystemLabel` to
+its existing exact Windows serial, disk/partition bytes, PARTUUID and ext4 UUID.
+Windows uses `Assert-WslDiskHardwareIdentity` to observe one independent USB GPT
+disk and its one exact Linux-type partition; it never consumes a guest serial
+echo as an observation. Linux reuses `wsl-disk-identity.py` to enumerate the
+whole block-device listing, refuse ambiguity, verify the parent size, one GPT
+partition's exact offset/length/type/PARTUUID, and `blkid` ext4 UUID/label. Linux
+USB SERIAL need not exist. The helper labels serial/model explicitly as configured
+Windows claims correlated by geometry. They are not independently observed Linux
+USB identifiers. The owner's signature binds both sides of this correlation.
+
+The admitted worker source closure now has FOUR Python files: bootstrap, engine,
+admission and `wsl-disk-identity.py`. Every worker custody check repeats the
+metadata-only geometry/filesystem probe and verifies the actual mount source,
+root, mount ID, block-device identity and kernel DISKSEQ against the initial
+observation. Missing DISKSEQ, unmount, ambiguous match, cloned/reused device name,
+changed mount ID or re-registration refuses. Ephemeral `/dev` names are observed,
+never configured. Root remains trusted against deliberate out-of-band rewriting
+of identity and kernel state; this is not cryptographic hardware attestation.
+
+`Test-WslColdHardware.ps1` is a fixed, bounded, noninteractive observer of the
+same hash-bound protected policy. `ColdCommitGuard` runs it repeatedly during
+custody (one second between bounded observations), and again before K. It checks
+Windows repository hardware and all four Windows VHD/target volume identities.
+Any observation error cancels the transaction and invokes existing retained-
+custody reconciliation. This is a bounded observation interval, not a claim of
+an instantaneous Windows USB event lock. Linux DISKSEQ/mount continuity and the
+held source/destination handles supply their own continuity checks. The observer
+must be in the signed controller file closure along with `WslDiskIdentity.ps1`.
+Actual Windows-to-selected-worker substitution/disconnect acceptance remains open.
+
+### MBR and GPT capacity identity
+
+Each Windows `hardware` object now contains exact `serial`, `model`, `diskBytes`,
+`partitionStyle`, `diskId`, `logicalSectorBytes`, `physicalSectorBytes`,
+`partitionOffsetBytes`, `partitionBytes`, `partitionType`, `volumeUuid` and
+`allocationUnitBytes`. For MBR, `diskId` is the positive numeric disk signature
+and `partitionType` the numeric MBR type. For GPT, those two fields are canonical
+nonempty disk/type UUIDs and `partitionUuid` is additionally required. There is
+no dummy GUID or missing-GUID fallback. `Get-WslColdVolumeIdentity` constructs
+this object from actual Get-Disk/Get-Partition/Get-Volume observations, and
+`Assert-WslColdVolumeObservation` compares every field and type. Capacity domains
+use the observed NTFS volume UUID, so aliases share one domain even on MBR.
+
+The source, worker, protected recovery and proposed restore share E hardware.
+Only the repository is independent hardware. A fresh E restore remains an
+isolated restore test, never a third-hardware recovery copy. Current live image
+sizes and approximately 5.89GB provisional headroom before overhead are not cold
+capacity acceptance. Runtime, caches/indexes, transaction growth, dense image,
+filesystem costs and >=64GiB reserve must all fit without savings credit.
+
+### Protected authority provisioning and C exception
+
+The observed E root grants Everyone DELETE_CHILD and has an unresolved old owner;
+its AI ancestors are also writable/user-owned. Protecting a new child DACL cannot
+remove an ancestor's deletion authority. The existing code/policy ancestor guard
+correctly refuses. No E ACL/owner conversion, broad root change, trust exception
+or existing private-package promotion is part of this fix.
+[Microsoft's directory rights](https://learn.microsoft.com/en-us/windows/win32/fileio/file-access-rights-constants)
+document the parent DELETE_CHILD right. Inherit-only CREATOR OWNER is a template
+for a trusted creator, not an effective grant on its parent; the existing guard
+continues to distinguish it while rejecting other untrusted grants.
+
+The maintained `Deploy-WindowsArtifacts.ps1 -ColdAuthority` mode prints a plan
+through the existing artifact owner. It verifies the exact committed archive
+manifest, counts actual bytes and selects a NEW `%ProgramFiles%\RevKitCold`
+namespace with a source-addressed release. This small C exception is required by
+the current E ancestor trust boundary. It contains public reviewed controller
+code and its manifest, not VHDs/repositories/caches or credentials. Exact payload
+size belongs to each package receipt. No startup, profile, environment, policy,
+task, service or runtime activation is performed by this mode.
+
+After root reviews both the frozen package and plan, the SAME command with
+`-Apply` requires Windows elevation, validates every existing ProgramFiles
+ancestor, and refuses an existing RevKitCold namespace. It uses exclusive Win32 CreateDirectoryW (existing paths fail) to create the new root
+with its administrator-owner/protected descriptor at creation: SYSTEM/Admin full,
+Users read/execute, no inheritance. Only NEW descendants are copied and rehashed;
+every path is validated. No existing owner/DACL is modified. A failure leaves the
+new partial namespace intact and inactive. Rollback scope, only after review and
+no running controller, is that exact newly created namespace. There is no
+automatic recursive delete or overwrite/repair. Existing user artifact deployment
+is a separate mode and keeps its previous private-data ACL semantics.
+
+Authority admission and data privacy remain distinct. This mode DOES NOT prove
+that an E journal/dense-target directory satisfies `-PrivateData` ancestor checks.
+The recorded E root owner/public mutation grants also prevent that acceptance.
+Root must review a narrowly scoped data-custody solution before real E restore;
+this source does not weaken b155 or silently move a 640GB target onto C. A future
+handle-anchored data namespace would require its own owner implementation and
+actual substitution/privacy tests; it is not supplied by an authority hash.
+
+Review-only staging commands (root substitutes the frozen paths/hash):
+
+```powershell
+pwsh -NoLogo -NoProfile -NonInteractive -File PACKAGE\scripts\Deploy-WindowsArtifacts.ps1 -ColdAuthority -SourceRoot PACKAGE -ExpectedSourceManifestSha256 MANIFEST_SHA256
+# Later reviewed creation only; NOT run by native source:
+pwsh -NoLogo -NoProfile -NonInteractive -File PACKAGE\scripts\Deploy-WindowsArtifacts.ps1 -ColdAuthority -SourceRoot PACKAGE -ExpectedSourceManifestSha256 MANIFEST_SHA256 -Apply
+```
+
+Root must independently verify source signatures and package/installer bytes
+BEFORE elevated execution; a self-described manifest is not its own authority.
+The plan/apply primitive itself remains actual-Windows unaccepted. Stage changed
+`WslColdAdmission.Tests.ps1`, `WindowsArtifactDeployment.Tests.ps1`, and existing
+cold transport/worker/disk suites from the SAME Git archive for host acceptance.
+No real disk is needed for those synthetic tests. Root must NOT repeat the
+completed temporary bare-attachment helper merely to obtain another receipt.
