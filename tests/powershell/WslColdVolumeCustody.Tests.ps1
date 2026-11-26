@@ -29,14 +29,14 @@ BeforeAll {
                     # without modifying any existing descriptor/control flags.
                     $boundary=[Security.AccessControl.DirectorySecurity]::new();$boundary.SetAccessRuleProtection($true,$false);$boundary.SetOwner($user)
                     foreach($sid in @($user.Value,'S-1-5-18','S-1-5-32-544')){$boundary.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid),'FullControl','Allow'))}
-                    $base=[Revealfleet.Tests.SyntheticSecurityLab]::CreateRoot($base,$boundary.GetSecurityDescriptorBinaryForm())
+                    $base=[Revealfleet.Backup.ColdDirectorySecurityLease]::CreateSyntheticDirectory($base,$boundary.GetSecurityDescriptorBinaryForm())
                     $raw=[Security.AccessControl.RawSecurityDescriptor]::new($descriptor.GetSecurityDescriptorBinaryForm(),0)
                     $owner=if($ForeignIdentity){[Security.Principal.SecurityIdentifier]::new('S-1-5-21-111-222-333-4294960000')}else{$user}
                     $group=if($ForeignIdentity){[Security.Principal.SecurityIdentifier]::new('S-1-5-21-111-222-333-513')}else{$user}
                     $raw=[Security.AccessControl.RawSecurityDescriptor]::new([Security.AccessControl.ControlFlags]0x8004,$owner,$group,$null,$raw.DiscretionaryAcl)
                     $bytes=[byte[]]::new($raw.BinaryLength);$raw.GetBinaryForm($bytes,0)
                 }else{$bytes=$descriptor.GetSecurityDescriptorBinaryForm()}
-                $root=[Revealfleet.Tests.SyntheticSecurityLab]::CreateRoot($base,$bytes)
+                $root=[Revealfleet.Backup.ColdDirectorySecurityLease]::CreateSyntheticDirectory($base,$bytes)
                 $child=New-Item -ItemType Directory -Path (Join-Path $root 'ordinary')
                 $grandchild=New-Item -ItemType Directory -Path (Join-Path $child.FullName 'grandchild')
                 $file=Join-Path $grandchild.FullName 'data.bin';[IO.File]::WriteAllBytes($file,[byte[]](1,0,255,42))
@@ -67,7 +67,7 @@ BeforeAll {
                 $target=[Revealfleet.Backup.ColdSecuritySnapshot]::new([Convert]::FromBase64String($Descriptor))
                 $before.RequireReplacementScope($target)
                 if(-not $Lease.PSObject.Properties['SyntheticTransaction']){
-                    $Lease|Add-Member NoteProperty SyntheticTransaction ([Revealfleet.Tests.SyntheticSecurityLab]::OpenCandidate($Lease))
+                    $Lease|Add-Member NoteProperty SyntheticTransaction ($Lease.OpenSyntheticTransaction())
                 }
                 $Lease.SyntheticTransaction.Replace($Expected,[Convert]::FromBase64String($Descriptor))
                 if($Lease.Read().Sha256 -cne $target.Sha256){throw 'Synthetic candidate exact descriptor/control verification failed; retain attempt'}
@@ -87,7 +87,7 @@ BeforeAll {
 
             function Save-CustodyTestReceipt([string]$Root,[string]$Phase) {
                 if(-not $RetainedFixtureParent){return}
-                Write-WslBackupJsonNew ($Root+'-'+$Phase+'.json') @{root=$Root;phase=$Phase;descriptor=[Revealfleet.Backup.ColdDirectorySecurityLease]::ObserveForReceipt($Root);tree=(Tree-Receipt $Root);apiExperiment='unchanged-child-inheritance-v1';rollbackCapability='original-open-description-duplicate';productionAccepted=$false}
+                Write-WslBackupJsonNew ($Root+'-'+$Phase+'.json') @{root=$Root;phase=$Phase;descriptor=[Revealfleet.Backup.ColdDirectorySecurityLease]::ObserveForReceipt($Root);tree=(Tree-Receipt $Root);apiExperiment='exact-raw-acl-capacity-v1';rollbackCapability='original-owning-handle';productionAccepted=$false}
             }
 function Complete-CustodyTest([string]$Root,$Lease,$Scope=$null) {
     $cleanupError=$null
@@ -238,7 +238,7 @@ Describe 'Windows native-API EXPERIMENT and custody; production replacement bloc
             foreach($ace in $sd.DiscretionaryAcl){if($ace.SecurityIdentifier.Value -eq 'S-1-1-0' -and ($ace.AceFlags -band 8)){$ace.AccessMask=0x1200a9}}
             $bytes=[byte[]]::new($sd.BinaryLength);$sd.GetBinaryForm($bytes,0)
             $target=[Revealfleet.Backup.ColdSecuritySnapshot]::new($bytes)
-            $transaction=[Revealfleet.Tests.SyntheticSecurityLab]::OpenCandidate($lease)
+            $transaction=$lease.OpenSyntheticTransaction()
             $lease|Add-Member NoteProperty SyntheticTransaction $transaction
             {$transaction.Replace($before.Sha256,[Convert]::FromBase64String($target.DescriptorBase64))}|Should -Throw -ExpectedMessage '*Changed child inheritance*'
             $transaction.MutationCalls|Should -Be 0
@@ -309,7 +309,7 @@ Describe 'Windows native-API EXPERIMENT and custody; production replacement bloc
         $orphan=[Security.Principal.SecurityIdentifier]::new('S-1-5-21-111-222-333-4294960000')
         $raw.DiscretionaryAcl.InsertAce(0,[Security.AccessControl.CommonAce]::new(0,[Security.AccessControl.AceQualifier]::AccessAllowed,0x100000,$orphan,$false,$null))
         $bytes=[byte[]]::new($raw.BinaryLength);$raw.GetBinaryForm($bytes,0)
-        $root=[Revealfleet.Tests.SyntheticSecurityLab]::CreateRoot($base,$bytes)
+        $root=[Revealfleet.Backup.ColdDirectorySecurityLease]::CreateSyntheticDirectory($base,$bytes)
         try {
             [void](Assert-WslColdProtectedPath $root -Directory -PrivateData)
             $entries=@((Get-Acl -LiteralPath $root).GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]))
@@ -481,9 +481,9 @@ Describe 'Elevated new-namespace installation under an independent protected syn
 }
 
 Describe 'Receipt observer lifetime and error preservation' {
-    It 'compiles the bounded native API lab and refuses existing/unregistered targets before native access' {
+    It 'compiles readonly metadata helpers and refuses unowned synthetic authority before native access' {
         if(-not ('Revealfleet.Tests.SyntheticSecurityLab' -as [type])){Add-Type -Path (Join-Path $PSScriptRoot 'WslColdVolumeCustody.Fixture.cs')}
-        {[Revealfleet.Tests.SyntheticSecurityLab]::OpenCandidate('not-an-owning-lease')}|Should -Throw
+        {[Revealfleet.Backup.ColdDirectorySecurityLease]::CreateSyntheticDirectory('/not-a-C-private-parent',[byte[]]@())}|Should -Throw
     }
     It 'captures final evidence even if handle disposal fails and preserves the original failure' {
         $script:CustodyPrimaryFailure=[InvalidOperationException]::new('original assertion')

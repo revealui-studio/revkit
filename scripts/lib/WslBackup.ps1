@@ -792,7 +792,7 @@ function Initialize-WslColdWorkerProtocol {
     [CmdletBinding()]
     param()
     if (-not ('Revealfleet.Backup.ColdProtocol' -as [type])) {
-        Add-Type -Path @((Join-Path $PSScriptRoot 'WslColdProtocol.cs'),(Join-Path $PSScriptRoot 'WslColdSourceLease.cs'),(Join-Path $PSScriptRoot 'WslColdVolumeCustody.cs')) -ErrorAction Stop
+        Add-Type -Path @((Join-Path $PSScriptRoot 'WslColdProtocol.cs'),(Join-Path $PSScriptRoot 'WslColdSourceLease.cs'),(Join-Path $PSScriptRoot 'WslColdVolumeCustody.cs'),(Join-Path $PSScriptRoot 'WslColdSyntheticVirtualDisk.cs')) -ErrorAction Stop
     }
 }
 

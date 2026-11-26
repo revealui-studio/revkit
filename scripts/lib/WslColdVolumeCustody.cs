@@ -74,7 +74,56 @@ namespace Revealfleet.Backup {
             return result.ToArray();
         }
     }
+    // Raw self-relative layout, independent of Windows account resolution.
+    // Never replace AclSize with the parsed ACE size or drop spare/tail bytes.
+    public sealed class ColdSecurityLayout {
+        public int DescriptorBytes {get;private set;}
+        public int OwnerOffset {get;private set;} public int OwnerBytes {get;private set;}
+        public int GroupOffset {get;private set;} public int GroupBytes {get;private set;}
+        public int DaclOffset {get;private set;} public int AclBytes {get;private set;}
+        public int ParsedAclBytes {get;private set;} public int SpareBytes => AclBytes-ParsedAclBytes;
+        public int TrailingBytes {get;private set;} public byte AclRevision {get;private set;}
+        public int AceCount {get;private set;}
+        static int SidLength(byte[] data,int offset) {
+            if(offset<20 || offset+8>data.Length || data[offset]!=1 || data[offset+1]>15)throw new IOException("SID layout refused");
+            int length=8+4*data[offset+1];if(offset+length>data.Length)throw new IOException("SID bound refused");return length;
+        }
+        public static ColdSecurityLayout Inspect(byte[] data) {
+            if(data==null || data.Length<28 || data.Length>65536 || data[0]!=1 || data[1]!=0 || (BitConverter.ToUInt16(data,2)&0x8004)!=0x8004 || BitConverter.ToUInt32(data,12)!=0)throw new IOException("Relative descriptor header refused");
+            var r=new ColdSecurityLayout {DescriptorBytes=data.Length,OwnerOffset=checked((int)BitConverter.ToUInt32(data,4)),GroupOffset=checked((int)BitConverter.ToUInt32(data,8)),DaclOffset=checked((int)BitConverter.ToUInt32(data,16))};
+            r.OwnerBytes=SidLength(data,r.OwnerOffset);r.GroupBytes=SidLength(data,r.GroupOffset);
+            if(r.OwnerOffset!=20 || r.GroupOffset!=20+r.OwnerBytes || r.DaclOffset!=r.GroupOffset+r.GroupBytes || r.DaclOffset+8>data.Length)throw new IOException("Unsupported descriptor component order/gap/overlap");
+            int d=r.DaclOffset;r.AclRevision=data[d];r.AclBytes=BitConverter.ToUInt16(data,d+2);r.AceCount=BitConverter.ToUInt16(data,d+4);
+            if((r.AclRevision!=2 && r.AclRevision!=4) || data[d+1]!=0 || data[d+6]!=0 || data[d+7]!=0 || r.AclBytes<8 || r.AclBytes%4!=0 || d+r.AclBytes>data.Length || r.AceCount>192)throw new IOException("ACL header/capacity refused");
+            int at=d+8;
+            for(int i=0;i<r.AceCount;i++) {
+                if(at+4>d+r.AclBytes)throw new IOException("ACE header exceeds AclSize");
+                int size=BitConverter.ToUInt16(data,at+2);
+                if(size<4 || size%4!=0 || at+size>d+r.AclBytes)throw new IOException("ACE exceeds AclSize");at+=size;
+            }
+            r.ParsedAclBytes=at-d;r.TrailingBytes=data.Length-d-r.AclBytes;
+            for(int i=at;i<data.Length;i++)if(data[i]!=0)throw new IOException("Nonzero spare/trailing bytes unsupported; never canonicalized");
+            return r;
+        }
+        public void RequireWritable() {
+            if(TrailingBytes!=0)throw new IOException("Outer descriptor trailing bytes lack a round-trip contract");
+        }
+        public static byte[] Compose(ushort control,byte[] owner,byte[] group,byte[] compactAcl,int minimumCapacity,byte[] tail) {
+            if(owner==null || group==null || compactAcl==null || compactAcl.Length<8 || minimumCapacity<8)throw new IOException("Raw components required");
+            int capacity=Math.Max(minimumCapacity,compactAcl.Length);
+            if(capacity>65532 || capacity%4!=0)throw new IOException("ACL capacity bound");
+            int d=20+owner.Length+group.Length;var data=new byte[checked(d+capacity+(tail?.Length??0))];
+            if(data.Length>65536)throw new IOException("Descriptor size bound");
+            data[0]=1;BitConverter.GetBytes(control).CopyTo(data,2);BitConverter.GetBytes(20).CopyTo(data,4);
+            BitConverter.GetBytes(20+owner.Length).CopyTo(data,8);BitConverter.GetBytes(d).CopyTo(data,16);
+            owner.CopyTo(data,20);group.CopyTo(data,20+owner.Length);compactAcl.CopyTo(data,d);
+            BitConverter.GetBytes((ushort)capacity).CopyTo(data,d+2);if(tail!=null)tail.CopyTo(data,d+capacity);
+            Inspect(data);return data;
+        }
+    }
     public sealed class ColdSecuritySnapshot {
+        public ColdSecurityLayout Layout {get;private set;}
+        public string DescriptorSha256 {get;private set;}
         public string DescriptorBase64 {get;private set;}
         public string OwnerBase64 {get;private set;}
         public string DaclBase64 {get;private set;}
@@ -83,6 +132,7 @@ namespace Revealfleet.Backup {
         public int Control {get;private set;}
         public string Sha256 {get;private set;}
         public ColdSecuritySnapshot(byte[] bytes) {
+            Layout=ColdSecurityLayout.Inspect(bytes);DescriptorSha256=Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
             var sd=new RawSecurityDescriptor(bytes,0);
             if(bytes.Length>65536 || sd.Owner==null || sd.Group==null || sd.DiscretionaryAcl==null || sd.SystemAcl!=null ||
                (sd.ControlFlags & ~(ControlFlags.SelfRelative|ControlFlags.DiscretionaryAclPresent|ControlFlags.DiscretionaryAclProtected|ControlFlags.DiscretionaryAclAutoInherited|ControlFlags.GroupDefaulted))!=0)
@@ -98,8 +148,10 @@ namespace Revealfleet.Backup {
             Sha256=Convert.ToHexString(SHA256.HashData(Encoding.ASCII.GetBytes(Control.ToString(System.Globalization.CultureInfo.InvariantCulture)+":"+OwnerBase64+":"+GroupBase64+":"+DaclBase64))).ToLowerInvariant();
         }
         public ColdSecuritySnapshot WithOwner(string sid) {
-            var sd=new RawSecurityDescriptor(Convert.FromBase64String(DescriptorBase64),0);sd.Owner=new SecurityIdentifier(sid);
-            byte[] bytes=new byte[sd.BinaryLength];sd.GetBinaryForm(bytes,0);return new ColdSecuritySnapshot(bytes);
+            var owner=new SecurityIdentifier(sid);var bytes=new byte[owner.BinaryLength];owner.GetBinaryForm(bytes,0);
+            byte[] raw=Convert.FromBase64String(DescriptorBase64),tail=new byte[Layout.TrailingBytes];
+            Array.Copy(raw,raw.Length-tail.Length,tail,0,tail.Length);
+            return new ColdSecuritySnapshot(ColdSecurityLayout.Compose((ushort)Control,bytes,Convert.FromBase64String(GroupBase64),Convert.FromBase64String(DaclBase64),Layout.AclBytes,tail));
         }
         ColdRootGrant[] Grants() {
             var sd=new RawSecurityDescriptor(Convert.FromBase64String(DescriptorBase64),0);
@@ -113,6 +165,7 @@ namespace Revealfleet.Backup {
         }
         public string ChildInheritanceSha256 => ColdRootPolicy.ChildInheritanceHash(Grants());
         public void RequireReplacementScope(ColdSecuritySnapshot target) {
+            Layout.RequireWritable();target?.Layout.RequireWritable();
             if(target==null || target.Control!=Control || target.GroupBase64!=GroupBase64)
                 throw new IOException("Group/control changes are outside OWNER+DACL scope");
             if(Convert.FromBase64String(DaclBase64)[0]!=Convert.FromBase64String(target.DaclBase64)[0])throw new IOException("ACL revision transition refused");
@@ -124,9 +177,10 @@ namespace Revealfleet.Backup {
             var selected=ColdRootPolicy.Restrict(grants,user);
             var acl=new RawAcl(sd.DiscretionaryAcl.Revision,selected.Length);
             foreach(var g in selected) acl.InsertAce(acl.Count,new CommonAce((AceFlags)g.Flags,AceQualifier.AccessAllowed,checked((int)g.Mask),new SecurityIdentifier(g.Sid),false,null));
-            var target=new RawSecurityDescriptor(sd.ControlFlags,new SecurityIdentifier("S-1-5-32-544"),sd.Group,null,acl);
-            byte[] bytes=new byte[target.BinaryLength];target.GetBinaryForm(bytes,0);
-            var result=new ColdSecuritySnapshot(bytes);RequireReplacementScope(result);return result;
+            byte[] dacl=new byte[acl.BinaryLength];acl.GetBinaryForm(dacl,0);
+            var admin=new SecurityIdentifier("S-1-5-32-544");byte[] owner=new byte[admin.BinaryLength];admin.GetBinaryForm(owner,0);
+            var result=new ColdSecuritySnapshot(ColdSecurityLayout.Compose((ushort)Control,owner,Convert.FromBase64String(GroupBase64),dacl,Layout.AclBytes,null));
+            RequireReplacementScope(result);return result;
         }
     }
     // Privilege is enabled only on a duplicate impersonation token for this
@@ -145,16 +199,21 @@ namespace Revealfleet.Backup {
         [DllImport("advapi32.dll",SetLastError=true)] static extern bool ImpersonateLoggedOnUser(IntPtr token);
         [DllImport("advapi32.dll",SetLastError=true)] static extern bool RevertToSelf();
         IntPtr token; bool active; readonly int thread;
-        public ColdRestorePrivilege() {
+        public ColdRestorePrivilege() : this(new[]{"SeRestorePrivilege"}) { }
+        internal static ColdRestorePrivilege SyntheticVolumeScope() => new ColdRestorePrivilege(new[]{"SeRestorePrivilege","SeManageVolumePrivilege"});
+        private ColdRestorePrivilege(string[] required) {
             if(!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
             if(!new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator)) throw new IOException("Elevated administrator required");
             if(OpenThreadToken(GetCurrentThread(),8,true,out var prior)) {CloseHandle(prior);throw new IOException("Existing impersonation context refused");}
             if(Marshal.GetLastWin32Error()!=1008) throw new Win32Exception(Marshal.GetLastWin32Error());
             IntPtr original=IntPtr.Zero;thread=Environment.CurrentManagedThreadId;
             try {
-                if(!OpenProcessToken(GetCurrentProcess(),10,out original) || !DuplicateTokenEx(original,44,IntPtr.Zero,2,2,out token) || !LookupPrivilegeValue(null,"SeRestorePrivilege",out var id)) throw new Win32Exception(Marshal.GetLastWin32Error());
-                var privilege=new TokenPrivilege {Count=1,Id=id,Attributes=2};
-                if(!AdjustTokenPrivileges(token,false,ref privilege,0,IntPtr.Zero,IntPtr.Zero) || Marshal.GetLastWin32Error()!=0) throw new IOException("SeRestorePrivilege unavailable; no mutation admitted");
+                if(!OpenProcessToken(GetCurrentProcess(),10,out original) || !DuplicateTokenEx(original,44,IntPtr.Zero,2,2,out token)) throw new Win32Exception(Marshal.GetLastWin32Error());
+                foreach(string name in required) {
+                    if(!LookupPrivilegeValue(null,name,out var id))throw new Win32Exception(Marshal.GetLastWin32Error());
+                    var privilege=new TokenPrivilege {Count=1,Id=id,Attributes=2};
+                    if(!AdjustTokenPrivileges(token,false,ref privilege,0,IntPtr.Zero,IntPtr.Zero) || Marshal.GetLastWin32Error()!=0)throw new IOException(name+" unavailable; no mutation admitted");
+                }
                 if(!ImpersonateLoggedOnUser(token)) throw new Win32Exception(Marshal.GetLastWin32Error());
                 active=true;
             } catch {if(token!=IntPtr.Zero)CloseHandle(token);token=IntPtr.Zero;throw;}
@@ -177,7 +236,7 @@ namespace Revealfleet.Backup {
         [DllImport("advapi32.dll",SetLastError=true)] static extern uint GetSecurityInfo(SafeFileHandle handle,int type,uint selection,out IntPtr owner,out IntPtr group,out IntPtr dacl,out IntPtr sacl,out IntPtr descriptor);
         [DllImport("advapi32.dll",SetLastError=true)] static extern uint GetSecurityDescriptorLength(IntPtr descriptor);
         [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr pointer);
-        readonly SafeFileHandle handle;readonly Info identity;readonly string path;readonly bool observationOnly;
+        readonly SafeFileHandle handle;readonly Info identity;readonly string path;readonly bool observationOnly;readonly uint nameFlags;readonly string finalName;
         public string FileIdentity => identity.Volume.ToString("x8")+":"+identity.IndexHigh.ToString("x8")+identity.IndexLow.ToString("x8");
         public uint Attributes => identity.Attributes;
         public string CanonicalPath => path;
@@ -185,7 +244,7 @@ namespace Revealfleet.Backup {
         private ColdDirectorySecurityLease(string canonicalPath,bool metadataObservation) {
             observationOnly=metadataObservation;
             if(!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
-            path=Path.GetFullPath(canonicalPath);
+            path=Path.GetFullPath(canonicalPath);finalName=@"\\?\"+path;
             if(path.Length<3 || path[1]!=':' || !String.Equals(path,canonicalPath,StringComparison.Ordinal)) throw new IOException("Canonical local directory required");
             // Retain MAXIMUM_ALLOWED/no-delete-share custody. Descriptor mutation
             // is blocked: actual Windows disproved the SetSecurityInfo contract.
@@ -198,9 +257,16 @@ namespace Revealfleet.Backup {
                 ValidateIdentity();
             } catch {handle.Dispose();throw;}
         }
+        internal ColdDirectorySecurityLease(ColdSyntheticVirtualDisk owned) {
+            owned.ValidateVolume();path=owned.VolumeRoot;finalName=path;nameFlags=1;
+            handle=CreateFileW(path,0x02000000,3,IntPtr.Zero,3,0x02200000,IntPtr.Zero);
+            try {if(handle.IsInvalid || !GetFileInformationByHandle(handle,out identity) || (identity.Attributes&0x410)!=0x10)throw new IOException("Owned NTFS root handle refused");
+                var fs=new StringBuilder(64);if(!GetVolumeInformationByHandleW(handle,new StringBuilder(256),256,out var serial,out var max,out var flags,fs,64) || fs.ToString()!="NTFS")throw new IOException("Owned volume is not NTFS");ValidateIdentity();}
+            catch {handle.Dispose();throw;}
+        }
         public void ValidateIdentity() {
-            var name=new StringBuilder(32768);uint count=GetFinalPathNameByHandleW(handle,name,(uint)name.Capacity,0);
-            if(count==0 || count>=name.Capacity || name.ToString()!=@"\\?\"+path || !GetFileInformationByHandle(handle,out var now) || now.Volume!=identity.Volume || now.IndexHigh!=identity.IndexHigh || now.IndexLow!=identity.IndexLow || now.Attributes!=identity.Attributes) throw new IOException("Held directory identity/alias/attributes changed");
+            var name=new StringBuilder(32768);uint count=GetFinalPathNameByHandleW(handle,name,(uint)name.Capacity,nameFlags);
+            if(count==0 || count>=name.Capacity || name.ToString()!=finalName || !GetFileInformationByHandle(handle,out var now) || now.Volume!=identity.Volume || now.IndexHigh!=identity.IndexHigh || now.IndexLow!=identity.IndexLow || now.Attributes!=identity.Attributes) throw new IOException("Held directory identity/alias/attributes changed");
             // Reopen by canonical name as well; a still-held detached name is not
             // proof that the namespace still resolves to this volume/root.
             // FILE_READ_ATTRIBUTES only. Share DELETE too so this observer
@@ -231,6 +297,59 @@ namespace Revealfleet.Backup {
             // descriptors. No API is promoted by a source check or test flag.
             throw new IOException("Root-only filesystem security contract unaccepted; no mutation performed");
         }
+        [DllImport("ntdll.dll",ExactSpelling=true)] static extern int NtSetSecurityObject(SafeFileHandle handle,uint selection,IntPtr descriptor);
+        [DllImport("ntdll.dll",ExactSpelling=true)] static extern uint RtlNtStatusToDosError(int status);
+        internal void ReplaceConstrainedCore(string expected,byte[] bytes) {
+            if(observationOnly)throw new IOException("Observation-only lease");
+            var current=Read();if(current.Sha256!=expected)throw new IOException("Owner/DACL drift before native call");
+            var target=new ColdSecuritySnapshot(bytes);current.RequireReplacementScope(target);
+            SetNative(bytes,5);
+            var after=Read();if(after.Sha256!=target.Sha256 || after.DescriptorSha256!=target.DescriptorSha256)throw new IOException("Exact raw descriptor/ACL capacity round-trip failed; retain evidence");
+        }
+        internal void SeedFreshSynthetic(byte[] bytes) {
+            RequireSynthetic();var target=new ColdSecuritySnapshot(bytes);target.Layout.RequireWritable();
+            SetNative(bytes,7);var after=Read();
+            if(after.DescriptorSha256!=target.DescriptorSha256)throw new IOException("Synthetic seed raw layout not retained; capacity/root gate remains open");
+        }
+        void SetNative(byte[] bytes,uint selection) {
+            RequireSynthetic();IntPtr buffer=Marshal.AllocHGlobal(bytes.Length);
+            try {Marshal.Copy(bytes,0,buffer,bytes.Length);int status=NtSetSecurityObject(handle,selection,buffer);if(status<0)throw new Win32Exception((int)RtlNtStatusToDosError(status));}
+            finally {Marshal.FreeHGlobal(buffer);}
+        }
+        sealed class SyntheticBinding {public string Path,Identity;public Action Validate;}
+        static readonly List<SyntheticBinding> syntheticRoots=new List<SyntheticBinding>();
+        internal static void RegisterSynthetic(string path,string identity,Action validate) {lock(syntheticRoots){if(syntheticRoots.Count>=128)throw new IOException("Synthetic registry bound");syntheticRoots.Add(new SyntheticBinding {Path=path,Identity=identity,Validate=validate});}}
+        void RequireSynthetic() {
+            ValidateIdentity();lock(syntheticRoots)foreach(var root in syntheticRoots) {
+                if(path==root.Path || path.StartsWith(root.Path.TrimEnd('\\')+"\\",StringComparison.OrdinalIgnoreCase)) {
+                    root.Validate?.Invoke();
+                    using var observed=String.IsNullOrEmpty(root.Identity)?null:new ColdDirectorySecurityLease(root.Path,true);
+                    if(observed!=null && observed.FileIdentity!=root.Identity)throw new IOException("Synthetic ancestor replaced");return;
+                }
+            }
+            throw new IOException("Only freshly created synthetic capabilities may invoke the maintained setter");
+        }
+        public static string CreateSyntheticDirectory(string parent,byte[] descriptor) {
+            if(!OperatingSystem.IsWindows())throw new PlatformNotSupportedException();
+            parent=Path.GetFullPath(parent);
+            if(!parent.StartsWith("C:\\",StringComparison.Ordinal) || parent=="C:\\" || !Directory.Exists(parent) || descriptor==null || descriptor.Length>65536)throw new IOException("Synthetic C non-root private parent required");
+            for(string at=parent;at!=null;at=Path.GetDirectoryName(at))if((File.GetAttributes(at)&FileAttributes.ReparsePoint)!=0 || File.Exists(Path.Combine(at,".git")) || Directory.Exists(Path.Combine(at,".git")))throw new IOException("Synthetic ancestry refused");
+            string created=Path.Combine(parent,Guid.NewGuid().ToString("N"));ColdSourceLease.CreateProtectedDirectory(created,descriptor);
+            using var lease=new ColdDirectorySecurityLease(created);RegisterSynthetic(created,lease.FileIdentity,null);return created;
+        }
+        public sealed class SyntheticTransaction : IDisposable {
+            readonly ColdDirectorySecurityLease lease;bool closed;
+            public int MutationCalls {get;private set;}
+            public bool IsClosed => closed;
+            internal SyntheticTransaction(ColdDirectorySecurityLease owner){lease=owner;lease.RequireSynthetic();}
+            public void Replace(string expected,byte[] bytes) {
+                if(closed)throw new ObjectDisposedException("Synthetic transaction");lease.RequireSynthetic();
+                var before=lease.Read();if(before.Sha256!=expected)throw new IOException("Synthetic descriptor drift");
+                before.RequireReplacementScope(new ColdSecuritySnapshot(bytes));MutationCalls++;lease.ReplaceConstrainedCore(expected,bytes);
+            }
+            public void Dispose(){closed=true;}
+        }
+        public SyntheticTransaction OpenSyntheticTransaction(){RequireSynthetic();return new SyntheticTransaction(this);}
         [StructLayout(LayoutKind.Sequential)] struct SecurityAttributes {public uint Length;public IntPtr Descriptor;public int Inherit;}
         public static void CopyNewProtectedFile(string source,string destination,byte[] descriptor) {
             if(!OperatingSystem.IsWindows())throw new PlatformNotSupportedException();

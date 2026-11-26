@@ -39,6 +39,9 @@
     "scripts/Test-WslColdHardware.ps1",
     "scripts/lib/WslColdVolumeCustody.cs",
     "scripts/lib/WslColdVolumeCustody.ps1",
-    "scripts/Invoke-WslColdVolumeCustody.ps1"
+    "scripts/Invoke-WslColdVolumeCustody.ps1",
+    "scripts/lib/WslColdSyntheticVirtualDisk.cs",
+    "scripts/lib/WslColdSyntheticVolume.ps1",
+    "scripts/Invoke-WslColdSyntheticVolume.ps1"
   ]
 }

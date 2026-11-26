@@ -68,6 +68,8 @@ function Assert-WslColdCustodyInheritanceContract {
     $before=[Revealfleet.Backup.ColdSecuritySnapshot]::new([Convert]::FromBase64String($Plan.before.DescriptorBase64))
     $after=[Revealfleet.Backup.ColdSecuritySnapshot]::new([Convert]::FromBase64String($Plan.after.DescriptorBase64))
     $before.RequireReplacementScope($after);$after.RequireReplacementScope($before)
+    Assert-WslRecoveryFields $Plan.rawLayout @('profile','before','after') 'raw layout contract'
+    if($Plan.rawLayout.profile -cne 'exact-raw-acl-capacity-v1' -or $Plan.rawLayout.before -cne $before.DescriptorSha256 -or $Plan.rawLayout.after -cne $after.DescriptorSha256){throw 'Exact raw layout binding differs.'}
     if($Plan.childInheritance.profile -cne 'unchanged-child-inheritance-v1' -or
         $Plan.childInheritance.sha256 -cne $before.ChildInheritanceSha256 -or
         $Plan.childInheritance.sha256 -cne $after.ChildInheritanceSha256 -or
@@ -92,12 +94,13 @@ function Get-WslColdVolumeCustodyPlan {
     $safeEvidence=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($Policy.evidenceDirectory)
     try {
         $before=$lease.Read();$after=$before.Restricted($user);$evidenceDescriptor=$safeEvidence.Read()
-        [ordered]@{schemaVersion=2;kind='cold-volume-custody-plan-v2';intent='ApplyOrRollback';policy=$Policy;
+        [ordered]@{schemaVersion=3;kind='cold-volume-custody-plan-v3';intent='ApplyOrRollback';policy=$Policy;
             sourceCommit=$code.SourceCommit;sourceFiles=@($code.Files|ForEach-Object {@{path=$_.RelativePath;sha256=$_.Sha256}});
             rootFileIdentity=$lease.FileIdentity;rootAttributes=$lease.Attributes;before=$before;after=$after;
             evidenceFileIdentity=$safeEvidence.FileIdentity;evidenceDescriptorSha256=$evidenceDescriptor.Sha256;
             createdAt=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds();expiresAt=[DateTimeOffset]::UtcNow.AddHours(1).ToUnixTimeSeconds();
             childInheritance=@{profile='unchanged-child-inheritance-v1';sha256=$before.ChildInheritanceSha256};
+            rawLayout=@{profile='exact-raw-acl-capacity-v1';before=$before.DescriptorSha256;after=$after.DescriptorSha256};
             namespacePath=$namespace;sourceOrWorkerActivated=$false;descendantsEnumerated=$false;existingChildParentDeletionFallbackRemoved=$true;
             api='UNACCEPTED root-only filesystem security contract; actual Windows child/control drift retained';
             privileges='Scoped thread-token SeRestorePrivilege required BEFORE mutation; no account/process trust change';
@@ -167,8 +170,8 @@ function Invoke-WslColdVolumeCustody {
     $document=Read-WslRecoveryDocument $PlanPath
     if($document.Sha256 -cne $ReviewedPlanSha256){throw 'Plan differs from independent review.'}
     $p=$document.Value
-    Assert-WslRecoveryFields $p @('schemaVersion','kind','intent','policy','sourceCommit','sourceFiles','rootFileIdentity','rootAttributes','before','after','evidenceFileIdentity','evidenceDescriptorSha256','createdAt','expiresAt','namespacePath','sourceOrWorkerActivated','descendantsEnumerated','existingChildParentDeletionFallbackRemoved','api','privileges','sacl','group','rollback','childInheritance') 'reviewed custody plan'
-    if($p.schemaVersion -ne 2 -or $p.kind -cne 'cold-volume-custody-plan-v2' -or $p.expiresAt -le [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -or $p.expiresAt-$p.createdAt -gt 3600){throw 'Fresh versioned root plan required.'}
+    Assert-WslRecoveryFields $p @('schemaVersion','kind','intent','policy','sourceCommit','sourceFiles','rootFileIdentity','rootAttributes','before','after','evidenceFileIdentity','evidenceDescriptorSha256','createdAt','expiresAt','namespacePath','sourceOrWorkerActivated','descendantsEnumerated','existingChildParentDeletionFallbackRemoved','api','privileges','sacl','group','rollback','childInheritance','rawLayout') 'reviewed custody plan'
+    if($p.schemaVersion -ne 3 -or $p.kind -cne 'cold-volume-custody-plan-v3' -or $p.expiresAt -le [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -or $p.expiresAt-$p.createdAt -gt 3600){throw 'Fresh versioned root plan required.'}
     if($p.intent -cnotin @('ApplyOrRollback','RollbackOnly') -or ($p.intent -ceq 'RollbackOnly' -and $Phase -cne 'Rollback')){throw 'Reviewed plan phase differs.'}
     Assert-WslColdVolumeCustodyPolicy $p.policy
     Assert-WslColdCustodyInheritanceContract $p
@@ -195,7 +198,7 @@ function Get-WslColdVolumeRollbackPlan {
     $doc=Read-WslRecoveryDocument $OriginalPlanPath
     if($doc.Sha256 -cne $ReviewedOriginalPlanSha256){throw 'Original review digest differs.'}
     $p=$doc.Value
-    if($p.kind -cne 'cold-volume-custody-plan-v2' -or $p.schemaVersion -ne 2){throw 'Original versioned root plan required.'}
+    if($p.kind -cne 'cold-volume-custody-plan-v3' -or $p.schemaVersion -ne 3){throw 'Original versioned root plan required.'}
     Assert-WslColdVolumeCustodyPolicy $p.policy
     Assert-WslColdCustodyInheritanceContract $p
     if($p.policy.trustedUserSid -cne [Security.Principal.WindowsIdentity]::GetCurrent().User.Value){throw 'Current owner changed.'}

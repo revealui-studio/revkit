@@ -879,3 +879,128 @@ factory now validates its explicitly public parent as public, while private fixt
 parents retain strict PrivateData validation. No operational guard was changed.
 Failed source/test packages and CI XML/audits are retained; revised tests still
 need actual Windows execution.
+
+### Raw-layout and real synthetic volume-root gate
+
+Root's independently pinned b123 laptop ordinary component passed104 cases with
+2 expected platform skips and4 explicitly excluded Elevated cases. Root then
+completed a separately owner-approved Microsoft PowerShell UAC run of all eight
+suites from a fresh protected C copy:110 discovered/selected,108 passed,0 failed,
+2 expected platform skips,0 excluded/not-run. All124 protected source/dependency
+files were rehashed after exit. That actual laptop full/elevated synthetic gate
+is accepted. The orchestration capture is audit evidence, not a runtime/bootstrap
+dependency. It did not mutate E or establish volume-root acceptance.
+
+The remaining layout gap is concrete: the observed nonprotected root descriptor
+had28-byte owner/group SIDs, DACL offset76, revision2, three standard allow ACEs,
+248 declared ACL bytes,68 parsed bytes and180 zero spare bytes, descriptor324.
+The accepted subtree fixtures were compact (ACL68/descriptor144). Passing compact
+cases cannot prove spare capacity or actual NTFS volume-root rollback.
+
+`ColdSecurityLayout` now records and checks the raw component offsets, SID lengths,
+ACL declared/parsed/spare lengths, revision, reserved fields and trailing bytes.
+The original semantic snapshot hash stays unchanged; a separate complete descriptor
+hash covers offsets/layout/bytes too. The supported writable layout is explicit
+owner-then-group-then-DACL with zero ACL spare and no outer trailing bytes. Other
+orders/gaps/overlaps, nonzero spare/reserved bytes, malformed ACE bounds and outer
+tail mutation refuse; they are never silently canonicalized. `WithOwner` preserves
+the full DACL bytes/capacity. Restriction retains at least original AclSize, grows
+only if required by added root ACEs, and retains zero spare within that capacity.
+Rollback uses the exact original descriptor. Plan version3 binds both complete
+raw hashes; older plans refuse. Native mutation acceptance compares BOTH snapshot
+and full descriptor hashes, so kernel compaction is an explicit failure, not a
+successful normalized rollback. Generic tests cover multiple SID sizes/capacities,
+not a machine SID/hash exception.
+
+The constrained native setter is now in `ColdDirectorySecurityLease`, on its
+original retained handle. The old reflection/duplicate test candidate was removed.
+Only unforgeable fresh synthetic directory/volume provenance can currently call
+that internal implementation; public production Replace/Apply/Rollback still refuse.
+The fresh directory factory is C-only, exclusive UUID, outside Git/reparse paths;
+volume authority originates only from a newly created virtual disk handle. No test
+flag or existing-path registration grants a real-volume capability.
+
+`Invoke-WslColdSyntheticVolume.ps1` is a separate maintained Plan/Execute harness.
+Default Plan reads protected source/parents/capabilities only. Execute requires an
+independently saved/reviewed fresh plan digest, exact source manifest/parent
+identities/descriptors/current-user binding and actual elevation with scoped
+SeRestore/SeManageVolume privileges. No account/process/global privilege setting
+changes. Root reviews and runs it; the native source lane does not execute it.
+
+The new file is a fixed128MiB classic VHD (256MiB hard backing-file ceiling) in a
+NEW protected/private UUID C workspace. `CreateVirtualDisk` version1 uses a fresh
+identifier, no source/parent input and full physical allocation. Its live handle,
+file ID/name/no-delete metadata custody, virtual identifier/geometry and attachment
+physical path remain bound. Attach requests NO_DRIVE_LETTER and no permanent
+lifetime. No Hyper-V cmdlet/feature installation, diskpart, WSL registration or
+real/migration disk input exists.
+
+Storage association follows Microsoft's documented Get-DiskImage on the exact
+new image piped to Get-Disk. Native device-number metadata on that returned device
+path must match the held virtual handle; boot/system/read-only/offline/nonvirtual
+or ambiguous objects refuse. Immediately before initialize/partition/format, the
+binding is rechecked. Writes accept only the returned Disk/Partition objects,
+never caller disk ordinals or drive letters; partition requery/identity/geometry
+is checked before format. A native single-volume-extent check binds the resulting
+GUID-root path to that same owned device and exact partition offset/length. Generic
+unsupported host/provider behavior produces a retained refusal, no fallback.
+
+The fresh NTFS system-child allowlist is explicit (System Volume Information and
+Recycle Bin). A bounded64-entry/depth4/16MiB-data inventory captures every accessible
+raw child descriptor, creation/write time, attributes and content digest. Inability
+to inspect a system child or any unexplained delta refuses. Even fixture seeding
+must leave system children exact; no SVI permission rewrite, deletion, sleep or
+retry hides a mismatch. Fixed ordinary/protected payloads are then created, two
+stable baselines required, and the generic control0x8004/foreign28-byte SIDs/ACL248
+case is tested on the actual new NTFS ROOT. Proposed/observed raw descriptors,
+unchanged descendants, inherited new child, restricted ordinary-token rights and
+actual child creation, original-handle rollback and native-call counts are retained.
+No source VHD/user data is read. Expected system-created differences are reported,
+not exempted from comparison.
+
+Evidence is independent of code and backing data. Before/after/pending-detach
+records flush before owned handle cleanup. Failures retain workspace, VHD and all
+receipts, including failed seed/layout observations. Only DetachVirtualDisk on the
+same verified held handle is used; uncertain identity/detach fails closed with a
+retained unconfirmed outcome. No global detach, lock breaking, repair or deletion.
+Nonpersistent OS handle lifetime is not a substitute for a successful explicit
+detach receipt. Native/Storage synchronous calls have no claimed hard cancellation
+latency; root's reviewed process deadline must treat interrupted work as unaccepted,
+retain artifacts and inspect only that owned attachment. Do not kill host services
+or select another disk to make a fixture complete.
+
+Root review interface, placeholders only:
+
+```powershell
+# Independently protected code and disjoint private C fixture/evidence parents.
+& PACKAGE\scripts\Invoke-WslColdSyntheticVolume.ps1 -FixtureParent REVIEWED_C_FIXTURE_PARENT -EvidenceParent REVIEWED_C_EVIDENCE_PARENT -SourceManifestSha256 REVIEWED_MANIFEST_HASH
+# Save exact Plan JSON privately, review source/operations/hash, then separate UAC:
+& PACKAGE\scripts\Invoke-WslColdSyntheticVolume.ps1 -Phase Execute -PlanPath REVIEWED_NEW_PLAN -ReviewedPlanSha256 REVIEWED_PLAN_HASH
+```
+
+The root wrapper may use maintained synthetic-anchor creation to make NEW private
+parents under an audited C ancestor; do not reuse old fixture directories or turn
+the previous temporary elevated script into a dependency. Use a protected exact
+new source package and supplement; no code copied from writable diagnostics.
+Normal CI exercises raw layout/refusal logic and compact subtree regressions only;
+it never creates/attaches/formats this VHD. Actual root/layout proof is unrun until
+root supplies its separately reviewed receipt in a later same-chat turn. If the
+kernel discards AclSize/spare or cannot preserve exact root bytes, public production
+remains blocked; review explicit supported-contract alternatives with that failed
+receipt, rather than dropping fields or rewriting the real root once.
+
+Primary API references: [CreateVirtualDisk](https://learn.microsoft.com/en-us/windows/win32/api/virtdisk/nf-virtdisk-createvirtualdisk),
+[AttachVirtualDisk](https://learn.microsoft.com/en-us/windows/win32/api/virtdisk/nf-virtdisk-attachvirtualdisk),
+[GetVirtualDiskPhysicalPath](https://learn.microsoft.com/en-us/windows/win32/api/virtdisk/nf-virtdisk-getvirtualdiskphysicalpath),
+[Get-DiskImage association example](https://learn.microsoft.com/en-us/powershell/module/storage/get-diskimage),
+[Initialize-Disk input objects](https://learn.microsoft.com/en-us/powershell/module/storage/initialize-disk),
+[New-Partition input objects](https://learn.microsoft.com/en-us/powershell/module/storage/new-partition),
+[Format-Volume partition objects](https://learn.microsoft.com/en-us/powershell/module/storage/format-volume).
+
+Latest live E free713272750080 versus source641689714688/reserve68719476736
+leaves2863558656 before new overhead; not a cold admission. Existing worker usage
+is already reflected in free space. Codex state dense2417946624 plus unknown
+additional overhead must not silently consume this restore margin. Full restore
+first remains the hold absent a complete fresh combined budget. Main/recovery/
+worker, real E permissions, production key/repository/full backup/restore and
+all deferred runtime/editor/provenance work remain outside this source execution.

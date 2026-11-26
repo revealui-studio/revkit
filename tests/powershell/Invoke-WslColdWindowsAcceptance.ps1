@@ -35,7 +35,7 @@ if($CreateCiAnchor){
 }
 if(-not $RetainedFixtureParent){throw 'Explicit audited private synthetic fixture parent required.'}
 [void](Assert-WslColdProtectedPath $RetainedFixtureParent -Directory -PrivateData)
-$names=@('WindowsArtifactDeployment','CodexOfflineCopy','WslColdVolumeCustody','WslColdControl','WslColdAdmission','WslColdWorker','WslColdContainer','WslColdWindowsAcceptance')
+$names=@('WindowsArtifactDeployment','CodexOfflineCopy','WslColdVolumeCustody','WslColdControl','WslColdAdmission','WslColdWorker','WslColdContainer','WslColdWindowsAcceptance','WslColdSyntheticVolume')
 $containers=@()
 foreach($name in $names){
     $path=Join-Path $PSScriptRoot ($name+'.Tests.ps1')

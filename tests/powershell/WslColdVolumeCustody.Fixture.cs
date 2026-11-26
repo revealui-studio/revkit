@@ -57,17 +57,11 @@ namespace Revealfleet.Tests {
     }
 }
 
-// Bounded native-API laboratory ONLY. This type is not in the runtime package.
-// It can mutate only UUID trees it has exclusively created in this process.
+// Test-only readonly metadata observation. Constrained mutation and fresh
+// synthetic authority now live in the maintained owning runtime primitive.
 namespace Revealfleet.Tests {
     public static class SyntheticSecurityLab {
-        static readonly System.Collections.Generic.HashSet<string> roots=new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        [StructLayout(LayoutKind.Sequential)] struct Attributes {public uint Length;public IntPtr Descriptor;public int Inherit;}
-        [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool CreateDirectoryW(string path,IntPtr attributes);
         [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern SafeFileHandle CreateFileW(string path,uint access,uint share,IntPtr security,uint creation,uint flags,IntPtr template);
-        [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern uint GetFinalPathNameByHandleW(SafeFileHandle handle,System.Text.StringBuilder name,uint size,uint flags);
-        [DllImport("ntdll.dll",ExactSpelling=true)] static extern int NtSetSecurityObject(SafeFileHandle handle,uint selection,IntPtr descriptor);
-        [DllImport("ntdll.dll",ExactSpelling=true)] static extern uint RtlNtStatusToDosError(int status);
         [StructLayout(LayoutKind.Sequential)] struct Info {
             public uint Attributes;public System.Runtime.InteropServices.ComTypes.FILETIME Created,Accessed,Written;
             public uint Volume,High,Low,Links,IndexHigh,IndexLow;
@@ -79,71 +73,5 @@ namespace Revealfleet.Tests {
             long Time(System.Runtime.InteropServices.ComTypes.FILETIME value)=>(long)(((ulong)(uint)value.dwHighDateTime<<32)|(uint)value.dwLowDateTime);
             return new long[] {info.Attributes,Time(info.Created),Time(info.Written)};
         }
-        public static string CreateRoot(string parent,byte[] descriptor) {
-            if(!OperatingSystem.IsWindows())throw new PlatformNotSupportedException();
-            parent=Path.GetFullPath(parent);
-            if(parent==Path.GetPathRoot(parent) || !Directory.Exists(parent))throw new IOException("Synthetic non-root existing parent required");
-            for(string current=parent;current!=null;current=Path.GetDirectoryName(current)) {
-                if((File.GetAttributes(current)&FileAttributes.ReparsePoint)!=0 || File.Exists(Path.Combine(current,".git")) || Directory.Exists(Path.Combine(current,".git")))throw new IOException("Synthetic parent reparse/Git refused");
-            }
-            string root=Path.Combine(parent,Guid.NewGuid().ToString("N"));
-            IntPtr sd=Marshal.AllocHGlobal(descriptor.Length),attributes=IntPtr.Zero;
-            try {
-                Marshal.Copy(descriptor,0,sd,descriptor.Length);var value=new Attributes {Length=(uint)Marshal.SizeOf<Attributes>(),Descriptor=sd};
-                attributes=Marshal.AllocHGlobal((int)value.Length);Marshal.StructureToPtr(value,attributes,false);
-                if(!CreateDirectoryW(root,attributes))throw new Win32Exception(Marshal.GetLastWin32Error());
-                roots.Add(root);return root;
-            } finally {if(attributes!=IntPtr.Zero)Marshal.FreeHGlobal(attributes);Marshal.FreeHGlobal(sd);}
-        }
-        [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
-        [DllImport("kernel32.dll",SetLastError=true)] static extern bool DuplicateHandle(IntPtr source,SafeFileHandle handle,IntPtr target,out SafeFileHandle copy,uint access,bool inherit,uint options);
-        public sealed class CandidateTransaction : IDisposable {
-            readonly object lease;readonly Type type;readonly SafeFileHandle handle;readonly string path,identity;
-            public int MutationCalls {get;private set;}
-            public bool IsClosed => handle.IsClosed;
-            internal CandidateTransaction(object original) {
-                if(!OperatingSystem.IsWindows())throw new PlatformNotSupportedException();
-                type=original?.GetType();
-                if(type?.FullName!="Revealfleet.Backup.ColdDirectorySecurityLease")throw new IOException("Exact owning lease required");
-                lease=original;path=(string)type.GetProperty("CanonicalPath").GetValue(lease);
-                bool owned=false;foreach(string root in roots)if(path==root || path.StartsWith(root+Path.DirectorySeparatorChar,StringComparison.OrdinalIgnoreCase))owned=true;
-                if(!owned)throw new IOException("Only newly created synthetic trees may use candidate API");
-                // TEST-ONLY reflection keeps the runtime authority surface
-                // closed. Duplicate the ORIGINAL open description, with SAME
-                // access and no inheritance, never re-request revoked rights.
-                var source=(SafeFileHandle)type.GetField("handle",System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance).GetValue(lease);
-                if(!DuplicateHandle(GetCurrentProcess(),source,GetCurrentProcess(),out handle,0,false,2))throw new Win32Exception(Marshal.GetLastWin32Error());
-                identity=(string)type.GetProperty("FileIdentity").GetValue(lease);
-                try {Validate();}catch {handle.Dispose();throw;}
-            }
-            void Validate() {
-                if(handle.IsClosed)throw new ObjectDisposedException("Synthetic transaction");
-                type.GetMethod("ValidateIdentity").Invoke(lease,null);
-                var name=new System.Text.StringBuilder(32768);
-                if(!GetFileInformationByHandle(handle,out var info) || info.Volume.ToString("x8")+":"+info.IndexHigh.ToString("x8")+info.IndexLow.ToString("x8")!=identity ||
-                   (info.Attributes&0x410)!=0x10 || GetFinalPathNameByHandleW(handle,name,(uint)name.Capacity,0)==0 || name.ToString()!=@"\\?\"+path)
-                    throw new IOException("Synthetic retained handle identity/name refused");
-            }
-            public void Replace(string expected,byte[] descriptor) {
-                Validate();
-                var before=type.GetMethod("Read").Invoke(lease,null);var snapshot=before.GetType();
-                if((string)snapshot.GetProperty("Sha256").GetValue(before)!=expected)throw new IOException("Synthetic descriptor drift");
-                var target=Activator.CreateInstance(snapshot,new object[]{descriptor});
-                // Reuse the owning versioned scope validator, not a parallel
-                // looser test policy. Any changed template fails before Nt.
-                snapshot.GetMethod("RequireReplacementScope").Invoke(before,new[]{target});
-                IntPtr buffer=Marshal.AllocHGlobal(descriptor.Length);
-                try {
-                    Marshal.Copy(descriptor,0,buffer,descriptor.Length);MutationCalls++;
-                    int status=NtSetSecurityObject(handle,5,buffer);
-                    if(status<0)throw new Win32Exception((int)RtlNtStatusToDosError(status));
-                } finally {Marshal.FreeHGlobal(buffer);}
-                Validate();
-                var after=type.GetMethod("Read").Invoke(lease,null);
-                if((string)snapshot.GetProperty("Sha256").GetValue(after)!=(string)snapshot.GetProperty("Sha256").GetValue(target))throw new IOException("Synthetic exact descriptor verification failed");
-            }
-            public void Dispose(){handle.Dispose();}
-        }
-        public static CandidateTransaction OpenCandidate(object owningLease) => new CandidateTransaction(owningLease);
     }
 }
