@@ -232,6 +232,24 @@ Describe 'Windows native-API EXPERIMENT and custody; production replacement bloc
             $lease.Read().Sha256|Should -BeExactly $before.Sha256
         } catch {$script:CustodyPrimaryFailure=$_;throw} finally {Complete-CustodyTest $root $lease}
     }
+    It 'observes exact unresolved ACL SIDs without account lookup and still refuses dangerous grants' -Skip:(-not $IsWindows) {
+        $base=if($RetainedFixtureParent){$RetainedFixtureParent}else{$TestDrive}
+        [void](Assert-WslColdProtectedPath $base -Directory -PrivateData)
+        $user=[Security.Principal.WindowsIdentity]::GetCurrent().User
+        $descriptor=New-WslColdNamespaceDescriptor $user.Value -PrivateData
+        $raw=[Security.AccessControl.RawSecurityDescriptor]::new($descriptor,0);$raw.Owner=$user
+        $orphan=[Security.Principal.SecurityIdentifier]::new('S-1-5-21-111-222-333-4294960000')
+        $raw.DiscretionaryAcl.InsertAce(0,[Security.AccessControl.CommonAce]::new(0,[Security.AccessControl.AceQualifier]::AccessAllowed,0x100000,$orphan,$false,$null))
+        $bytes=[byte[]]::new($raw.BinaryLength);$raw.GetBinaryForm($bytes,0)
+        $root=[Revealfleet.Tests.SyntheticSecurityLab]::CreateRoot($base,$bytes)
+        try {
+            [void](Assert-WslColdProtectedPath $root -Directory -PrivateData)
+            $entries=@((Get-Acl -LiteralPath $root).GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]))
+            @($entries|Where-Object {$_.IdentityReference.Value -ceq $orphan.Value}).Count|Should -Be 1
+            $entry=[pscustomobject]@{Sid=$orphan.Value;Rights=[Security.AccessControl.FileSystemRights]::ChangePermissions;Allow=$true;InheritOnly=$false}
+            {Assert-WslColdAclGrants @($entry) @($user.Value,'S-1-5-18','S-1-5-32-544') -PrivateData -Leaf}|Should -Throw
+        } catch {$script:CustodyPrimaryFailure=$_;throw} finally {Save-CustodyFinalReceipt $root}
+    }
     It 'creates protected children which retain private exclusion and resist rename while held' -Skip:(-not $IsWindows) {
         $script:CustodyPrimaryFailure=$null
         $root=New-SyntheticTree;$path=Join-Path $root 'protected'

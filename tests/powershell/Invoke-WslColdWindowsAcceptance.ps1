@@ -15,6 +15,7 @@ if(Test-Path -LiteralPath $OutputDirectory){throw 'Fresh acceptance output direc
 # Output contains only explicitly selected nonsecret synthetic results, never
 # fixture payloads or recursive copies. Retain fixtures separately on failure.
 [void][IO.Directory]::CreateDirectory($OutputDirectory)
+try {
 $elevated=$false
 if($IncludeElevated -or $CreateCiAnchor){
     if(-not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))){throw 'Elevated synthetic subset requires an actual administrative token.'}
@@ -51,3 +52,18 @@ $summary=@{schemaVersion=1;syntheticOnly=$true;productionAccepted=$false;nativeA
 Write-WslBackupJsonNew (Join-Path $OutputDirectory 'windows-acceptance.json') $summary
 if($result.FailedCount -ne 0 -or $result.NotRunCount -ne 0 -or $result.TotalCount -eq 0 -or $unexpected.Count -ne 0){throw 'Windows synthetic acceptance failed; preserve XML, summary and original fixture trees.'}
 $summary
+
+} catch {
+    $primary=$_
+    # A preflight refusal must leave a bounded result too; never overwrite a
+    # completed Pester summary or replace the original failure with evidence I/O.
+    try {
+        $path=Join-Path $OutputDirectory 'windows-acceptance.json'
+        if(-not (Test-Path -LiteralPath $path)){
+            $message=$primary.Exception.Message
+            if($message.Length -gt 2048){$message=$message.Substring(0,2048)}
+            Write-WslBackupJsonNew $path @{schemaVersion=1;syntheticOnly=$true;productionAccepted=$false;phase='runner-refusal';testsAccepted=$false;reason=$message}
+        }
+    } catch {Write-Warning 'Secondary acceptance receipt failed; original refusal preserved.'}
+    throw $primary
+}

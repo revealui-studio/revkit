@@ -738,3 +738,14 @@ owner follow-up behind cold outage/backup/recovery proof. New namespace protecti
 does not privatize old descendants. Never change live storage ACLs to make tests
 pass. Desktop RPC/Codex offline relocation, real key recovery/capacity/full backup/
 dense restore/import/boot and deferred runtime/editor/provenance work stay open.
+
+
+The first newly enabled Windows CI run refused before tests because converting an
+ACL's display account names back to SIDs failed for an unresolved identity on a
+runner ancestor. The guard now requests access rules **as SecurityIdentifier**
+from the existing descriptor, avoiding account-name round trips. Every exact SID
+and effective/template mask still goes through the same refusal policy. Unknown
+mutation/read principals are not allowed or omitted. A Windows synthetic orphan
+SID case exercises observation of a harmless synchronize-only grant and refusal
+of that same SID with dangerous authority. The original CI failure is retained;
+this source repair does not accept its host or relax ancestor trust.

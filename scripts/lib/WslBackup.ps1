@@ -871,7 +871,7 @@ function Assert-WslColdProtectedPath {
         $acl=Get-Acl -LiteralPath $current.FullName
         $owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
         if($owner -notin $allowed){throw 'Admission/code ancestor owner is not a protected Windows principal.'}
-        $entries=@($acl.Access | ForEach-Object { [pscustomobject]@{Sid=$_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value;Rights=$_.FileSystemRights;Allow=($_.AccessControlType -eq 'Allow');InheritOnly=([int]$_.PropagationFlags -band [int][Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0} })
+        $entries=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | ForEach-Object { [pscustomobject]@{Sid=$_.IdentityReference.Value;Rights=$_.FileSystemRights;Allow=($_.AccessControlType -eq 'Allow');InheritOnly=([int]$_.PropagationFlags -band [int][Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0} })
         Assert-WslColdAclGrants -Entries $entries -Allowed $allowed -PrivateData:$PrivateData -Leaf:($current.FullName -ceq $item.FullName)
         $current=if($current -is [IO.FileInfo]){$current.Directory}else{$current.Parent}
     }
