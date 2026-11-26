@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 """Fixed signed-policy worker. Does not provision, mount, initialize or schedule."""
 import importlib.util
+import configparser
 import hashlib
 import json
 import os
@@ -16,11 +17,13 @@ def load_module(name,path):
 
 
 def main(arguments):
+    control=bool(arguments) and arguments[0] in ('--control-prepare','--control-status','--control-reconcile','--control-probe')
+    if control: arguments=['--'+arguments[0][len('--control-'):],*arguments[1:]]
     reconciling=len(arguments)==2 and arguments[0] in ('--reconcile','--status')
-    if not reconciling and arguments not in (['--readiness'],['--prepare'],['--serve']): return 3
+    if not reconciling and arguments not in (['--readiness'],['--prepare'],['--serve'],['--probe']): return 3
     # Bootstrap trusted ownership BEFORE importing deployment code. No root
     # process may load Python from this user-writable development checkout.
-    if os.geteuid()!=0 or not sys.flags.isolated:
+    if os.geteuid()!=0 or not sys.flags.isolated or not sys.dont_write_bytecode:
         print(json.dumps({'canExecute':False,'gate':'root-immutable-deployment-required'})) if arguments==['--readiness'] else None
         return 3
     root=Path(__file__).resolve().parent
@@ -28,6 +31,19 @@ def main(arguments):
         info=path.lstat()
         if path.resolve()!=path or info.st_uid!=0 or info.st_mode & 0o022:
             return 3
+    if control:
+        sys.stdout.buffer.write(b'revkit-cold-control-started-v1\n');sys.stdout.buffer.flush()
+    if arguments==['--probe']:
+        # Fixed read-only cold-control diagnostic, not policy/runtime admission.
+        try:
+            config=configparser.ConfigParser(interpolation=None)
+            config.read('/etc/wsl.conf')
+            print(json.dumps({'profile':'cold-worker-control-probe-v1','runtimeAdmitted':False,
+                              'sourceRelease':root.parent.name,'bootInitMilliseconds':config.getint('boot','initTimeout',fallback=10000),
+                              'kernelBootId':Path('/proc/sys/kernel/random/boot_id').read_text().strip()}))
+            return 0
+        except BaseException:
+            print('Cold worker control probe refused',file=sys.stderr);return 3
     admission=load_module('cold_admission',root/'lib/wsl_cold_admission.py')
     try:
         policy,binding,observed=admission.load(allow_expired=reconciling)

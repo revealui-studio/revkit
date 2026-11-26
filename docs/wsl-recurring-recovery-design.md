@@ -1063,7 +1063,7 @@ The signed document binds schemaVersion1, opaque profile, exact signed source
 commit, one operation/transaction/archive UUID, expiry <=24h, exact Windows
 controller runtime hashes, source/worker/protected registrations and canonical
 paths, source file identity/cold size, physical hardware/partition IDs, repository
-native ID/ext4 UUID/PARTUUID/USB serial+geometry, selected worker machine+boot ID,
+native ID/ext4 UUID/PARTUUID/USB serial+geometry, selected worker machine ID+kernel session ID (not distro restart identity),
 root-owned interpreter real path+SHA256, exact four Python source hashes, pinned
 Borg release hash, root-private state, per-filesystem budgets and four reviewed
 acceptance/custody/capacity receipt hashes. Those hashes must refer to actual

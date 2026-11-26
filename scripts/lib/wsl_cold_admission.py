@@ -106,6 +106,23 @@ def positive(value, minimum=1):
     if type(value) is not int or value<minimum or value>2**63-1: raise AdmissionError('policy-integer')
 
 
+def control_budget(value):
+    fields(value,('bootInitMilliseconds','launchAllowanceMilliseconds','operationMilliseconds','reconciliationMilliseconds','frontendTeardownMilliseconds'))
+    for item in value.values(): positive(item)
+    if (not 10000<=value['bootInitMilliseconds']<=120000 or value['launchAllowanceMilliseconds']>60000 or
+            value['operationMilliseconds']>60000 or value['reconciliationMilliseconds']>60000 or value['frontendTeardownMilliseconds']>10000):
+        raise AdmissionError('worker-control-budget')
+    return value
+
+
+def verify_boot_contract(policy, data):
+    if len(data)>65536: raise AdmissionError('worker-boot-config-bound')
+    config=configparser.ConfigParser(interpolation=None); config.read_string(data.decode())
+    if (config.get('boot','systemd',fallback='')!='true' or
+            config.getint('boot','initTimeout',fallback=10000)!=policy['worker']['controlBudget']['bootInitMilliseconds']):
+        raise AdmissionError('worker-reviewed-boot-contract')
+
+
 def validate(policy, *, allow_expired=False):
     fields(policy,('schemaVersion','profile','sourceCommit','expiresAt','controller','worker','repository','budget','acceptance','keyCustody','operation','transactionId','archiveId'))
     if type(policy['schemaVersion']) is not int or policy['schemaVersion']!=1 or policy['profile']!='cold-vhd-container-v1' or policy['keyCustody']!='keyfile-blake2-independent-v1':
@@ -113,7 +130,8 @@ def validate(policy, *, allow_expired=False):
     if len(policy['sourceCommit'])!=40 or any(c not in '0123456789abcdef' for c in policy['sourceCommit']): raise AdmissionError('policy-source')
     positive(policy['expiresAt'])
     if not allow_expired and not time.time()<policy['expiresAt']<=time.time()+86400: raise AdmissionError('policy-expired-or-too-long')
-    fields(policy['worker'],('registrationId','distro','machineId','bootId','interpreter','interpreterSha256','files','borg','borgSha256','state'))
+    fields(policy['worker'],('registrationId','distro','machineId','kernelBootId','controlBudget','interpreter','interpreterSha256','files','borg','borgSha256','state'))
+    control_budget(policy['worker']['controlBudget'])
     fields(policy['repository'],('path','id','mountPath','fsUuid','partitionUuid','deviceSerial','deviceModel','deviceBytes','partitionBytes','partitionOffsetBytes','filesystemLabel'))
     fields(policy['budget'],('repositoryAdditionalBytes','workspaceAdditionalBytes','reserveBytes','timeoutSeconds'))
     fields(policy['acceptance'],('windowsReceiptSha256','selectedWorkerReceiptSha256','custodyReceiptSha256','capacityReceiptSha256'))
@@ -233,8 +251,9 @@ def load(*, allow_expired=False):
     worker=policy['worker']
     if Path(__file__).resolve().parents[2]!=Path('/opt/revkit-wsl-backup')/policy['sourceCommit']:
         raise AdmissionError('source-addressed-worker-release')
-    if Path('/etc/machine-id').read_text().strip()!=worker['machineId'] or (not allow_expired and Path('/proc/sys/kernel/random/boot_id').read_text().strip()!=worker['bootId']):
-        raise AdmissionError('selected-worker-machine-boot')
+    if Path('/etc/machine-id').read_text().strip()!=worker['machineId'] or (not allow_expired and Path('/proc/sys/kernel/random/boot_id').read_text().strip()!=worker['kernelBootId']):
+        raise AdmissionError('selected-worker-machine-kernel-session')
+    if not allow_expired: verify_boot_contract(policy,protected('/etc/wsl.conf').read_bytes())
     interpreter=protected(worker['interpreter'])
     if Path(sys.executable).resolve()!=interpreter or digest(interpreter)!=worker['interpreterSha256']:
         raise AdmissionError('interpreter-binding')

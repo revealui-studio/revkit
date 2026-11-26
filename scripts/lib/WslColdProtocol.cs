@@ -13,37 +13,77 @@ namespace Revealfleet.Backup {
     public static class ColdProtocol {
         static readonly System.Collections.Concurrent.ConcurrentDictionary<string,Task> unsettled = new System.Collections.Concurrent.ConcurrentDictionary<string,Task>();
         public static bool CallerIoSettled(string transaction) => !unsettled.TryGetValue(transaction,out var task) || task.IsCompleted;
+        public const string ControlStart = "revkit-cold-control-started-v1\n";
+        static void ControlBudgets(int startup,int operation,int teardown,bool selected) {
+            if(operation<1 || operation>(selected ? 60000 : 30000) || teardown<1 || teardown>10000 ||
+                (selected && (startup<1 || startup>180000))) throw new ArgumentException("Control bounds");
+        }
         public static async Task<string> RunControlAsync(string file,string[] args,byte[] input,int timeout) {
-            if(input.Length>1048576 || timeout<1 || timeout>30000) throw new ArgumentException("Control bounds");
-            var psi=new ProcessStartInfo(file) { UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true };
-            foreach(var arg in args) psi.ArgumentList.Add(arg);
-            using var child=Process.Start(psi);
-            using var stop=new CancellationTokenSource(timeout);
-            async Task<byte[]> Drain(Stream stream) {
+            if(input.Length>1048576)throw new ArgumentException("Control input bound");
+            ControlBudgets(0,timeout,5000,false);
+            using var child=StartControl(file,args);
+            return await ControlOnProcessAsync(child,input,0,timeout,5000,false).ConfigureAwait(false);
+        }
+        public static async Task<string> RunSelectedWorkerControlAsync(string file,string[] args,byte[] input,int startup,int operation,int teardown) {
+            if(input.Length>1048576)throw new ArgumentException("Control input bound");
+            ControlBudgets(startup,operation,teardown,true);
+            using var child=StartControl(file,args);
+            return await RunSelectedControlOnProcessAsync(child,input,startup,operation,teardown).ConfigureAwait(false);
+        }
+        static Process StartControl(string file,string[] args) {
+            var psi=new ProcessStartInfo(file) {UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true};
+            foreach(var arg in args)psi.ArgumentList.Add(arg);
+            return Process.Start(psi);
+        }
+        public static Task<string> RunSelectedControlOnProcessAsync(Process child,byte[] input,int startup,int operation,int teardown) {
+            ControlBudgets(startup,operation,teardown,true);
+            return ControlOnProcessAsync(child,input,startup,operation,teardown,true);
+        }
+        static async Task<string> ControlOnProcessAsync(Process child,byte[] input,int startup,int operation,int teardown,bool selected) {
+            if(input.Length>1048576)throw new ArgumentException("Control input bound");
+            using var stop=new CancellationTokenSource(selected ? startup : operation);
+            async Task<byte[]> Drain(Stream stream,bool error) {
                 using var output=new MemoryStream();var buffer=new byte[4096];int n;
                 try {
+                    // Only the selected immutable worker emits this fixed prefix.
+                    // It means Python/bootstrap entered, NEVER policy admission.
+                    if(selected && !error) {
+                        var marker=Encoding.ASCII.GetBytes(ControlStart);var actual=new byte[marker.Length];
+                        await stream.ReadExactlyAsync(actual,stop.Token).ConfigureAwait(false);
+                        if(!actual.AsSpan().SequenceEqual(marker))throw new InvalidDataException("Worker start marker refused");
+                        stop.CancelAfter(operation);
+                    }
                     while((n=await stream.ReadAsync(buffer,stop.Token).ConfigureAwait(false))!=0) {
-                        if(output.Length+n>65536) throw new InvalidDataException("Control output bound");
+                        if(output.Length+n>65536)throw new InvalidDataException("Control output bound");
                         output.Write(buffer,0,n);
+                        if(selected && error)throw new InvalidDataException("Selected worker diagnostics refused");
                     }
                     return output.ToArray();
-                } catch { stop.Cancel();throw; }
+                } catch {stop.Cancel();throw;}
             }
             async Task Send() {
-                try { await child.StandardInput.BaseStream.WriteAsync(input,stop.Token).ConfigureAwait(false);child.StandardInput.Close(); }
-                catch { stop.Cancel();throw; }
+                try {await child.StandardInput.BaseStream.WriteAsync(input,stop.Token).ConfigureAwait(false);child.StandardInput.Close();}
+                catch {stop.Cancel();throw;}
             }
-            var send=Send();var stdout=Drain(child.StandardOutput.BaseStream);var stderr=Drain(child.StandardError.BaseStream);
-            var exit=child.WaitForExitAsync(stop.Token);var all=Task.WhenAll(send,stdout,stderr,exit);
+            var tasks=new List<Task>();Task all=Task.CompletedTask;
             try {
+                var send=Send();tasks.Add(send);
+                var stdout=Drain(child.StandardOutput.BaseStream,false);tasks.Add(stdout);
+                var stderr=Drain(child.StandardError.BaseStream,true);tasks.Add(stderr);
+                var exit=child.WaitForExitAsync(stop.Token);tasks.Add(exit);
+                all=Task.WhenAll(tasks);
                 await all.WaitAsync(stop.Token).ConfigureAwait(false);
-                if(child.ExitCode!=0) throw new InvalidDataException("Control exit refused");
+                if(child.ExitCode!=0)throw new InvalidDataException("Control exit refused");
                 var data=await stdout.ConfigureAwait(false);
                 return (Array.IndexOf(data,(byte)0)>=0 ? new UnicodeEncoding(false,false,true).GetString(data) : Utf8.GetString(data)).TrimStart('\ufeff');
             } catch {
-                stop.Cancel();using var shutdown=new CancellationTokenSource(5000);
-                try { if(!child.HasExited)child.Kill(true);await child.WaitForExitAsync(shutdown.Token).ConfigureAwait(false);try{await all.WaitAsync(shutdown.Token).ConfigureAwait(false);}catch when(all.IsCompleted){} }
-                catch { throw new IOException("Control command teardown unconfirmed"); }
+                stop.Cancel();all=Task.WhenAll(tasks);using var shutdown=new CancellationTokenSource(teardown);
+                try {
+                    if(!child.HasExited)child.Kill(true);
+                    await child.WaitForExitAsync(shutdown.Token).ConfigureAwait(false);
+                    try {await all.WaitAsync(shutdown.Token).ConfigureAwait(false);}catch when(all.IsCompleted) { }
+                } catch {throw new IOException("Control command teardown unconfirmed");}
+                // A settled Windows frontend is NOT Linux descendant proof.
                 throw new IOException("Control command refused");
             }
         }

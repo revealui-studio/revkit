@@ -136,17 +136,19 @@ namespace Revealfleet.Backup {
         [DllImport("advapi32.dll",SetLastError=true)] static extern uint GetSecurityDescriptorLength(IntPtr descriptor);
         [DllImport("advapi32.dll",SetLastError=true)] static extern uint SetSecurityInfo(SafeFileHandle handle,int type,uint selection,IntPtr owner,IntPtr group,IntPtr dacl,IntPtr sacl);
         [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr pointer);
-        readonly SafeFileHandle handle;readonly Info identity;readonly string path;
+        readonly SafeFileHandle handle;readonly Info identity;readonly string path;readonly bool observationOnly;
         public string FileIdentity => identity.Volume.ToString("x8")+":"+identity.IndexHigh.ToString("x8")+identity.IndexLow.ToString("x8");
         public uint Attributes => identity.Attributes;
         public string CanonicalPath => path;
-        public ColdDirectorySecurityLease(string canonicalPath) {
+        public ColdDirectorySecurityLease(string canonicalPath) : this(canonicalPath,false) { }
+        private ColdDirectorySecurityLease(string canonicalPath,bool metadataObservation) {
+            observationOnly=metadataObservation;
             if(!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
             path=Path.GetFullPath(canonicalPath);
             if(path.Length<3 || path[1]!=':' || !String.Equals(path,canonicalPath,StringComparison.Ordinal)) throw new IOException("Canonical local directory required");
             // EXACT MAXIMUM_ALLOWED: documented SetSecurityInfo no-propagation.
             // Keep metadata reads/writes shared; withhold DELETE sharing.
-            handle=CreateFileW(path,0x02000000,3,IntPtr.Zero,3,0x02200000,IntPtr.Zero);
+            handle=CreateFileW(path,metadataObservation ? 0x00020080u : 0x02000000u,metadataObservation ? 7u : 3u,IntPtr.Zero,3,0x02200000,IntPtr.Zero);
             try {
                 if(handle.IsInvalid || !GetFileInformationByHandle(handle,out identity) || (identity.Attributes & 0x410)!=0x10) throw new IOException("Directory/reparse handle refused");
                 var fs=new StringBuilder(64);
@@ -159,7 +161,9 @@ namespace Revealfleet.Backup {
             if(count==0 || count>=name.Capacity || name.ToString()!=@"\\?\"+path || !GetFileInformationByHandle(handle,out var now) || now.Volume!=identity.Volume || now.IndexHigh!=identity.IndexHigh || now.IndexLow!=identity.IndexLow || now.Attributes!=identity.Attributes) throw new IOException("Held directory identity/alias/attributes changed");
             // Reopen by canonical name as well; a still-held detached name is not
             // proof that the namespace still resolves to this volume/root.
-            using var named=CreateFileW(path,0x02000000,3,IntPtr.Zero,3,0x02200000,IntPtr.Zero);
+            // FILE_READ_ATTRIBUTES only. Share DELETE too so this observer
+            // coexists with the retained MAXIMUM_ALLOWED/no-delete-share handle.
+            using var named=CreateFileW(path,0x80,7,IntPtr.Zero,3,0x02200000,IntPtr.Zero);
             if(named.IsInvalid || !GetFileInformationByHandle(named,out var found) || found.Volume!=identity.Volume || found.IndexHigh!=identity.IndexHigh || found.IndexLow!=identity.IndexLow || found.Attributes!=identity.Attributes) throw new IOException("Named root substitution/disconnect refused");
         }
         public ColdSecuritySnapshot Read() {
@@ -169,7 +173,14 @@ namespace Revealfleet.Backup {
             try {uint size=GetSecurityDescriptorLength(descriptor);if(size<20 || size>65536)throw new IOException("Descriptor bounds");byte[] bytes=new byte[size];Marshal.Copy(descriptor,bytes,0,(int)size);return new ColdSecuritySnapshot(bytes);}
             finally {LocalFree(descriptor);}
         }
+        public static ColdSecuritySnapshot ObserveForReceipt(string canonicalPath) {
+            // READ_CONTROL + attributes, fully shared: never another DELETE-
+            // requesting custody lease. No mutation is exposed on this handle.
+            using var observer=new ColdDirectorySecurityLease(canonicalPath,true);
+            return observer.Read();
+        }
         public void Replace(string expectedSha256,string targetDescriptorBase64) {
+            if(observationOnly)throw new IOException("Receipt observer cannot mutate security");
             var current=Read();
             if(current.Sha256!=expectedSha256)throw new IOException("Owner/DACL/control/group drift; nothing replaced");
             var bytes=Convert.FromBase64String(targetDescriptorBase64);var target=new ColdSecuritySnapshot(bytes);

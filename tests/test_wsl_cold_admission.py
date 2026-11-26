@@ -26,7 +26,7 @@ def policy():
             source=dict(distro='source',registrationId='22222222-2222-4222-8222-222222222222',vhdx='X:\\source.vhdx',fileIdentity='synthetic',containerBytes=1024,hardware={}),
             protected=dict(distro='protected',registrationId='33333333-3333-4333-8333-333333333333',vhdx='X:\\protected.vhdx',hardware={}),
             workerVhdx=dict(path='X:\\worker.vhdx',hardware={}),restore=dict(path='X:\\restore.vhdx',hardware={},overheadBytes=1024,hardwareGuarantee='isolated-restore-test',archiveReceiptSha256='',nativeArchiveId='',imageBytes=1024)),
-        worker=dict(registrationId='44444444-4444-4444-8444-444444444444',distro='worker',machineId='machine',bootId='boot',
+        worker=dict(registrationId='44444444-4444-4444-8444-444444444444',distro='worker',machineId='machine',kernelBootId='kernel',controlBudget=dict(bootInitMilliseconds=60000,launchAllowanceMilliseconds=30000,operationMilliseconds=15000,reconciliationMilliseconds=30000,frontendTeardownMilliseconds=5000),
             interpreter='/usr/bin/python3.14',interpreterSha256='c'*64,files={},borg='/opt/revkit/borg',borgSha256=a.BORG_SHA,state='/var/lib/revkit-cold'),
         repository=dict(path='/synthetic/mount/repository',id='d'*64,mountPath='/synthetic/mount',fsUuid='55555555-5555-4555-8555-555555555555',partitionUuid='66666666-6666-4666-8666-666666666666',deviceSerial='test',deviceModel='synthetic USB',deviceBytes=4096,partitionBytes=2048,partitionOffsetBytes=512,filesystemLabel='synthetic'),
         budget=dict(repositoryAdditionalBytes=2048,workspaceAdditionalBytes=1024,reserveBytes=64*1024**3,timeoutSeconds=120),
@@ -157,3 +157,17 @@ class RepositoryCorrelationTests(unittest.TestCase):
         with mock.patch.object(a,'repository_observation',return_value=('rebound',)),mock.patch.object(deployment,'reserve') as reserve:
             with self.assertRaises(a.AdmissionError):deployment.check()
             reserve.assert_not_called()
+
+class ColdControlBudgetTests(unittest.TestCase):
+    def test_explicit_startup_plus_work_contract_refuses_bad_types_or_unbounded_values(self):
+        p=policy();self.assertEqual(a.control_budget(p['worker']['controlBudget'])['bootInitMilliseconds'],60000)
+        for key,value in [('bootInitMilliseconds',9999),('launchAllowanceMilliseconds',True),('operationMilliseconds',60001),('reconciliationMilliseconds',0),('frontendTeardownMilliseconds',10001)]:
+            changed=copy.deepcopy(p);changed['worker']['controlBudget'][key]=value
+            with self.subTest(key=key),self.assertRaises(a.AdmissionError):a.validate(changed)
+        a.verify_boot_contract(p,b'[boot]\nsystemd=true\ninitTimeout=60000\n[user]\ndefault=fixture\n')
+        for data in (b'[boot]\nsystemd=true\n',b'[boot]\nsystemd=false\ninitTimeout=60000\n'):
+            with self.assertRaises(a.AdmissionError):a.verify_boot_contract(p,data)
+        # Kernel session only; a removed per-distro-named field cannot silently
+        # adopt the new signed schema.
+        p['worker']['bootId']=p['worker'].pop('kernelBootId')
+        with self.assertRaises(a.AdmissionError):a.validate(p)

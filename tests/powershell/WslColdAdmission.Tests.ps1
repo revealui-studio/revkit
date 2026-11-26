@@ -31,7 +31,7 @@ Describe 'Operational controller admission precedes side effects' {
     }
     It 'retains custody when actual kernel reconciliation is unavailable' {
         $script:WslColdRetained=@{'11111111-1111-4111-8111-111111111111'=@{Policy=@{};Binding=('a'*64)}}
-        Mock Invoke-WslColdFixedProcess {throw 'unreachable'}
+        Mock Invoke-WslColdSelectedControl {throw 'unreachable'}
         (Complete-WslColdCustody '11111111-1111-4111-8111-111111111111').CustodyRetained|Should -BeTrue
         $script:WslColdRetained.Count|Should -Be 1
         $script:WslColdRetained=@{}

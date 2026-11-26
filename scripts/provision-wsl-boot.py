@@ -199,7 +199,7 @@ def worker_readiness(policy, config_bytes):
     if values!={'ActiveState':'active','SubState':'running','Result':'success'}:raise ValueError('Root worker user-session readiness unproved')
     if not stat.S_ISSOCK(Path('/run/user/0/bus').stat().st_mode):raise ValueError('Root worker bus unavailable')
     return {'schemaVersion':1,'role':policy['role'],'registrationId':policy['registrationId'],'rootfsUuid':root_uuid,
-            'bootId':Path('/proc/sys/kernel/random/boot_id').read_text().strip(),'readyNow':True,
+            'kernelBootId':Path('/proc/sys/kernel/random/boot_id').read_text().strip(),'readyNow':True,
             'coldStartAccepted':False,'productionAdmitted':False,'startupWarningCause':'unproved'}
 
 

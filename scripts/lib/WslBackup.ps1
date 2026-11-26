@@ -972,6 +972,7 @@ function Read-WslColdAdmission {
     }
     $required=@((Join-Path $PSScriptRoot 'WslBackup.ps1'),(Join-Path $PSScriptRoot 'WslColdProtocol.cs'),(Join-Path $PSScriptRoot 'WslColdSourceLease.cs'),(Join-Path $PSScriptRoot 'WslColdVolumeCustody.cs'),(Join-Path $PSScriptRoot 'WslDiskIdentity.ps1'),(Join-Path $PSScriptRoot '..' 'Test-WslColdHardware.ps1'))
     foreach($path in $required){if(-not $p.controller.files.Contains($path)){throw 'Signed controller source closure incomplete.'}}
+    [void](Get-WslColdWorkerControlBudget $p prepare)
     if($p.worker.registrationId -in @($p.controller.source.registrationId,$p.controller.protected.registrationId) -or $p.worker.distro -in @($p.controller.source.distro,$p.controller.protected.distro)){throw 'Worker aliases source/protected registration.'}
     Assert-WslRecoveryDisjoint @($p.controller.source.vhdx,$p.controller.protected.vhdx,$p.controller.workerVhdx.path,$p.controller.restore.path)
     if($p.repository.deviceSerial -in @($p.controller.source.hardware.serial,$p.controller.protected.hardware.serial,$p.controller.restore.hardware.serial)){throw 'Repository hardware must be independent.'}
@@ -1006,6 +1007,25 @@ function Assert-WslColdBindings {
     foreach($domain in $domains.Values){if($domain.Free -lt $domain.Required){throw 'Fresh Windows per-filesystem capacity refuses full dense restore/workspace/reserve.'}}
 }
 
+function Get-WslColdWorkerControlBudget {
+    param($Policy,[ValidateSet('prepare','status','reconcile','probe')][string]$Action)
+    $b=$Policy.worker.controlBudget
+    Assert-WslRecoveryFields $b @('bootInitMilliseconds','launchAllowanceMilliseconds','operationMilliseconds','reconciliationMilliseconds','frontendTeardownMilliseconds') 'selected-worker control budget'
+    foreach($key in $b.Keys){Assert-WslRecoveryInteger $b[$key] 1}
+    if($b.bootInitMilliseconds -lt 10000 -or $b.bootInitMilliseconds -gt 120000 -or $b.launchAllowanceMilliseconds -gt 60000 -or
+        $b.operationMilliseconds -gt 60000 -or $b.reconciliationMilliseconds -gt 60000 -or $b.frontendTeardownMilliseconds -gt 10000){throw 'Selected-worker bounded boot/control/teardown policy refused.'}
+    [pscustomobject]@{StartupMilliseconds=([int]$b.bootInitMilliseconds+[int]$b.launchAllowanceMilliseconds);
+        OperationMilliseconds=$(if($Action -ceq 'reconcile'){$b.reconciliationMilliseconds}else{$b.operationMilliseconds});TeardownMilliseconds=$b.frontendTeardownMilliseconds}
+}
+
+function Invoke-WslColdSelectedControl {
+    param($Policy,[ValidateSet('prepare','status','reconcile','probe')][string]$Action)
+    $b=Get-WslColdWorkerControlBudget $Policy $Action
+    Initialize-WslColdWorkerProtocol
+    [Revealfleet.Backup.ColdProtocol]::RunSelectedWorkerControlAsync((Join-Path $env:SystemRoot 'System32/wsl.exe'),
+        [string[]](Get-WslColdWorkerArguments $Policy $Action),[byte[]]@(),$b.StartupMilliseconds,$b.OperationMilliseconds,$b.TeardownMilliseconds).GetAwaiter().GetResult()
+}
+
 function Get-WslColdWorkerArguments {
     param($Policy,[string]$Action)
     $base=@('--distribution',$Policy.worker.distro,'--user','root','--exec')
@@ -1016,8 +1036,9 @@ function Get-WslColdWorkerArguments {
             '--property=TimeoutStopSec=10s',('--property=RuntimeMaxSec='+([long]$Policy.budget.timeoutSeconds+30)+'s'),
             $Policy.worker.interpreter,'-I','-B',('/opt/revkit-wsl-backup/'+$Policy.sourceCommit+'/scripts/wsl-cold-worker.py'),'--serve')
     }
-    if($Action -cin @('reconcile','status')) {return $base+@($Policy.worker.interpreter,'-I','-B',('/opt/revkit-wsl-backup/'+$Policy.sourceCommit+'/scripts/wsl-cold-worker.py'),('--'+$Action),$Policy.transactionId)}
-    return $base+@($Policy.worker.interpreter,'-I','-B',('/opt/revkit-wsl-backup/'+$Policy.sourceCommit+'/scripts/wsl-cold-worker.py'),'--prepare')
+    if($Action -ceq 'probe'){return $base+@($Policy.worker.interpreter,'-I','-B',('/opt/revkit-wsl-backup/'+$Policy.sourceCommit+'/scripts/wsl-cold-worker.py'),'--control-probe')}
+    if($Action -cin @('reconcile','status')) {return $base+@($Policy.worker.interpreter,'-I','-B',('/opt/revkit-wsl-backup/'+$Policy.sourceCommit+'/scripts/wsl-cold-worker.py'),('--control-'+$Action),$Policy.transactionId)}
+    return $base+@($Policy.worker.interpreter,'-I','-B',('/opt/revkit-wsl-backup/'+$Policy.sourceCommit+'/scripts/wsl-cold-worker.py'),'--control-prepare')
 }
 
 function Read-WslColdArchiveReceipt {
@@ -1040,14 +1061,14 @@ function Complete-WslColdCustody {
     $held=$script:WslColdRetained[$TransactionId]
     $stage='signed-worker-kernel-reconciliation'
     try {
-        $text=Invoke-WslColdFixedProcess -FileName (Join-Path $env:SystemRoot 'System32/wsl.exe') -Arguments (Get-WslColdWorkerArguments $held.Policy $(if($ObserveOnly){'status'}else{'reconcile'})) -TimeoutMilliseconds 30000
+        $text=Invoke-WslColdSelectedControl $held.Policy $(if($ObserveOnly){'status'}else{'reconcile'})
         $r=$text|ConvertFrom-Json -AsHashtable
         Assert-WslRecoveryFields $r @('transactionId','bindingSha256','linuxUnitEmpty','futureLaunchCancelled') 'kernel reconciliation'
         if($r.transactionId -cne $TransactionId -or $r.bindingSha256 -cne $held.Binding -or $r.linuxUnitEmpty -ne $true -or $r.futureLaunchCancelled -ne $true -or
             -not [Revealfleet.Backup.ColdProtocol]::CallerIoSettled($TransactionId)){throw 'Actual unit/stream lifetime is still unconfirmed.'}
         $stage='caller-io-and-frontend-exit'
         $held.Guard.StopAsync().GetAwaiter().GetResult();$held.Guard.Dispose()
-        if(-not $held.Child.HasExited){$held.Child.Kill($true);[void]$held.Child.WaitForExit(5000)}
+        if(-not $held.Child.HasExited){$held.Child.Kill($true);[void]$held.Child.WaitForExit([int]$held.Policy.worker.controlBudget.frontendTeardownMilliseconds)}
         if(-not $held.Child.HasExited){throw 'Owned Windows frontend exit unconfirmed.'}
         $held.Lease.ValidateUnchanged()
         $held.Secret.Dispose();if($null -ne $held.Output){$held.Output.Dispose()}
@@ -1085,7 +1106,7 @@ function Invoke-WslColdContainerOperation {
     Assert-WslColdBindings $p -AllowSourceRunning:($Phase -ceq 'prepare')
     [void](Assert-WslColdWindowsHardware $p.controller.source.vhdx $p.controller.source.hardware)
     [void](Assert-WslColdWindowsHardware $p.controller.protected.vhdx $p.controller.protected.hardware)
-    $worker=Invoke-WslColdFixedProcess -FileName (Join-Path $env:SystemRoot 'System32/wsl.exe') -Arguments (Get-WslColdWorkerArguments $p 'prepare')
+    $worker=Invoke-WslColdSelectedControl $p prepare
     $probe=$worker|ConvertFrom-Json -AsHashtable
     if($probe.bindingSha256 -cne $doc.Sha256 -or $probe.repositoryId -cne $p.repository.id -or $probe.runtimeAdmitted -ne $true){throw 'Actual immutable worker admission differs.'}
     if($Phase -ceq 'prepare'){return [pscustomobject]@{Phase=$Phase;RuntimeAdmitted=$true;RepositoryInitialized=$probe.repositoryInitialized;BackendExecuted=$false;FullRestoreAccepted=$false;ColdSourceProved=$false;BindingSha256=$doc.Sha256}}

@@ -525,3 +525,129 @@ reviewed synthetic anchor is an explicit skip/gap. The test calls the owning
 inner namespace primitive; it does not bypass production root/hardware admission
 or claim real-volume Apply acceptance. Running without RetainedFixtureParent
 cannot close this case. Failure artifacts remain in the new UUID fixture tree.
+
+## Actual Windows sharing failure and selected-worker cold-control repair
+
+The previous root-custody candidate remains **Windows failed/unaccepted**: the
+first actual run had five correct Temp-parent guard refusals, and the independently
+trusted sibling rerun then exposed a self-sharing conflict in every real fixture.
+Neither native passes nor remote checks overrule those receipts. Temp's extra
+untrusted mutation principal is not a reason to relax guards or change Temp ACLs.
+
+The retained no-delete-sharing custody handle still requests exactly
+MAXIMUM_ALLOWED. Its named identity observer now requests FILE_READ_ATTRIBUTES
+only and shares read/write/delete; it compares the same canonical volume/file
+index/attributes without requesting DELETE. Receipt capture uses a separate
+READ_CONTROL+attributes, fully shared, observation-only handle. That handle cannot
+mutate descriptors. It can coexist with the real custody handle while the latter
+continues to exclude deletion/substitution and retains the MAXIMUM_ALLOWED
+SetSecurityInfo no-child-propagation contract. The identity recheck is preserved,
+not skipped or made path-specific. New Windows regression loops named/receipt
+observations under a held custody lease and asserts rename exclusion BEFORE
+cleanup. Existing raw descriptor, parent DELETE_CHILD effect, privacy and rollback
+contracts remain strict and still require actual ordinary/elevated acceptance.
+
+Final fixture receipts no longer acquire a competing custody lease. An original
+test failure is captured before final evidence work: a secondary receipt failure
+is reported without replacing it. If the test body passed, failed receipt capture
+still fails the test. Final disposal remains defensive, not passing evidence.
+
+### Bounded cold controls, without keep-alive or warmup
+
+A selected worker may stop while idle. [Microsoft's systemd documentation](https://learn.microsoft.com/en-us/windows/wsl/systemd)
+links the WSL lifecycle explanation; services do not establish persistent WSL
+liveness. The measured cold launch took40.203s while the immediate warm no-op was
+158ms; ordinary15s control therefore cannot represent a cold worker. No keep-alive,
+retry, sleep, global deadline increase, service disable or distro setting is a
+production dependency in this repair. Root owns actual stopped/warm worker tests.
+
+`Invoke-WslColdSelectedControl POLICY prepare|status|reconcile|probe` uses fixed
+selected distro/interpreter/source-addressed worker argv. A new bounded control
+prefix, `revkit-cold-control-started-v1` plus LF, is emitted AFTER root/isolated/
+no-bytecode/immutable-bootstrap ownership checks. It means Python bootstrap has
+entered, **not** policy/runtime/repository admission. Startup time runs until the
+entire exact prefix arrives. A separate operation deadline begins then, covering
+signature/config/runtime/mount/native-ID work and the actual command. Any stderr
+byte (including WSL startup warnings), wrong/missing prefix, output flood, EOF,
+nonzero exit, timeout or unsettled teardown refuses. Pipes drain simultaneously,
+64KiB per output, bounded input and finite frontend teardown. No text conversion
+handles VHD streams; this small control prefix is separate from unchanged binary
+backup framing. Root must deploy the new consistent worker/controller version;
+installed older flags do not silently adopt this interface.
+
+Signed `worker.controlBudget` has EXACT integer fields:
+
+- `bootInitMilliseconds`:10000..120000, must match actual root-owned
+  `/etc/wsl.conf` systemd=true/initTimeout (documented default10000).
+- `launchAllowanceMilliseconds`:1..60000, explicit reviewed host allowance.
+- `operationMilliseconds`:1..60000 for prepare/status/probe after bootstrap.
+- `reconciliationMilliseconds`:1..60000 for reconcile after bootstrap, including
+  exact systemd stop/kernel confirmation. This is not Windows parent-exit proof.
+- `frontendTeardownMilliseconds`:1..10000, separate cancellation/drain/exit budget.
+
+Startup is bootInit+launchAllowance (max180000ms); e.g. a reviewed60000+30000
+contract provides90000ms startup, then a separately reviewed15000ms operation.
+These are illustrative bounds, not invented host acceptance. All paths validate
+bounds before launch. Generic local signing/list/hardware controls keep their
+short15000ms default/30000ms ceiling and5000ms teardown. Local successful signing
+may legitimately emit bounded stderr; selected-worker admission cannot. The two
+methods deliberately have different diagnostic rules. Unknown or missing signed
+budgets refuse. Warm state is never required or sampled as an admission fact.
+
+`--control-prepare`, `--control-status UUID`, `--control-reconcile UUID` use the
+existing fixed owners; legacy unprefixed direct diagnostics remain separate.
+`--control-probe` is a fixed read-only startup diagnostic which needs no real
+policy/repo/key. It reports source release, observed boot init timeout and kernel
+session, with runtimeAdmitted=false. Controller example after root stages the
+NEW immutable release and reviews the small policy-shaped argument object:
+`Invoke-WslColdSelectedControl -Policy REVIEWED_WORKER_BINDING -Action probe`.
+Then test actual prepare/status/reconcile with their real signed facts. No source
+command starts/stops the worker or redeploys the accepted old release.
+
+The frontend wrapper kills/reaps/drains only its owned process tree within its
+teardown budget. A settled Windows frontend is **never** proof of Linux descendant
+exit. On reconcile/status error or unavailable acknowledgment, existing retained
+source/partial/secret custody remains. Native tests separately demonstrate slow
+startup beyond the work budget, operation/startup timeout, diagnostic refusal,
+wrong prefix, flood/nonzero and child exit before cleanup. A descendant holding
+an inherited pipe after parent exit must refuse incomplete control output without
+claiming descendant exit. Unsettled frontend/drains report teardown UNCONFIRMED;
+settled frontend I/O is still not Linux descendant evidence. Pipe setup itself
+remains inside owned-child cleanup, with a missing-pipe fault regression.
+No unit test waits for a real30-second cold launch. Actual Windows-to-worker
+startup/pipe/supervisor/cancellation acceptance is still required.
+
+### Kernel session scope and existing VHD storage follow-up
+
+Signed worker policy now explicitly uses `kernelBootId`, replacing ambiguous
+`bootId`; old documents cannot silently adopt the new schema. This reads Linux
+`/proc/sys/kernel/random/boot_id`, a kernel-session observation which may survive
+or be shared across WSL distro lifecycles. It is **not a per-distro reboot ID**,
+proof of cold startup or evidence that an old worker process remains alive.
+Persistent machine ID plus authoritative Windows registration/VHD, immutable
+runtime and fresh mount/device/native repository checks still bind admission.
+Owned systemd MainPID/cgroup, actual kernel descendant checks, durable cancellation
+tombstone and stream acknowledgments establish transaction lifetime. Reconciliation
+may examine a later kernel session using the same signed persistent state and
+cannot infer an old job's exit merely from the old identifier. Boot/readiness
+output uses the explicit kernel name; prior receipts retain their original fields.
+
+Maintained **WSL storage-owner follow-up**, separate from this repair: the
+controller's metadata inventory finds existing WSL parents/VHDs with broad public
+FullControl AND legitimate VM/capability SID grants. A protected new root namespace
+changes neither those child descriptors nor all their effective permissions. Do
+not claim it privatizes existing VHDs. Do not extend code-authority principal
+allowlists to make old storage look accepted, remove unknown VM/capability grants,
+or apply the narrow root-ACE transformer to existing WSL files.
+
+The later owner must extend the maintained WslBackup registration/cold-file
+lifecycle with a separately reviewed storage plan: exact registered VhdFileName,
+source/worker/protected identities and current raw descriptors/owners/control/
+group/VM-capability grants; saved user work and a coordinated cold outage; retained
+last-good recovery and full verified backup/restore evidence; explicit per-path
+mutation and drift-only rollback; actual WSL reopen/boot/consumer proof preserving
+the required VM/capability access. Root owns any real ACL or lifecycle action.
+This is a recorded source follow-up, not live storage hardening or permission to
+modify the active main/worker/protected VHDs during this test turn. Desktop native
+connection adoption, Codex offline move, producer Node24 hold and all deferred
+IDE/Nix/Python/provenance work remain independent unfinished obligations.
