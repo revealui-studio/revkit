@@ -41,8 +41,12 @@ function Assert-WslColdStorageCommandBinding {
     if($seen.Count -ne $NestedPaths.Count){throw 'Storage declared/imported nested inventory differs.'}
     if($Resolved.Count -ne 1){throw ('Ambiguous or shadowed Storage command: '+$Name)}
     $command=$Resolved[0];$origin=@($Parent.NestedModules|Where-Object {[object]::ReferenceEquals($_,$command.Module)})
-    if($command.Name -cne $Name -or $command.CommandType.ToString() -cne 'Function' -or $origin.Count -ne 1 -or [IO.Path]::GetExtension($origin[0].Path) -cne '.cdxml' -or $command.ModuleName -cne $origin[0].Name -or -not [object]::ReferenceEquals($command,$Parent.ExportedCommands[$Name])){
-        $export=$Parent.ExportedCommands[$Name]
+    $export=$Parent.ExportedCommands[$Name]
+    # Real CDXML Get-Command returns a different FunctionInfo wrapper. Its
+    # compiled ScriptBlock ID, definition and module context remain identical.
+    # Bind that executable identity, never just a wrapper name or file path.
+    $codeBound=$export -and $command.ScriptBlock -and $export.ScriptBlock -and $command.ScriptBlock.Id -and ([guid]$command.ScriptBlock.Id -ne [guid]::Empty) -and $command.ScriptBlock.Id -eq $export.ScriptBlock.Id -and $command.Definition -ceq $export.Definition -and [string]::Equals($command.ScriptBlock.Module.Path,$command.Module.Path,[StringComparison]::OrdinalIgnoreCase) -and [string]::Equals($export.ScriptBlock.Module.Path,$command.Module.Path,[StringComparison]::OrdinalIgnoreCase)
+    if($command.Name -cne $Name -or $command.CommandType.ToString() -cne 'Function' -or $origin.Count -ne 1 -or [IO.Path]::GetExtension($origin[0].Path) -cne '.cdxml' -or $command.ModuleName -cne $origin[0].Name -or -not $codeBound){
         $detail=[ordered]@{name=$command.Name;type=$command.CommandType.ToString();moduleName=$command.ModuleName;modulePath=$command.Module.Path;moduleGuid=[string]$command.Module.Guid;moduleVersion=[string]$command.Module.Version;originReferences=$origin.Count;exportReference=[object]::ReferenceEquals($command,$export);exportModule=$export.Module.Path;scriptId=[string]$command.ScriptBlock.Id;exportScriptId=[string]$export.ScriptBlock.Id;scriptModule=$command.ScriptBlock.Module.Path;exportScriptModule=$export.ScriptBlock.Module.Path;scriptFile=$command.ScriptBlock.File;exportScriptFile=$export.ScriptBlock.File;definitionEqual=($command.Definition -ceq $export.Definition)}
         throw ('Storage command is not the selected manifest CDXML export: '+$Name+'; '+(ConvertTo-Json -InputObject $detail -Compress))
     }

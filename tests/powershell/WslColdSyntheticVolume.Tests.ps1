@@ -12,7 +12,7 @@ BeforeAll {
     function New-StorageOwnershipModel {
         $base=Join-Path $TestDrive 'system/Storage';$manifest=Join-Path $base 'Storage.psd1';$path=Join-Path $base 'Disk.cdxml'
         $nested=[pscustomobject]@{Name='Disk';ModuleType='Cim';ModuleBase=$base;Path=$path}
-        $command=[pscustomobject]@{Name='Get-Disk';CommandType='Function';ModuleName='Disk';Module=$nested}
+        $command=[pscustomobject]@{Name='Get-Disk';CommandType='Function';ModuleName='Disk';Module=$nested;Definition='param() # modeled compiled function';ScriptBlock=[pscustomobject]@{Id=[guid]::NewGuid();Module=$nested}}
         $parent=[pscustomobject]@{Name='Storage';ModuleType='Manifest';ModuleBase=$base;Path=$manifest;Guid=[guid]'193c8b20-f199-43df-9b86-53ad824ed732';Version=[version]'2.0.0.0';NestedModules=@($nested);ExportedCommands=@{'Get-Disk'=$command}}
         return @{Parent=$parent;ManifestPath=$manifest;ManifestGuid=$parent.Guid;ManifestVersion=$parent.Version;NestedPaths=@($path);Name='Get-Disk';Resolved=@($command)}
     }
@@ -29,6 +29,20 @@ Describe 'Selected system Storage nested command ownership' {
     It 'accepts modeled declared nested CDXML exports without misidentifying the child as the parent' {
         $binding=New-StorageOwnershipModel
         {Assert-WslColdStorageCommandBinding @binding}|Should -Not -Throw
+    }
+    It 'accepts copied metadata wrappers only with exact compiled block, body and owner context' {
+        $binding=New-StorageOwnershipModel;$binding.Resolved=@($binding.Resolved[0].PSObject.Copy())
+        [object]::ReferenceEquals($binding.Resolved[0],$binding.Parent.ExportedCommands['Get-Disk'])|Should -BeFalse
+        {Assert-WslColdStorageCommandBinding @binding}|Should -Not -Throw
+        foreach($fault in @('block','body','context')){
+            $binding=New-StorageOwnershipModel;$binding.Resolved=@($binding.Resolved[0].PSObject.Copy());$binding.Resolved[0].ScriptBlock=$binding.Resolved[0].ScriptBlock.PSObject.Copy()
+            switch($fault){
+                block {$binding.Resolved[0].ScriptBlock.Id=[guid]::NewGuid()}
+                body {$binding.Resolved[0].Definition='param() # altered proxy body'}
+                context {$binding.Resolved[0].ScriptBlock.Module=[pscustomobject]@{Path=(Join-Path $TestDrive 'outside/Disk.cdxml')}}
+            }
+            {Assert-WslColdStorageCommandBinding @binding}|Should -Throw
+        }
     }
     It 'rejects forged parent name, manifest path, version and GUID' {
         foreach($field in @('Name','Path','Version','Guid')){
@@ -55,13 +69,13 @@ Describe 'Selected system Storage nested command ownership' {
             {Assert-WslColdStorageCommandBinding @binding}|Should -Throw
         }
     }
-    It 'rejects shadow commands, aliases and same-name proxies outside the selected export object' {
+    It 'rejects shadow commands, aliases and same-name proxies outside the selected executable export' {
         foreach($fault in @('ambiguous','alias','proxy','foreignModule')){
             $binding=New-StorageOwnershipModel;$original=$binding.Resolved[0]
             switch($fault){
                 ambiguous {$binding.Resolved+=($original.PSObject.Copy())}
                 alias {$original.CommandType='Alias'}
-                proxy {$binding.Resolved=@($original.PSObject.Copy())}
+                proxy {$binding.Resolved=@($original.PSObject.Copy());$binding.Resolved[0].Definition='param() # proxy'}
                 foreignModule {$original.Module=$original.Module.PSObject.Copy()}
             }
             {Assert-WslColdStorageCommandBinding @binding}|Should -Throw

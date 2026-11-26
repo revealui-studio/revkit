@@ -1026,8 +1026,8 @@ Windows/Corporation publisher identity, and validates every declared direct nest
 CDXML/script file the same way. No laptop file or certificate hash is hardcoded.
 Other declaration or publisher forms refuse for review. It binds the imported
 parent path/base/GUID/version, exact declared/imported child inventory, and each
-of the seven module-qualified commands to that parent's actual exported Function
-object and its declared CIM child. Foreign loaded parents, aliases, ambiguous
+of the seven module-qualified commands to that parent's exported compiled Function
+and its declared CIM child. Foreign loaded parents, aliases, ambiguous
 resolution and session proxies refuse. It never unloads foreign modules to pass.
 
 The first signed resolver attempt failed the new real Windows regression because
@@ -1039,6 +1039,15 @@ or nested declarations refuse. The later standard module import still processes
 the signed Microsoft manifest normally; a redirected windir refuses rather than
 being silently repaired. This is not arbitrary script evaluation or a substitute
 for the prior signature/protected-path checks.
+
+A subsequent real Windows diagnostic proved CDXML Get-Command returns a distinct
+FunctionInfo metadata wrapper for the same exported compiled block: the owning
+module reference, ScriptBlock ID, definition and context were unchanged. Wrapper
+reference equality was therefore an incorrect condition. The binder retains exact
+declared module reference ownership and now requires the parent's nonempty compiled
+block ID, exact body and owning context; metadata copies pass, changed blocks,
+bodies, contexts, aliases and shadow commands refuse. The failed wrapper checks
+and bounded diagnostic remain evidence, not an accepted run.
 
 The standalone preflight needs no fixture, disk inputs or elevation:
 
