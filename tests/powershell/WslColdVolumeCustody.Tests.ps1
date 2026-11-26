@@ -368,6 +368,10 @@ Describe 'Elevated synthetic owner transition and rollback' -Tag 'Elevated' {
             # Permission hashes cannot substitute for current full-raw identity.
             {$transaction.Replace($forward.Delta.UsedIdentitySha256,[Convert]::FromBase64String($padded.DescriptorBase64))}|Should -Throw '*raw CAS drift*'
             $transaction.MutationCalls|Should -Be 1
+            # OrdinaryCaller restores process context rather than a nested
+            # impersonation scope. Close restore privilege first, then explicitly
+            # reacquire it for foreign-owner rollback on the SAME held lease.
+            $scope.Dispose();$scope=$null
             $ordinary=[Revealfleet.Tests.OrdinaryCaller]::new()
             try {
                 $ordinary.Enter();$actual=[Convert]::FromBase64String($forward.Observed.DescriptorBase64)
@@ -378,6 +382,7 @@ Describe 'Elevated synthetic owner transition and rollback' -Tag 'Elevated' {
             } finally {$ordinary.Dispose()}
             (Get-Acl -LiteralPath (Join-Path $root 'ordinary-created-file')).Sddl|Should -BeExactly (Get-Acl -LiteralPath (Join-Path $root 'baseline.txt')).Sddl
             $rollbackTree=Tree-Receipt $root
+            $scope=[Revealfleet.Backup.ColdRestorePrivilege]::new()
             $rollback=$transaction.Replace($forward.Observed.DescriptorSha256,[Convert]::FromBase64String($padded.DescriptorBase64))
             if($RetainedFixtureParent){Write-WslBackupJsonNew ($root+'-candidate-rollback.json') $rollback}
             $restored=[Revealfleet.Backup.ColdPermissionIdentity]::Compare([Convert]::FromBase64String($before.DescriptorBase64),[Convert]::FromBase64String($rollback.Observed.DescriptorBase64))
