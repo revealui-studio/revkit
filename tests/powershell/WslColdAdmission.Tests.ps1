@@ -69,3 +69,25 @@ Describe 'Restore source unavailability on actual Windows only' {
         try {$reader.ReadByte()|Should -Be 0} finally {$reader.Dispose()}
     }
 }
+
+Describe 'Private data custody differs from public immutable code' {
+    It 'rejects other-user read on private data while allowing public code read' {
+        $entry=[pscustomobject]@{Sid='S-1-1-0';Rights=[Security.AccessControl.FileSystemRights]::ReadData;Allow=$true}
+        {Assert-WslColdAclGrants -Entries @($entry) -Allowed @('S-1-5-18') -Leaf -PrivateData}|Should -Throw
+        {Assert-WslColdAclGrants -Entries @($entry) -Allowed @('S-1-5-18') -Leaf}|Should -Not -Throw
+    }
+    It 'permits the explicit private owner but rejects mutation outside that principal set' {
+        $entry=[pscustomobject]@{Sid='owner';Rights=[Security.AccessControl.FileSystemRights]::FullControl;Allow=$true}
+        {Assert-WslColdAclGrants -Entries @($entry) -Allowed @('owner','S-1-5-18') -Leaf -PrivateData}|Should -Not -Throw
+        {Assert-WslColdAclGrants -Entries @($entry) -Allowed @('S-1-5-18') -Leaf -PrivateData}|Should -Throw
+    }
+}
+
+Describe 'Standard creator inheritance does not authorize another data reader' {
+    It 'recognizes inheritance-only creator ownership but still rejects public child grants' {
+        $creator=[pscustomobject]@{Sid='S-1-3-0';Rights=[Security.AccessControl.FileSystemRights]::FullControl;Allow=$true;InheritOnly=$true}
+        {Assert-WslColdAclGrants -Entries @($creator) -Allowed @('owner') -Leaf -PrivateData}|Should -Not -Throw
+        $public=[pscustomobject]@{Sid='S-1-1-0';Rights=[Security.AccessControl.FileSystemRights]::ReadData;Allow=$true;InheritOnly=$true}
+        {Assert-WslColdAclGrants -Entries @($creator,$public) -Allowed @('owner') -Leaf -PrivateData}|Should -Throw
+    }
+}

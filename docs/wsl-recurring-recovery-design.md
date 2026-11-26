@@ -1261,3 +1261,10 @@ gate. Automatic retries are READ-ONLY --status, not repeated privileged stop or
 authentication attempts. Root resolves any reported permission/policy/transport
 gate through its normal workflow and can explicitly reconcile that SAME admitted
 transaction. Missing/denied cgroup or marker reads are never absence proof.
+
+Windows immutable code/policy and private DATA use separate ACL admission. Code
+remains SYSTEM/Admin/TrustedInstaller protected. New journal/restore custody also
+admits the explicit current owner but rejects other-user ReadData as well as
+mutation rights at the private leaf, including inherited child grants. The tool
+checks ACLs; it never changes them. Parent traversal/public code read is not
+misclassified as access to private image contents.

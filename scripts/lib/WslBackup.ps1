@@ -843,26 +843,33 @@ function Resolve-WslColdRegistrationBinding {
     [pscustomobject]@{Distro=$Distro;RegistrationId=$ExpectedRegistrationId.ToString('D');CanonicalCandidate=$path;ColdProved=$false;LeaseHeld=$false}
 }
 
+function Assert-WslColdAclGrants {
+    param([object[]]$Entries,[string[]]$Allowed,[switch]$PrivateData,[switch]$Leaf)
+    $mask=[Security.AccessControl.FileSystemRights]::Delete -bor [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [Security.AccessControl.FileSystemRights]::ChangePermissions -bor [Security.AccessControl.FileSystemRights]::TakeOwnership
+    if($Leaf){$mask=$mask -bor [Security.AccessControl.FileSystemRights]::Write}
+    if($Leaf -and $PrivateData){$mask=$mask -bor [Security.AccessControl.FileSystemRights]::ReadData}
+    foreach($entry in $Entries) {
+        # Inheritance-only CREATOR OWNER resolves to the trusted creator.
+        if($entry.Sid -ceq 'S-1-3-0' -and $entry.InheritOnly){continue}
+        if($entry.Allow -and $entry.Sid -notin $Allowed -and ([int]$entry.Rights -band [int]$mask)) {throw 'Cold custody ACL grants data or mutation rights outside trusted principals.'}
+    }
+}
+
 function Assert-WslColdProtectedPath {
-    param([Parameter(Mandatory)][string]$Path,[switch]$Directory)
+    param([Parameter(Mandatory)][string]$Path,[switch]$Directory,[switch]$PrivateData)
     $item=Get-Item -LiteralPath $Path -Force -ErrorAction Stop
     if ($Directory -ne [bool]$item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Protected admission path type/reparse refused.' }
     $trustedInstaller=[Security.Principal.NTAccount]::new('NT SERVICE','TrustedInstaller').Translate([Security.Principal.SecurityIdentifier]).Value
     $allowed=@('S-1-5-18','S-1-5-32-544',$trustedInstaller)
+    if($PrivateData){$allowed+=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value}
     $current=$item
     while($null -ne $current) {
         if($current.Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'Admission ancestor reparse refused.'}
         $acl=Get-Acl -LiteralPath $current.FullName
         $owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
         if($owner -notin $allowed){throw 'Admission/code ancestor owner is not a protected Windows principal.'}
-        foreach($ace in $acl.Access) {
-            if($ace.AccessControlType -ne 'Allow'){continue}
-            $sid=$ace.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
-            $rights=[Security.AccessControl.FileSystemRights]::Delete -bor [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [Security.AccessControl.FileSystemRights]::ChangePermissions -bor [Security.AccessControl.FileSystemRights]::TakeOwnership
-            if($current.FullName -ceq $item.FullName){$rights=$rights -bor [Security.AccessControl.FileSystemRights]::Write}
-            $write=([int]$ace.FileSystemRights -band [int]$rights)
-            if($write -and $sid -notin $allowed){throw 'Admission/code path writable outside protected Windows principals.'}
-        }
+        $entries=@($acl.Access | ForEach-Object { [pscustomobject]@{Sid=$_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value;Rights=$_.FileSystemRights;Allow=($_.AccessControlType -eq 'Allow');InheritOnly=([int]$_.PropagationFlags -band [int][Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0} })
+        Assert-WslColdAclGrants -Entries $entries -Allowed $allowed -PrivateData:$PrivateData -Leaf:($current.FullName -ceq $item.FullName)
         $current=if($current -is [IO.FileInfo]){$current.Directory}else{$current.Parent}
     }
     return $item.FullName
@@ -967,7 +974,7 @@ function Get-WslColdWorkerArguments {
 function Read-WslColdArchiveReceipt {
     param([string]$Path,[string]$Sha256,[string]$Signers,$Policy)
     Assert-WslBackupHash $Sha256
-    [void](Assert-WslColdProtectedPath $Path);[void](Assert-WslColdProtectedPath ($Path+'.sig'))
+    [void](Assert-WslColdProtectedPath $Path -PrivateData);[void](Assert-WslColdProtectedPath ($Path+'.sig') -PrivateData)
     $receipt=Read-WslRecoveryDocument $Path
     if($receipt.Sha256 -cne $Sha256 -or $Policy.controller.restore.archiveReceiptSha256 -cne $Sha256){throw 'Restore archive receipt differs from signed admission.'}
     [void](Invoke-WslColdFixedProcess -FileName (Join-Path $env:SystemRoot 'System32/OpenSSH/ssh-keygen.exe') -Arguments @('-Y','verify','-f',$Signers,'-I','revkit-owner','-n','revkit-cold-archive-v1','-s',($Path+'.sig')) -InputBytes ([IO.File]::ReadAllBytes($Path)))
@@ -1040,13 +1047,13 @@ function Invoke-WslColdContainerOperation {
         if($lease.Length -ne $p.controller.source.containerBytes){throw 'Cold held-container size differs; no live-size estimate admitted.'}
         $script:WslColdActiveLease=$lease
         Assert-WslColdBindings $p -RequireSourceAbsent:($Phase -ceq 'restore')
-        [void](Assert-WslColdProtectedPath $p.controller.journalDirectory -Directory)
+        [void](Assert-WslColdProtectedPath $p.controller.journalDirectory -Directory -PrivateData)
         $journal=Join-Path $p.controller.journalDirectory $p.transactionId
         [Revealfleet.Backup.ColdSourceLease]::CreateTransactionDirectory($journal)
         Write-WslBackupJsonNew (Join-Path $journal 'pending.json') @{phase=$Phase;bindingSha256=$doc.Sha256;transactionId=$p.transactionId;sourceIdentity=$lease.FileIdentity}
         $cts=[Threading.CancellationTokenSource]::new([int]($p.budget.timeoutSeconds*1000))
         if($Phase -ceq 'restore') {
-            [void](Assert-WslColdProtectedPath ([IO.Path]::GetDirectoryName($p.controller.restore.path)) -Directory)
+            [void](Assert-WslColdProtectedPath ([IO.Path]::GetDirectoryName($p.controller.restore.path)) -Directory -PrivateData)
             $target=[IO.File]::Open($p.controller.restore.path,[IO.FileMode]::CreateNew,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read)
             $sha=$restore.imageSha256;$bytes=$restore.imageBytes;$incoming=[IO.Stream]::Null
         } else {$target=$null;$sha=$null;$bytes=$lease.Length;$incoming=$lease.Bytes}
