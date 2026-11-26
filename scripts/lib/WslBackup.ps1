@@ -807,6 +807,8 @@ function Get-WslColdWorkerLaunchPlan {
     if ($WorkerRegistrationId -eq [Guid]::Empty -or $SourceRegistrationId -eq [Guid]::Empty -or
         $ProtectedRegistrationId -eq [Guid]::Empty -or $WorkerRegistrationId -eq $SourceRegistrationId -or
         $WorkerRegistrationId -eq $ProtectedRegistrationId) { throw 'Worker registration must be distinct from source and protected recovery.' }
+    # Legacy read-only compatibility plan. Operational argv is derived from a
+    # signed policy by Get-WslColdWorkerArguments, never from this old plan.
     # A plan is not a Process or authority to start a distribution. No registry or
     # wsl.exe access, default-distribution selection, shell strings or environment secrets.
     [pscustomobject]@{
@@ -839,4 +841,249 @@ function Resolve-WslColdRegistrationBinding {
     if ($path.StartsWith('\\?\',[StringComparison]::Ordinal) -and $path.Length -gt 6 -and $path[5] -eq ':') { $path=$path.Substring(4) }
     if ($path.Length -lt 4 -or $path[1] -ne ':' -or $path[2] -ne '\') { throw 'Registered VHD must resolve to a local drive path.' }
     [pscustomobject]@{Distro=$Distro;RegistrationId=$ExpectedRegistrationId.ToString('D');CanonicalCandidate=$path;ColdProved=$false;LeaseHeld=$false}
+}
+
+function Assert-WslColdProtectedPath {
+    param([Parameter(Mandatory)][string]$Path,[switch]$Directory)
+    $item=Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if ($Directory -ne [bool]$item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Protected admission path type/reparse refused.' }
+    $trustedInstaller=[Security.Principal.NTAccount]::new('NT SERVICE','TrustedInstaller').Translate([Security.Principal.SecurityIdentifier]).Value
+    $allowed=@('S-1-5-18','S-1-5-32-544',$trustedInstaller)
+    $current=$item
+    while($null -ne $current) {
+        if($current.Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'Admission ancestor reparse refused.'}
+        $acl=Get-Acl -LiteralPath $current.FullName
+        $owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+        if($owner -notin $allowed){throw 'Admission/code ancestor owner is not a protected Windows principal.'}
+        foreach($ace in $acl.Access) {
+            if($ace.AccessControlType -ne 'Allow'){continue}
+            $sid=$ace.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+            $rights=[Security.AccessControl.FileSystemRights]::Delete -bor [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [Security.AccessControl.FileSystemRights]::ChangePermissions -bor [Security.AccessControl.FileSystemRights]::TakeOwnership
+            if($current.FullName -ceq $item.FullName){$rights=$rights -bor [Security.AccessControl.FileSystemRights]::Write}
+            $write=([int]$ace.FileSystemRights -band [int]$rights)
+            if($write -and $sid -notin $allowed){throw 'Admission/code path writable outside protected Windows principals.'}
+        }
+        $current=if($current -is [IO.FileInfo]){$current.Directory}else{$current.Parent}
+    }
+    return $item.FullName
+}
+
+function Invoke-WslColdFixedProcess {
+    param([string]$FileName,[string[]]$Arguments,[byte[]]$InputBytes=@(),[int]$TimeoutMilliseconds=15000)
+    Initialize-WslColdWorkerProtocol
+    [Revealfleet.Backup.ColdProtocol]::RunControlAsync($FileName,$Arguments,$InputBytes,$TimeoutMilliseconds).GetAwaiter().GetResult()
+}
+
+function Assert-WslColdWindowsHardware {
+    param([string]$Path,$Expected)
+    Assert-WslRecoveryFields $Expected @('serial','model','diskBytes','partitionUuid') 'Windows hardware'
+    $root=[IO.Path]::GetPathRoot($Path)
+    if($root.Length -ne 3 -or $root[1] -ne ':'){throw 'Local Windows volume required.'}
+    $partition=@(Get-Partition -DriveLetter $root[0] -ErrorAction Stop)
+    if($partition.Count -ne 1 -or [Guid]$partition[0].Guid -ne [Guid]$Expected.partitionUuid){throw 'Windows target partition identity differs.'}
+    $disk=Get-Disk -Number $partition[0].DiskNumber -ErrorAction Stop
+    if($disk.SerialNumber.Trim() -cne $Expected.serial -or $disk.FriendlyName -cne $Expected.model -or $disk.Size -ne $Expected.diskBytes){throw 'Windows hardware differs.'}
+    [pscustomobject]@{Domain=$partition[0].Guid.ToString();Free=[IO.DriveInfo]::new($root).AvailableFreeSpace;Root=$root}
+}
+
+function Read-WslColdAdmission {
+    param([string]$PolicyPath,[string]$ReviewedPolicySha256,[string]$AllowedSignersPath,[string]$ReviewedSignersSha256)
+    if(-not $IsWindows){throw 'Production controller requires actual Windows.'}
+    Assert-WslBackupHash $ReviewedPolicySha256;Assert-WslBackupHash $ReviewedSignersSha256
+    [void](Assert-WslColdProtectedPath $PolicyPath)
+    [void](Assert-WslColdProtectedPath ($PolicyPath+'.sig'))
+    [void](Assert-WslColdProtectedPath $AllowedSignersPath)
+    if((Get-FileHash -LiteralPath $AllowedSignersPath).Hash.ToLowerInvariant() -cne $ReviewedSignersSha256){throw 'Signer trust anchor differs.'}
+    $doc=Read-WslRecoveryDocument $PolicyPath
+    if($doc.Sha256 -cne $ReviewedPolicySha256){throw 'Policy differs from review.'}
+    $ssh=Join-Path $env:SystemRoot 'System32/OpenSSH/ssh-keygen.exe'
+    [void](Assert-WslColdProtectedPath $ssh)
+    [void](Invoke-WslColdFixedProcess -FileName $ssh -Arguments @('-Y','verify','-f',$AllowedSignersPath,'-I','revkit-owner','-n','revkit-cold-deployment-v1','-s',($PolicyPath+'.sig')) -InputBytes ([IO.File]::ReadAllBytes($PolicyPath)))
+    $p=$doc.Value
+    Assert-WslRecoveryFields $p @('schemaVersion','profile','sourceCommit','expiresAt','controller','worker','repository','budget','acceptance','keyCustody','operation','transactionId','archiveId') 'signed admission'
+    if($p.schemaVersion -isnot [long] -or $p.schemaVersion -ne 1 -or $p.profile -cne 'cold-vhd-container-v1' -or $p.keyCustody -cne 'keyfile-blake2-independent-v1'){throw 'Admission version/key custody differs.'}
+    $now=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    if($p.expiresAt -le $now -or $p.expiresAt -gt $now+86400){throw 'Signed admission must be fresh and at most one day.'}
+    Assert-WslRecoveryFields $p.acceptance @('windowsReceiptSha256','selectedWorkerReceiptSha256','custodyReceiptSha256','capacityReceiptSha256') 'signed acceptance hashes'
+    foreach($value in $p.acceptance.Values){if($p.operation -ceq 'prepare' -and $value -ceq ''){continue};Assert-WslBackupHash $value}
+    if($p.operation -cnotin @('prepare','backup','restore') -or $p.transactionId -cne ([Guid]$p.transactionId).ToString('D') -or $p.archiveId -cne ([Guid]$p.archiveId).ToString('D')){throw 'Signed operation UUIDs required.'}
+    if($p.operation -ceq 'backup' -and $p.transactionId -cne $p.archiveId){throw 'New archive required.'}
+    Assert-WslRecoveryInteger $p.budget.timeoutSeconds 1
+    if($p.budget.timeoutSeconds -gt 86400){throw 'Bounded operation timeout required.'}
+    if(@($p.acceptance.Keys).Count -ne 4){throw 'Four independently reviewed acceptance/custody/capacity receipt hashes required.'}
+    foreach($path in $p.controller.files.Keys){
+        [void](Assert-WslColdProtectedPath $path)
+        if((Get-FileHash -LiteralPath $path).Hash.ToLowerInvariant() -cne $p.controller.files[$path]){throw 'Controller runtime bytes differ from signed deployment.'}
+    }
+    $required=@((Join-Path $PSScriptRoot 'WslBackup.ps1'),(Join-Path $PSScriptRoot 'WslColdProtocol.cs'),(Join-Path $PSScriptRoot 'WslColdSourceLease.cs'))
+    foreach($path in $required){if(-not $p.controller.files.Contains($path)){throw 'Signed controller source closure incomplete.'}}
+    if($p.worker.registrationId -in @($p.controller.source.registrationId,$p.controller.protected.registrationId) -or $p.worker.distro -in @($p.controller.source.distro,$p.controller.protected.distro)){throw 'Worker aliases source/protected registration.'}
+    Assert-WslRecoveryDisjoint @($p.controller.source.vhdx,$p.controller.protected.vhdx,$p.controller.workerVhdx.path,$p.controller.restore.path)
+    if($p.repository.deviceSerial -in @($p.controller.source.hardware.serial,$p.controller.protected.hardware.serial,$p.controller.restore.hardware.serial)){throw 'Repository hardware must be independent.'}
+    if($p.controller.restore.hardwareGuarantee -cnotin @('isolated-restore-test','third-hardware-copy')){throw 'Explicit restore guarantee required.'}
+    if($p.controller.restore.hardwareGuarantee -ceq 'third-hardware-copy' -and $p.controller.restore.hardware.serial -in @($p.controller.source.hardware.serial,$p.controller.protected.hardware.serial)){throw 'Third hardware guarantee is false.'}
+    return $doc
+}
+
+function Assert-WslColdBindings {
+    param($Policy,[switch]$RequireSourceAbsent,[long]$RestoredBytes=0,[switch]$AllowSourceRunning)
+    foreach($record in @($Policy.controller.source,$Policy.controller.protected,@{distro=$Policy.worker.distro;registrationId=$Policy.worker.registrationId;vhdx=$Policy.controller.workerVhdx.path})) {
+        $observed=Resolve-WslColdRegistrationBinding -Distro $record.distro -ExpectedRegistrationId $record.registrationId
+        if($observed.CanonicalCandidate -ine $record.vhdx){throw 'Registered VHD path changed.'}
+    }
+    $running=Invoke-WslColdFixedProcess -FileName (Join-Path $env:SystemRoot 'System32/wsl.exe') -Arguments @('--list','--running','--quiet')
+    $names=@($running.Replace([string][char]0,'').Split("`n")|ForEach-Object {$_.Trim()})
+    if((-not $AllowSourceRunning -and $Policy.controller.source.distro -in $names) -or $Policy.controller.protected.distro -in $names){throw 'Source and protected recovery must remain stopped; nothing was terminated.'}
+    # Source unavailability for restore is established by a continuously held
+    # writer-excluding handle too: a stopped registration cannot open its VHD.
+    if($RequireSourceAbsent -and $null -eq $script:WslColdActiveLease){throw 'Restore requires retained source exclusion through destination commit.'}
+    $domains=@{}
+    foreach($part in @(
+        @{Path=$Policy.controller.restore.path;Hardware=$Policy.controller.restore.hardware;Bytes=([decimal]$Policy.controller.restore.imageBytes-$RestoredBytes+$Policy.controller.restore.overheadBytes)},
+        @{Path=$Policy.controller.workerVhdx.path;Hardware=$Policy.controller.workerVhdx.hardware;Bytes=[decimal]$Policy.budget.workspaceAdditionalBytes}
+    )){
+        $o=Assert-WslColdWindowsHardware $part.Path $part.Hardware
+        if(-not $domains.ContainsKey($o.Domain)){$domains[$o.Domain]=@{Free=$o.Free;Required=[decimal]$Policy.budget.reserveBytes}}
+        $domains[$o.Domain].Required+=$part.Bytes
+    }
+    Assert-WslRecoveryInteger $Policy.budget.reserveBytes 64GB
+    foreach($domain in $domains.Values){if($domain.Free -lt $domain.Required){throw 'Fresh Windows per-filesystem capacity refuses full dense restore/workspace/reserve.'}}
+}
+
+function Get-WslColdWorkerArguments {
+    param($Policy,[string]$Action)
+    $base=@('--distribution',$Policy.worker.distro,'--user','root','--exec')
+    if($Action -ceq 'serve') {
+        $unit='revkit-cold-'+$Policy.transactionId+'.service'
+        return $base+@('/usr/bin/systemd-run','--quiet','--pipe','--wait','--collect','--service-type=exec',
+            ('--unit='+$unit),'--property=Slice=system.slice','--property=KillMode=control-group',
+            '--property=TimeoutStopSec=10s',('--property=RuntimeMaxSec='+([long]$Policy.budget.timeoutSeconds+30)+'s'),
+            $Policy.worker.interpreter,'-I','-B',('/opt/revkit-wsl-backup/'+$Policy.sourceCommit+'/scripts/wsl-cold-worker.py'),'--serve')
+    }
+    if($Action -cin @('reconcile','status')) {return $base+@($Policy.worker.interpreter,'-I','-B',('/opt/revkit-wsl-backup/'+$Policy.sourceCommit+'/scripts/wsl-cold-worker.py'),('--'+$Action),$Policy.transactionId)}
+    return $base+@($Policy.worker.interpreter,'-I','-B',('/opt/revkit-wsl-backup/'+$Policy.sourceCommit+'/scripts/wsl-cold-worker.py'),'--prepare')
+}
+
+function Read-WslColdArchiveReceipt {
+    param([string]$Path,[string]$Sha256,[string]$Signers,$Policy)
+    Assert-WslBackupHash $Sha256
+    [void](Assert-WslColdProtectedPath $Path);[void](Assert-WslColdProtectedPath ($Path+'.sig'))
+    $receipt=Read-WslRecoveryDocument $Path
+    if($receipt.Sha256 -cne $Sha256 -or $Policy.controller.restore.archiveReceiptSha256 -cne $Sha256){throw 'Restore archive receipt differs from signed admission.'}
+    [void](Invoke-WslColdFixedProcess -FileName (Join-Path $env:SystemRoot 'System32/OpenSSH/ssh-keygen.exe') -Arguments @('-Y','verify','-f',$Signers,'-I','revkit-owner','-n','revkit-cold-archive-v1','-s',($Path+'.sig')) -InputBytes ([IO.File]::ReadAllBytes($Path)))
+    $r=$receipt.Value
+    Assert-WslRecoveryFields $r @('profile','repositoryId','archiveId','imageBytes','imageSha256','sourceCommit','transactionId','workerReceiptSha256','bindingSha256','nativeArchiveId') 'archive receipt'
+    Assert-WslBackupHash $r.imageSha256
+    if($r.profile -cne $Policy.profile -or $r.repositoryId -cne $Policy.repository.id -or $r.archiveId -cne $Policy.archiveId -or $r.imageBytes -ne $Policy.controller.restore.imageBytes -or $r.nativeArchiveId -cne $Policy.controller.restore.nativeArchiveId){throw 'Archive/byte identity differs from reviewed restore.'}
+    return $r
+}
+
+function Complete-WslColdCustody {
+    param([string]$TransactionId,[switch]$ObserveOnly)
+    if(-not $script:WslColdRetained -or -not $script:WslColdRetained.ContainsKey($TransactionId)){throw 'No retained transaction in this controller process.'}
+    $held=$script:WslColdRetained[$TransactionId]
+    $stage='signed-worker-kernel-reconciliation'
+    try {
+        $text=Invoke-WslColdFixedProcess -FileName (Join-Path $env:SystemRoot 'System32/wsl.exe') -Arguments (Get-WslColdWorkerArguments $held.Policy $(if($ObserveOnly){'status'}else{'reconcile'})) -TimeoutMilliseconds 30000
+        $r=$text|ConvertFrom-Json -AsHashtable
+        Assert-WslRecoveryFields $r @('transactionId','bindingSha256','linuxUnitEmpty','futureLaunchCancelled') 'kernel reconciliation'
+        if($r.transactionId -cne $TransactionId -or $r.bindingSha256 -cne $held.Binding -or $r.linuxUnitEmpty -ne $true -or $r.futureLaunchCancelled -ne $true -or
+            -not [Revealfleet.Backup.ColdProtocol]::CallerIoSettled($TransactionId)){throw 'Actual unit/stream lifetime is still unconfirmed.'}
+        $stage='caller-io-and-frontend-exit'
+        $held.Guard.StopAsync().GetAwaiter().GetResult();$held.Guard.Dispose()
+        if(-not $held.Child.HasExited){$held.Child.Kill($true);[void]$held.Child.WaitForExit(5000)}
+        if(-not $held.Child.HasExited){throw 'Owned Windows frontend exit unconfirmed.'}
+        $held.Lease.ValidateUnchanged()
+        $held.Secret.Dispose();if($null -ne $held.Output){$held.Output.Dispose()}
+        $held.Lease.Dispose();$held.Child.Dispose();$held.Cancellation.Dispose()
+        $script:WslColdRetained.Remove($TransactionId)
+        [pscustomobject]@{TransactionId=$TransactionId;CustodyRetained=$false;FailedAttemptPreserved=$true;LinuxUnitReconciled=$true}
+    } catch {
+        # Never dispose a lease/partial merely because status or permission failed.
+        [pscustomobject]@{TransactionId=$TransactionId;CustodyRetained=$true;FailedAttemptPreserved=$true;LinuxUnitReconciled=$false;Gate=$stage}
+    }
+}
+
+function Invoke-WslColdContainerOperation {
+    [CmdletBinding()]
+    param([ValidateSet('prepare','backup','restore','reconcile')][string]$Phase='prepare',
+        [Parameter(Mandatory)][string]$PolicyPath,[Parameter(Mandatory)][string]$ReviewedPolicySha256,
+        [Parameter(Mandatory)][string]$AllowedSignersPath,[Parameter(Mandatory)][string]$ReviewedSignersSha256,
+        [Security.SecureString]$Passphrase,[IO.Stream]$IndependentKey,
+        [string]$TransactionId,[string]$BackupReceiptPath,[string]$ReviewedBackupReceiptSha256,[switch]$Execute,[switch]$ObserveOnly)
+    if($Phase -ceq 'reconcile') {
+        if(-not $Execute){return [pscustomobject]@{Phase=$Phase;BackendExecuted=$false}}
+        return Complete-WslColdCustody $TransactionId -ObserveOnly:$ObserveOnly
+    }
+    # Immutable signature, code, identities and positive budgets precede effects.
+    $doc=Read-WslColdAdmission $PolicyPath $ReviewedPolicySha256 $AllowedSignersPath $ReviewedSignersSha256
+    $p=$doc.Value
+    if($TransactionId -and $TransactionId -cne $p.transactionId){throw 'Transaction differs from signed admission.'}
+    if(-not $Execute){return [pscustomobject]@{Phase=$Phase;SignedPolicyVerified=$true;BackendExecuted=$false;FullRestoreAccepted=$false}}
+    if($Phase -cne 'prepare' -and $Phase -cne $p.operation){throw 'Operation differs from signed admission.'}
+    $restore=$null
+    if($Phase -cne 'prepare') {
+    if($null -eq $Passphrase -or $Passphrase.Length -eq 0 -or $null -eq $IndependentKey -or -not $IndependentKey.CanRead){throw 'Private caller passphrase and independent encrypted key stream required; no scheduled broker/fallback.'}
+    if($Phase -ceq 'restore'){$restore=Read-WslColdArchiveReceipt $BackupReceiptPath $ReviewedBackupReceiptSha256 $AllowedSignersPath $p}
+    }
+    Assert-WslColdBindings $p -AllowSourceRunning:($Phase -ceq 'prepare')
+    [void](Assert-WslColdWindowsHardware $p.controller.source.vhdx $p.controller.source.hardware)
+    [void](Assert-WslColdWindowsHardware $p.controller.protected.vhdx $p.controller.protected.hardware)
+    $worker=Invoke-WslColdFixedProcess -FileName (Join-Path $env:SystemRoot 'System32/wsl.exe') -Arguments (Get-WslColdWorkerArguments $p 'prepare')
+    $probe=$worker|ConvertFrom-Json -AsHashtable
+    if($probe.bindingSha256 -cne $doc.Sha256 -or $probe.repositoryId -cne $p.repository.id -or $probe.runtimeAdmitted -ne $true){throw 'Actual immutable worker admission differs.'}
+    if($Phase -ceq 'prepare'){return [pscustomobject]@{Phase=$Phase;RuntimeAdmitted=$true;RepositoryInitialized=$probe.repositoryInitialized;BackendExecuted=$false;FullRestoreAccepted=$false;ColdSourceProved=$false;BindingSha256=$doc.Sha256}}
+    Initialize-WslColdWorkerProtocol
+    $lease=$target=$guard=$secret=$child=$cts=$null;$launched=$false
+    try {
+        $lease=[Revealfleet.Backup.ColdSourceLease]::new($p.controller.source.vhdx,$p.controller.source.fileIdentity,($Phase -ceq 'restore'))
+        if($lease.Length -ne $p.controller.source.containerBytes){throw 'Cold held-container size differs; no live-size estimate admitted.'}
+        $script:WslColdActiveLease=$lease
+        Assert-WslColdBindings $p -RequireSourceAbsent:($Phase -ceq 'restore')
+        [void](Assert-WslColdProtectedPath $p.controller.journalDirectory -Directory)
+        $journal=Join-Path $p.controller.journalDirectory $p.transactionId
+        [Revealfleet.Backup.ColdSourceLease]::CreateTransactionDirectory($journal)
+        Write-WslBackupJsonNew (Join-Path $journal 'pending.json') @{phase=$Phase;bindingSha256=$doc.Sha256;transactionId=$p.transactionId;sourceIdentity=$lease.FileIdentity}
+        $cts=[Threading.CancellationTokenSource]::new([int]($p.budget.timeoutSeconds*1000))
+        if($Phase -ceq 'restore') {
+            [void](Assert-WslColdProtectedPath ([IO.Path]::GetDirectoryName($p.controller.restore.path)) -Directory)
+            $target=[IO.File]::Open($p.controller.restore.path,[IO.FileMode]::CreateNew,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read)
+            $sha=$restore.imageSha256;$bytes=$restore.imageBytes;$incoming=[IO.Stream]::Null
+        } else {$target=$null;$sha=$null;$bytes=$lease.Length;$incoming=$lease.Bytes}
+        $guard=[Revealfleet.Backup.ColdCommitGuard]::new($lease,$target,$p.controller.restore.path,$sha,([IO.File]::ReadAllBytes($PolicyPath)),$cts)
+        $guard.StartMonitor()
+        if($Phase -ceq 'backup') {
+            $sha=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashDataAsync($incoming,$cts.Token).GetAwaiter().GetResult()).ToLowerInvariant()
+            $incoming.Position=0
+        }
+        $request=@{protocol='revkit-cold-worker-v1';profile=$p.profile;transactionId=$p.transactionId;archiveId=$p.archiveId;phase=$Phase;bindingSha256=$doc.Sha256;bytes=$bytes;sha256=$sha}
+        $secret=[Revealfleet.Backup.ColdCommitGuard]::PrivateInput($Passphrase)
+        $start=[Diagnostics.ProcessStartInfo]::new((Join-Path $env:SystemRoot 'System32/wsl.exe'))
+        $start.UseShellExecute=$false;$start.CreateNoWindow=$true;$start.RedirectStandardInput=$true;$start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
+        foreach($arg in (Get-WslColdWorkerArguments $p 'serve')){$start.ArgumentList.Add($arg)}
+        $child=[Diagnostics.Process]::new();$child.StartInfo=$start
+        [void]$child.Start();$launched=$true
+        $outgoing=if($null -eq $target){[IO.Stream]::Null}else{$target}
+        $receipt=[Revealfleet.Backup.ColdProtocol]::ExchangeAsync($child,$incoming,$outgoing,$secret,([Text.Encoding]::UTF8.GetBytes(($request|ConvertTo-Json -Compress))),[int]($p.budget.timeoutSeconds*1000),$cts.Token,$guard.Callback(),$IndependentKey).GetAwaiter().GetResult()
+        $guard.StopAsync().GetAwaiter().GetResult()
+        $lease.ValidateUnchanged()
+        Assert-WslColdBindings $p -RequireSourceAbsent:($Phase -ceq 'restore') -RestoredBytes $(if($null -ne $target){$target.Length}else{0})
+        Write-WslBackupJsonNew (Join-Path $journal 'worker-final.json') ([Text.Encoding]::UTF8.GetString($receipt)|ConvertFrom-Json -AsHashtable)
+        $archive=@{profile=$p.profile;repositoryId=$p.repository.id;archiveId=$p.archiveId;imageBytes=$bytes;imageSha256=$sha;sourceCommit=$p.sourceCommit;transactionId=$p.transactionId;nativeArchiveId=([Text.Encoding]::UTF8.GetString($receipt)|ConvertFrom-Json -AsHashtable).nativeArchiveId;workerReceiptSha256=([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($receipt)).ToLowerInvariant());bindingSha256=$doc.Sha256}
+        Write-WslBackupJsonNew (Join-Path $journal 'archive-receipt.json') $archive
+        [pscustomobject]@{Phase=$Phase;TransactionId=$p.transactionId;CustodyRetained=$false;BackendExecuted=$true;ImageBytes=$bytes;ImageSha256=$sha;ArchiveReceipt=(Join-Path $journal 'archive-receipt.json');DenseRestoreVerified=($Phase -ceq 'restore');FullRestoreAccepted=$false;ImportPerformed=$false}
+    } catch {
+        if($launched) {
+            if(-not $script:WslColdRetained){$script:WslColdRetained=@{}}
+            $script:WslColdRetained[$p.transactionId]=@{Policy=$p;Binding=$doc.Sha256;Lease=$lease;Output=$target;Secret=$secret;Child=$child;Guard=$guard;Cancellation=$cts}
+            $lease=$target=$secret=$child=$guard=$cts=$null
+            return Complete-WslColdCustody $p.transactionId
+        }
+        throw 'Cold operation refused before worker execution; pending/partial custody preserved.'
+    } finally {
+        if($null -ne $guard){$guard.StopAsync().GetAwaiter().GetResult();$guard.Dispose()}
+        if($null -ne $secret){$secret.Dispose()};if($null -ne $target){$target.Dispose()}
+        if($null -ne $lease){$lease.Dispose()};if($null -ne $child){$child.Dispose()};if($null -ne $cts){$cts.Dispose()}
+        $script:WslColdActiveLease=$null
+    }
 }

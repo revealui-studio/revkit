@@ -27,7 +27,7 @@ MAX_DATA = 65536
 MAX_CONTROL = 16384
 LIMITS = {b'R': MAX_CONTROL, b'S': 1024, b'D': MAX_DATA, b'E': MAX_CONTROL,
           b'H': 0, b'C': 0, b'K': MAX_CONTROL, b'A': MAX_CONTROL, b'Z': MAX_CONTROL,
-          b'F': MAX_CONTROL}
+          b'F': MAX_CONTROL, b'B': MAX_CONTROL, b'Y': MAX_DATA}
 
 
 class Refused(Exception):
@@ -182,11 +182,11 @@ def synced_file(directory, name, value):
 class Session:
     """Deployment-internal capability; never constructed from wire paths/commands.
 
-    Real admission is intentionally not supplied by this module. The Windows
-    wrapper remains closed. Tests construct this engine only for NEW private
-    synthetic repositories. No wire flag can grant that capability.
+    The production entry constructs this only after signed immutable admission.
+    Legacy deployment=None remains an internal synthetic compatibility seam;
+    the production CLI never selects it. No wire/test flag grants admission.
     """
-    def __init__(self, binary, repository, state, binding, *, timeout=120, idle=10):
+    def __init__(self, binary, repository, state, binding, *, timeout=120, idle=10, deployment=None):
         self.binary = Path(binary)
         self.repository = private_directory(repository)
         self.state = private_directory(state)
@@ -200,6 +200,8 @@ class Session:
         self.deadline = 0
         self.tx = None
         self.sequence = 0
+        self.deployment = deployment
+        self.custody_fd = None
 
     def tool(self):
         if self.binary.resolve() != self.binary:
@@ -244,6 +246,13 @@ class Session:
                 raise Refused('linux-group-exit-unconfirmed')
             time.sleep(.02)
 
+    def _confirm_child_exit(self, child):
+        self._group_absent(child)
+        if self.deployment and hasattr(self.deployment,'children_absent'):
+            self.group_gone=False
+            self.deployment.children_absent()
+            self.group_gone=True
+
     def _stop_child(self, child):
         # This process group belongs ONLY to this child (start_new_session=True).
         try:
@@ -255,13 +264,16 @@ class Session:
         except subprocess.TimeoutExpired:
             self.group_gone = False
             raise Refused('linux-child-exit-unconfirmed') from None
-        self._group_absent(child)
+        self._confirm_child_exit(child)
 
     def run(self, args, rx, secret_fd, source=None, output=None):
         env = {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'HOME': str(self.tx),
                'BORG_CACHE_DIR': str(self.tx/'cache'), 'BORG_SECURITY_DIR': str(self.tx/'security'),
                'BORG_CONFIG_DIR': str(self.tx/'config'), 'TMPDIR': str(self.tx),
                'BORG_PASSPHRASE_FD': str(secret_fd), 'BORG_EXIT_CODES': 'modern'}
+        if self.deployment:
+            self.deployment.check()
+            env['BORG_KEY_FILE'] = str(self.tx/'imported-key')
         os.lseek(secret_fd, 0, os.SEEK_SET)
         # Process-local Linux lifetime ownership, no account/service/security-policy change.
         # A dedicated worker must adopt/reap the pinned standalone Borg's orphaned children.
@@ -274,8 +286,11 @@ class Session:
         try:
             child = subprocess.Popen([str(self.binary), '--lock-wait=1', *args],
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                     cwd=self.tx, env=env, pass_fds=(secret_fd,), start_new_session=True)
+                                     cwd=self.tx, env=env, pass_fds=tuple(fd for fd in (secret_fd,self.custody_fd) if fd is not None), start_new_session=True)
             self.children.append(child.pid)
+            if self.custody_fd is not None:
+                held=os.fstat(self.custody_fd); inherited=os.stat('/proc/'+str(child.pid)+'/fd/'+str(self.custody_fd))
+                if (held.st_dev,held.st_ino)!=(inherited.st_dev,inherited.st_ino): raise Refused('inherited-repository-custody-unconfirmed')
             pending = b''
             source_done = source is None
             diagnostics = 0
@@ -286,6 +301,7 @@ class Session:
             while selector.get_map() or child.poll() is None:
                 if time.monotonic() > self.deadline:
                     raise Refused('transaction-timeout')
+                if self.deployment: self.deployment.reserve()
                 if source is None:
                     item = rx.next()
                     if item and item[0] != b'H':
@@ -323,7 +339,7 @@ class Session:
                             raise Refused('unexpected-child-output')
             child.wait(timeout=1)
             # Even normal exit must prove the owned Linux process group absent.
-            self._group_absent(child)
+            self._confirm_child_exit(child)
             if child.returncode != 0 or diagnostics:
                 raise Refused('borg-exit-or-diagnostics')
         except BaseException:
@@ -375,6 +391,9 @@ class Session:
             req = request(receive(b'R'), self.binding)
             # Validate before creating a transaction, opening a repository lock or executing a tool.
             self.tool()
+            if self.deployment:
+                self.deployment.begin(req)
+                self.custody_fd = self.deployment.custody()
             lock_fd = os.open(self.state/'worker.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
             info = os.fstat(lock_fd)
             if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
@@ -393,6 +412,28 @@ class Session:
             os.fchmod(secret_fd, 0o600)
             os.write(secret_fd, secret + b'\n')
             del secret
+            if self.deployment:
+                key = receive(b'Y')
+                expected = b'BORG_KEY '+self.deployment.policy['repository']['id'].encode()+b'\n'
+                if not key.startswith(expected) or not len(expected)<len(key)<=MAX_DATA:
+                    raise Refused('independent-key-artifact-binding')
+                key_path = self.tx/'recovered-key-artifact'
+                fd = os.open(key_path,os.O_CREAT|os.O_EXCL|os.O_WRONLY|os.O_NOFOLLOW,0o600)
+                with os.fdopen(fd,'wb') as stream:
+                    stream.write(key); stream.flush(); os.fsync(stream.fileno())
+                del key
+                self.run(['key','import',str(self.repository),str(key_path)],rx,secret_fd)
+                if not (self.tx/'imported-key').is_file(): raise Refused('independent-key-import-failed')
+                metadata=bytearray()
+                def metadata_output(data):
+                    metadata.extend(data)
+                    if len(metadata)>MAX_CONTROL: raise Refused('borg-metadata-bound')
+                self.run(['info','--json',str(self.repository)],rx,secret_fd,output=metadata_output)
+                details=parse(bytes(metadata))
+                if details.get('encryption',{}).get('mode')!='keyfile-blake2' or details.get('repository',{}).get('id')!=self.deployment.policy['repository']['id']:
+                    raise Refused('key-mode-native-repository-id')
+                self.event('independent-key-imported')
+                emit(b'B',document({'protocol':PROTOCOL,'transactionId':req['transactionId'],'bindingSha256':self.binding}))
             archive = str(self.repository)+'::cold-'+req['archiveId']
             count, digest = 0, hashlib.sha256()
             def source(item):
@@ -427,6 +468,19 @@ class Session:
                     raise Refused('restore-input')
             self.run(['check', '--verify-data', str(self.repository)], rx, secret_fd)
             self.event('archive-checked')
+            native_archive=None
+            if self.deployment:
+                metadata=bytearray()
+                def archive_metadata(data):
+                    metadata.extend(data)
+                    if len(metadata)>MAX_CONTROL: raise Refused('borg-metadata-bound')
+                self.run(['info','--json',archive],rx,secret_fd,output=archive_metadata)
+                details=parse(bytes(metadata)); archives=details.get('archives',[])
+                if len(archives)!=1 or archives[0].get('name')!='cold-'+req['archiveId'] or not sha(archives[0].get('id')):
+                    raise Refused('native-archive-identity')
+                native_archive=archives[0]['id']
+                if req['phase']=='restore' and native_archive!=self.deployment.policy['controller']['restore']['nativeArchiveId']:
+                    raise Refused('native-archive-changed')
             restored_count, restored_hash = 0, hashlib.sha256()
             def output(data):
                 nonlocal restored_count
@@ -438,18 +492,21 @@ class Session:
             self.run(['extract', '--stdout', archive, 'ext4.vhdx'], rx, secret_fd, output=output)
             if restored_count != req['bytes'] or restored_hash.hexdigest() != req['sha256']:
                 raise Refused('restored-length-or-digest')
+            if self.deployment: self.deployment.check()
             if not self.group_gone:
                 raise Refused('linux-group-exit-unconfirmed')
             receipt = dict(protocol=PROTOCOL, profile=PROFILE, transactionId=req['transactionId'],
                            phase=req['phase'], archiveId=req['archiveId'], bindingSha256=self.binding, bytes=restored_count,
                            sha256=restored_hash.hexdigest(), toolSha256=BORG_SHA256,
                            linuxChildrenExited=True, savingsCreditBytes=0, productionAccepted=False)
+            if self.deployment: receipt['nativeArchiveId']=native_archive
             self.event('readback', receipt=receipt)
             emit(b'A', document(receipt))
             commit = parse(receive(b'K'))
             if commit != {'receiptSha256': hashlib.sha256(document(receipt)).hexdigest()}:
                 raise Refused('controller-commit-binding')
             # Final receipt is fsynced before acknowledgment; source lease must still be held.
+            if self.deployment: self.deployment.check()
             self.event('committed', receipt=receipt)
             emit(b'Z', document(receipt))
             return receipt
@@ -470,7 +527,12 @@ class Session:
         finally:
             if secret_fd is not None:
                 os.close(secret_fd)
-            if lock_fd is not None:
-                os.close(lock_fd)
+            if self.group_gone:
+                if lock_fd is not None: os.close(lock_fd)
+                if self.custody_fd is not None: os.close(self.custody_fd)
+            else:
+                # Do not release custody while a Linux child might still exist.
+                # Dedicated systemd worker retains these until exact unit teardown.
+                self.retained_fds = (lock_fd,self.custody_fd)
             rx.close()
             fcntl.fcntl(outgoing_fd, fcntl.F_SETFL, output_flags)

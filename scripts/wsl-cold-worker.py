@@ -1,32 +1,62 @@
 #!/usr/bin/python3
-"""Fixed worker admission boundary. No arbitrary commands, paths or test flags.
-
-The engine is implemented in lib/wsl_cold_container.py. Runtime admission is
-closed until Windows/selected-worker integration and immutable deployment policy
-are reviewed. This executable deliberately cannot be activated by wire input.
-"""
+"""Fixed signed-policy worker. Does not provision, mount, initialize or schedule."""
+import importlib.util
 import json
+import os
+from pathlib import Path
 import sys
+import time
 
-GATES = (
-    'immutable-worker-interpreter-source-and-signed-borg-deployment',
-    'authoritative-windows-registration-final-handle-and-continuous-source-lease',
-    'actual-windows-to-selected-worker-framed-lifetime-acceptance',
-    'independent-repository-identity-exclusive-access-and-native-lock-plan',
-    'fresh-per-filesystem-capacity-overhead-reserve-and-source-outage',
-    'independent-production-key-recovery-and-controller-admission-receipt',
-)
+
+def load_module(name,path):
+    spec=importlib.util.spec_from_file_location(name,path)
+    module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    return module
 
 
 def main(arguments):
-    if arguments != ['--readiness']:
-        # No stdin/secret, repository, tool, state, source or worker probe happens.
-        print('Cold worker production admission is closed; no backend opened.', file=sys.stderr)
+    reconciling=len(arguments)==2 and arguments[0] in ('--reconcile','--status')
+    if not reconciling and arguments not in (['--readiness'],['--prepare'],['--serve']): return 3
+    # Bootstrap trusted ownership BEFORE importing deployment code. No root
+    # process may load Python from this user-writable development checkout.
+    if os.geteuid()!=0 or not sys.flags.isolated:
+        print(json.dumps({'canExecute':False,'gate':'root-immutable-deployment-required'})) if arguments==['--readiness'] else None
         return 3
-    print(json.dumps({'protocol': 'revkit-cold-worker-v1', 'profile': 'cold-vhd-container-v1',
-                      'canExecute': False, 'backendExecuted': False, 'gates': GATES}))
-    return 3
+    root=Path(__file__).resolve().parent
+    for path in (Path(__file__),root,root/'lib',root/'lib/wsl_cold_admission.py',*root.parents):
+        info=path.lstat()
+        if path.resolve()!=path or info.st_uid!=0 or info.st_mode & 0o022:
+            return 3
+    admission=load_module('cold_admission',root/'lib/wsl_cold_admission.py')
+    try:
+        policy,binding,observed=admission.load(allow_expired=reconciling)
+        if reconciling:
+            print(json.dumps((admission.status if arguments[0]=='--status' else admission.reconcile)(policy,binding,arguments[1])))
+            return 0
+        if arguments!=['--serve']:
+            print(json.dumps({'profile':policy['profile'],'bindingSha256':binding,'runtimeAdmitted':True,
+                              'backendExecuted':False,'repositoryId':policy['repository']['id'],'repositoryInitialized':observed is not None,
+                              'fullBackupAccepted':False,'fullRestoreAccepted':False}))
+            return 0
+        if policy['operation']=='prepare': return 3
+        engine=load_module('cold_engine',root/'lib/wsl_cold_container.py')
+        deployment=admission.Deployment(policy,binding,observed)
+        session=engine.Session(policy['worker']['borg'],policy['repository']['path'],policy['worker']['state'],binding,
+                               timeout=policy['budget']['timeoutSeconds'],deployment=deployment)
+        try:
+            session.serve(0,1)
+            return 0
+        except BaseException:
+            if not session.group_gone:
+                # Keep locks; supervised unit stop/RuntimeMaxSec is the final owner.
+                # Never claim Linux exit or release caller custody on this path.
+                while True: time.sleep(1)
+            return 3
+    except BaseException as exc:
+        # Fixed nonsecret gate codes only; no paths/keys/child diagnostics.
+        code=str(exc) if isinstance(exc,admission.AdmissionError) else type(exc).__name__
+        print('Cold worker admission refused: '+code,file=sys.stderr)
+        return 3
 
 
-if __name__ == '__main__':
-    sys.exit(main(sys.argv[1:]))
+if __name__=='__main__': sys.exit(main(sys.argv[1:]))

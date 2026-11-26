@@ -1027,3 +1027,237 @@ all-byte file acceptance, then separately approved isolated import/boot and serv
 E restore is an isolated test sharing source/protected hardware, not a third-hardware
 copy. Filesystem candidate remains REJECTED. Google Password Manager and Apple
 Passwords remain owner-selected; no paid vault or production secret was created.
+
+### Operational admission and custody policy (supersedes disabled worker draft)
+
+Invoke-WslColdContainer.ps1 now calls the existing WslBackup owner for prepare,
+backup, restore and reconciliation. The former unconditional worker --serve stub
+is replaced by real signed-policy admission. There is no test-mode activation,
+policy-selected command string, scheduled credential provider or implicit disk/
+source lifecycle action. Existing borg-container-readiness remains READ-ONLY by
+name; its -Execute refusal is intentional. Use the operational entry below.
+Neither this source increment nor the current f47 Windows test run activates it.
+
+Two owner audit defects are fixed first: WslDiskIdentity accepts null, empty string
+or actual System.Char NUL as an absent Windows letter, rejects whitespace/numeric/
+array/assigned/malformed values without coercion; Session marks lifetime unknown
+BEFORE Popen and includes selector/pipe setup inside cleanup ownership. Only actual
+parent reaping AND process-group absence set group_gone=true. Fault-injected kill,
+wait or reap failure cannot produce a true Linux-exit acknowledgment. Assertions
+run before defensive cleanup; failed and last-good artifacts remain preserved.
+
+#### Signed deployment, trust and repository custody
+
+Deployment uses a NEW source-addressed root-owned directory:
+/opt/revkit-wsl-backup/SOURCE_COMMIT/scripts/{wsl-cold-worker.py,lib/...}.
+No symlink/current-path or in-place immutable artifact edits. A single root-owned
+/etc/revkit/cold-container-v1.json has a detached SSH signature at .json.sig and
+fixed /etc/revkit/cold-container-allowed-signers. The allowed identity is
+revkit-owner, namespace revkit-cold-deployment-v1. Root installs only the already
+reviewed owner public signing key; no token/auth/agent/trust override is performed
+by this implementation. Sign the actual reviewed document using the owner's
+normal supported SSH signing workflow, then stage it unchanged on BOTH sides.
+Do not sign a template, synthetic receipt or acceptance boolean.
+
+The signed document binds schemaVersion1, opaque profile, exact signed source
+commit, one operation/transaction/archive UUID, expiry <=24h, exact Windows
+controller runtime hashes, source/worker/protected registrations and canonical
+paths, source file identity/cold size, physical hardware/partition IDs, repository
+native ID/ext4 UUID/PARTUUID/USB serial+geometry, selected worker machine+boot ID,
+root-owned interpreter real path+SHA256, exact three Python source hashes, pinned
+Borg release hash, root-private state, per-filesystem budgets and four reviewed
+acceptance/custody/capacity receipt hashes. Those hashes must refer to actual
+reviewed evidence for THIS implementation; a supplied bool cannot replace them.
+Missing or mismatched external facts refuse. Source hashes/interpreter/Borg hash
+are cryptographically bound by the owner's deployment signature, independently
+of JSON's self-described source commit. Root reviews the normal Git signature and
+package manifest before signing deployment; no unsigned document can bootstrap
+its own signer or choose another trust anchor from argv/wire.
+
+Windows requires protected ownership/write ACLs (SYSTEM, Administrators or Windows
+TrustedInstaller), no reparse path, exact signed policy and signer-file hashes,
+SSH verification, exact controller source closure, expiry and fresh hardware/
+registration/capacity observations. Ordinary users may create siblings in a volume
+root but cannot replace protected existing deployment ancestors. Linux requires
+root, isolated -I/-B system Python, immutable root-owned canonical runtime paths,
+exact hash pins and signature, no loader/secret env fallback. It validates the
+actual selected machine/boot, mounted ext4 filesystem and parent block serial/
+geometry with bounded fixed findmnt/lsblk queries, native repository ID and root-
+only0700 repository/state without named/default ACL grants. There is no nvm root
+execution, install, mount, attachment or permission modification in these tools.
+
+A root-only filesystem-resident .revkit-cold-REPOSITORY_ID.lock at the independent
+repository mount root is flocked nonblocking across key import, create, native
+Borg locks, check, native archive-ID lookup, readback and receipt. It is inherited
+by child processes; unconfirmed teardown retains custody. Root-only ownership
+excludes ordinary direct Borg clients; ALL managed workers share this inode even
+with different state directories. As with root-owned code/policy, a malicious or
+out-of-band root administrator can override ownership/locks; root maintenance
+must not run another direct Borg client while this broker owns custody. This is
+an explicit administrative trust boundary, not a claim flock stops arbitrary
+root. Borg's own native locks are still acquired at every command. There is no
+with-lock nesting/bypass, break-lock, repair, prune or failed-evidence deletion.
+
+#### OS lifetime and continuous source exclusion
+
+The selected, separately accepted worker executes in one exact transient systemd
+service revkit-cold-TRANSACTION_UUID.service, Type=exec, Slice=system.slice,
+KillMode=control-group, TimeoutStopSec=10s, RuntimeMaxSec=policy timeout+30s,
+--pipe/--wait/--collect/--quiet (NO PTY). These are properties of this bounded job,
+not changes to existing services, owner memory/network settings or schedules.
+The worker verifies MainPID, its actual unified cgroup, KillMode and runtime bound
+before any Borg child. This uses the existing worker's supported system manager;
+if unavailable, it refuses without a fallback to unsupervised execution.
+[systemd-run](https://www.freedesktop.org/software/systemd/man/latest/systemd-run.html)
+documents inherited binary pipes and synchronous job waiting. Actual selected-WSL
+systemd/pipe behavior remains a root-run acceptance gate, not native test proof.
+
+Native Linux exit F/Z still requires actual owned parent/group absence. On loss
+of acknowledgment, the controller RETAINS its source handle, partial destination,
+private caller stream and process capability. Reconciliation invokes only the
+exact selected signed worker, writes/fsyncs a durable cancel-UUID tombstone BEFORE
+stopping that exact transient unit, then checks its fixed kernel cgroup is absent
+or unpopulated. Every future begin/phase checks that tombstone: a delayed wsl.exe
+launch cannot create a backend after reconciliation. Windows also confirms its
+caller I/O tasks settled and frontend exit. A status/permission/kernel/transport
+failure retains custody, not success. The driver stays alive retrying retained
+custody; it does not silently exit and release the source. Do not forcibly close
+that controller process on an unconfirmed result. No kill-all is used.
+
+Windows resolves exact UUID/name/registered VhdFileName, verifies source and
+protected recovery stopped before AND after acquiring the same source handle,
+installs Registry change notifications on all three registrations, and refuses
+any watched change through commit. Backup retains FileShare.Read exclusion through
+prehash, streaming, archive check/readback, K/Z and controller receipt. Restore
+uses FileShare.None, excluding OTHER READERS as well as writers/deletes, without
+reading source content. The worker restores only the explicitly bound repository
+archive; the retained source VHD cannot be opened by its separate process. Actual
+Windows-to-WSL read-denial under this exclusive handle requires new host evidence.
+No distro is stopped, started as source, imported or booted automatically.
+
+#### Explicit independent keyfile custody decision
+
+Production deployment selects keyCustody=keyfile-blake2-independent-v1. The byte
+profile remains cold-vhd-container-v1 with fixed4MiB/files-cache-disabled/
+compression-none; key custody is separately signature/version bound. This is the
+SAME Borg backend, not another production backend. Existing repokey synthetic
+receipts remain valid historical encryption observations, not keyfile acceptance.
+No real repository exists or is converted by this change.
+
+The reason is upstream semantics: Borg1.4.5 repokey import writes the embedded
+repository key, whereas keyfile import can target a new local BORG_KEY_FILE.
+[Borg key management](https://borgbackup.readthedocs.io/en/1.4.5/usage/key.html) and
+[pinned key-manager implementation](https://github.com/borgbackup/borg/blob/1.4.5/src/borg/crypto/keymanager.py)
+make that distinction explicit. Fresh-client recovery must not rewrite the only
+good repository key just to prove it has independent custody. Root must initialize
+a NEW keyfile-blake2 repository only in its separately admitted preparation phase,
+using the pinned supported Borg CLI/private owner input. Initialization and key
+export are explicit operator operations, never automatic fallback in backup.
+
+The operational API accepts a SecureString from a private caller and a caller-
+owned readable encrypted key-artifact Stream. Neither is a command argument,
+environment secret value, receipt field or log. The wire adds a bounded private
+Y frame for the encrypted export (<=64KiB); worker validates its BORG_KEY/native-
+repository-ID header, stores it0600 in NEW transaction custody and imports into a
+NEW BORG_KEY_FILE under a fresh client environment. It verifies actual Borg JSON
+key mode and native repository ID before B (prepared acknowledgment); only then
+may data/E frames proceed. Missing/wrong key/phrase refuses; artifacts remain.
+No Google/Apple browser database is read. Those retained password managers and
+an offline recovery record are NOT an unattended credential broker. Schedules
+remain unchanged and cannot acquire credentials from this API by magic.
+
+Every actual archive is bound to its Borg native archive ID as well as explicit
+UUID/name and full image digest/length. Backup signs no output automatically: it
+writes a private, flushed controller archive receipt after matching Z and fresh
+source/registration/capacity checks. Root reviews/signs that receipt in namespace
+revkit-cold-archive-v1 before a separately signed restore policy may reference its
+exact SHA256, native archive ID, image bytes/hash and repository. Fresh restore
+imports the independently supplied key into NEW client state, verifies that exact
+archive and restores binary stdout into a CreateNew private DENSE NTFS file.
+Before K, the C# callback Flush(true)s, verifies held final handle/one link/non-
+sparse/non-reparse identity+length, independently rehashes EVERY target byte,
+checks live registry/cold state/reserve and only then admits commit. Neither K/Z
+nor an equal random-file hash proves VHD/ext4 validity or boot. Import remains a
+separate root-approved supported WSL import/import-in-place operation after this
+verified dense-file receipt; the source tool does not register anything itself.
+
+#### Actual inputs, capacity and reviewable invocation phases
+
+The signed policy is a deployment document, not a machine-specific source config.
+Its exact field contract is enforced in wsl_cold_admission.validate and
+Read-WslColdAdmission; root fills ONLY measured identities, hash pins, existing
+protected private paths, actual acceptance references and reviewed costs. No
+example here supplies synthetic capacities as actual measurements. Explicit
+repositoryAdditionalBytes must cover at least the entire cold container for a
+backup plus reviewed repository/index/segment overhead. Workspace, runtime,
+cache, security, key/client state, journals and partial growth need their own
+positive bound. Windows aggregates shared E restore+worker growth and reserve;
+Linux aggregates per st_dev. Live monitors cancel/refuse expiry, unexpected
+registration/source change, reserve/growth violations. These monitors are NOT
+filesystem quotas or a measured worst-case Borg resource bound. Full image bytes
+for repository AND dense target, all overhead and >=64GiB reserve remain mandatory;
+no sparse/compression/dedup savings. Prehash requires a full additional source read
+under the SAME lease; check --verify-data may read the entire repository/history.
+
+Site retirement/live-size observations are recorded in the private migration
+checkpoint, not immutable generic source configuration. They establish no cold
+bound or complete overhead allowance. Independent device attachment/UUID and
+physical capacity revalidation belong to the controller. Fresh observations must
+include new fixture/runtime/worker growth; a narrow provisional target margin
+closes no resource gate.
+
+Root-controlled phases after reviewing the NEW signed source/package (not f47
+acceptance carried forward):
+
+1. Read actual new Windows tests and selected-worker synthetic lifetime/pipe/
+   immutable-admission/exclusive-read proofs. Stage the source-addressed worker
+   and pinned system interpreter/Borg only through normal root review. No source
+   action starts the spare or touches the independent disk.
+2. Root identifies/attaches/mounts only the approved independent partition using
+   existing owners, verifies ext4 UUID/hardware, approves measured costs, and
+   separately initializes/exports a new encrypted keyfile repository via supported
+   Borg/private owner input. Preserve original/key custody and all last-good data.
+3. Root prepares/reviews/signs fresh deployment JSON + detached signature and its
+   existing public signer anchor, then stages identical bytes in protected Windows
+   and fixed Linux locations. Do not populate receipt fields with fake booleans.
+4. From a fresh normal Windows PowerShell host load the reviewed script. Its
+   parameters are -Phase prepare|backup|restore|reconcile, -PolicyPath,
+   -ReviewedPolicySha256, -AllowedSignersPath, -ReviewedSignersSha256 and explicit
+   -Execute. Without -Execute it verifies signed syntax but executes no worker.
+   prepare -Execute performs actual identity/capacity/immutable worker readiness;
+   it creates no repository/key and reads no source bytes.
+5. backup -Execute additionally requires private -Passphrase SecureString and
+   -IndependentKey Stream. Root first saves work/quiesces/stops the selected source
+   outside this tool. The signed policy binds operation/transaction/archive IDs;
+   no fallback export or implicit schedule is possible.
+6. Review/sign the resulting archive-receipt.json separately. A new restore policy
+   binds its hash/native archive ID. restore -Execute requires that private key/
+   phrase plus -BackupReceiptPath/-ReviewedBackupReceiptSha256. Source exclusive
+   read denial and exact dense-file durability/hash must succeed before commit.
+7. Root separately approves supported isolated import/boot/user/service acceptance.
+   E target shares source/protected hardware: isolated restore test, not third-
+   hardware redundancy. Full backup/restore/boot/GAP-301 remain unproved until real
+   receipts exist. Fixed64KiB filesystem candidate stays REJECTED.
+
+No source turn invokes any of these production commands or creates production
+keys/policies/repos, changes permissions/auth/security, mounts/attaches disks,
+stops/starts distros/services/apps or writes E/D records. Root's current f47 frozen
+package is untouched; new runtime changes require their own exact package/test
+review. CI/bundler/IDE work stays deferred, including required standard agent
+entries AND custom RevealUI Zed agent repair. Google Password Manager AND Apple
+Passwords remain owner-selected; no paid vault or credential scraping is added.
+
+Prepare-only bootstrap is signed operation=prepare. It may omit future acceptance
+hash values and native repository ID while the repository is absent; it still
+checks immutable runtime, actual mounted device identity and conservative capacity,
+creates nothing and cannot enter --serve. Windows permits the source to remain
+running for this read-only phase and reports ColdSourceProved=false. Backup/restore
+policies require all real acceptance hashes and native repository identity; a
+wire flag cannot promote a prepare manifest. This avoids inventing receipts just
+to perform actual read-only worker admission before provisioning/testing.
+
+After an unconfirmed operation, the driver reports its nonsecret retained-custody
+gate. Automatic retries are READ-ONLY --status, not repeated privileged stop or
+authentication attempts. Root resolves any reported permission/policy/transport
+gate through its normal workflow and can explicitly reconcile that SAME admitted
+transaction. Missing/denied cgroup or marker reads are never absence proof.

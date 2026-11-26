@@ -11,11 +11,47 @@ using System.Threading.Tasks;
 
 namespace Revealfleet.Backup {
     public static class ColdProtocol {
+        static readonly System.Collections.Concurrent.ConcurrentDictionary<string,Task> unsettled = new System.Collections.Concurrent.ConcurrentDictionary<string,Task>();
+        public static bool CallerIoSettled(string transaction) => !unsettled.TryGetValue(transaction,out var task) || task.IsCompleted;
+        public static async Task<string> RunControlAsync(string file,string[] args,byte[] input,int timeout) {
+            if(input.Length>1048576 || timeout<1 || timeout>30000) throw new ArgumentException("Control bounds");
+            var psi=new ProcessStartInfo(file) { UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true };
+            foreach(var arg in args) psi.ArgumentList.Add(arg);
+            using var child=Process.Start(psi);
+            using var stop=new CancellationTokenSource(timeout);
+            async Task<byte[]> Drain(Stream stream) {
+                using var output=new MemoryStream();var buffer=new byte[4096];int n;
+                try {
+                    while((n=await stream.ReadAsync(buffer,stop.Token).ConfigureAwait(false))!=0) {
+                        if(output.Length+n>65536) throw new InvalidDataException("Control output bound");
+                        output.Write(buffer,0,n);
+                    }
+                    return output.ToArray();
+                } catch { stop.Cancel();throw; }
+            }
+            async Task Send() {
+                try { await child.StandardInput.BaseStream.WriteAsync(input,stop.Token).ConfigureAwait(false);child.StandardInput.Close(); }
+                catch { stop.Cancel();throw; }
+            }
+            var send=Send();var stdout=Drain(child.StandardOutput.BaseStream);var stderr=Drain(child.StandardError.BaseStream);
+            var exit=child.WaitForExitAsync(stop.Token);var all=Task.WhenAll(send,stdout,stderr,exit);
+            try {
+                await all.WaitAsync(stop.Token).ConfigureAwait(false);
+                if(child.ExitCode!=0) throw new InvalidDataException("Control exit refused");
+                var data=await stdout.ConfigureAwait(false);
+                return (Array.IndexOf(data,(byte)0)>=0 ? new UnicodeEncoding(false,false,true).GetString(data) : Utf8.GetString(data)).TrimStart('\ufeff');
+            } catch {
+                stop.Cancel();using var shutdown=new CancellationTokenSource(5000);
+                try { if(!child.HasExited)child.Kill(true);await child.WaitForExitAsync(shutdown.Token).ConfigureAwait(false);try{await all.WaitAsync(shutdown.Token).ConfigureAwait(false);}catch when(all.IsCompleted){} }
+                catch { throw new IOException("Control command teardown unconfirmed"); }
+                throw new IOException("Control command refused");
+            }
+        }
         public const string Protocol = "revkit-cold-worker-v1";
         public const string Profile = "cold-vhd-container-v1";
         static readonly UTF8Encoding Utf8 = new UTF8Encoding(false, true);
-        static int Limit(byte kind) => kind == 'D' ? 65536 : kind == 'S' ? 1024 :
-            kind == 'H' || kind == 'C' ? 0 : "REKAZF".IndexOf((char)kind) >= 0 ? 16384 : -1;
+        static int Limit(byte kind) => kind == 'D' || kind == 'Y' ? 65536 : kind == 'S' ? 1024 :
+            kind == 'H' || kind == 'C' ? 0 : "REKAZFB".IndexOf((char)kind) >= 0 ? 16384 : -1;
         public static byte[] Encode(byte kind, byte[] payload) {
             int limit = Limit(kind);
             if (limit < 0 || payload.Length > limit) throw new InvalidDataException("Frame bound");
@@ -59,9 +95,12 @@ namespace Revealfleet.Backup {
                 !Hash(r["bindingSha256"].GetString()) || !Hash(r["sha256"].GetString()) || r["bytes"].GetInt64()<=0)
                 throw new InvalidDataException("Request binding");
         }
-        static void Receipt(byte[] data, Dictionary<string,JsonElement> request) {
-            var r=Object(data,"protocol","profile","transactionId","archiveId","phase","bindingSha256","bytes","sha256",
-                "toolSha256","linuxChildrenExited","savingsCreditBytes","productionAccepted");
+        static void Receipt(byte[] data, Dictionary<string,JsonElement> request, bool requireNative) {
+            var fields=new System.Collections.Generic.List<string>(new[]{"protocol","profile","transactionId","archiveId","phase","bindingSha256","bytes","sha256",
+                "toolSha256","linuxChildrenExited","savingsCreditBytes","productionAccepted"});
+            if(requireNative)fields.Add("nativeArchiveId");
+            var r=Object(data,fields.ToArray());
+            if(requireNative && !Hash(r["nativeArchiveId"].GetString()))throw new InvalidDataException("Native archive identity");
             foreach(var key in new[]{"protocol","profile","transactionId","archiveId","phase","bindingSha256","sha256"})
                 if(r[key].GetString()!=request[key].GetString()) throw new InvalidDataException("Receipt binding");
             if(r["bytes"].GetInt64()!=request["bytes"].GetInt64() || !r["linuxChildrenExited"].GetBoolean() ||
@@ -73,7 +112,7 @@ namespace Revealfleet.Backup {
         // Secure input is a private caller stream, not args, environment or diagnostic text.
         public static async Task<byte[]> ExchangeAsync(Process child, Stream source, Stream output, Stream secureInput,
             byte[] requestBytes, int timeoutMilliseconds, CancellationToken cancellation,
-            Func<CancellationToken,Task> verifyBeforeCommit=null) {
+            Func<CancellationToken,Task> verifyBeforeCommit=null, Stream independentKey=null) {
             ValidateRequest(requestBytes);
             var request=Object(requestBytes,"protocol","profile","transactionId","archiveId","phase","bindingSha256","bytes","sha256");
             if(timeoutMilliseconds<1 || timeoutMilliseconds>86400000 || child.StartInfo.UseShellExecute ||
@@ -90,7 +129,7 @@ namespace Revealfleet.Backup {
             async Task Send(byte kind, byte[] data, CancellationToken ct) {
                 var frame=Encode(kind,data); await writer.WaitAsync(ct).ConfigureAwait(false);
                 try { await input.WriteAsync(frame,ct).ConfigureAwait(false); await input.FlushAsync(ct).ConfigureAwait(false); }
-                finally { if(kind=='S') { CryptographicOperations.ZeroMemory(frame); CryptographicOperations.ZeroMemory(data); } writer.Release(); }
+                finally { if(kind=='S' || kind=='Y') { CryptographicOperations.ZeroMemory(frame); CryptographicOperations.ZeroMemory(data); } writer.Release(); }
             }
             async Task Diagnostics() {
                 var buffer=new byte[4096]; int n;
@@ -116,6 +155,26 @@ namespace Revealfleet.Backup {
                     await Send((byte)'S',secret.AsSpan(0,length).ToArray(),token).ConfigureAwait(false);
                 } finally { CryptographicOperations.ZeroMemory(secret); }
                 heartbeat=Heartbeat();
+                if(independentKey!=null) {
+                    var key=new byte[65537]; int used=0,read;
+                    try {
+                        while((read=await independentKey.ReadAsync(key.AsMemory(used),token).ConfigureAwait(false))!=0) {
+                            used+=read; if(used>65536) throw new InvalidDataException("Independent key bound");
+                        }
+                        if(used==0) throw new InvalidDataException("Independent key absent");
+                        await Send((byte)'Y',key.AsSpan(0,used).ToArray(),token).ConfigureAwait(false);
+                    } finally { CryptographicOperations.ZeroMemory(key); }
+                    var ready=await ReadAsync(incoming,token).ConfigureAwait(false);
+                    if(ready.Item1=='F') {
+                        var failure=Object(ready.Item2,"protocol","transactionId","bindingSha256","code","linuxChildrenExited","productionAccepted");
+                        workerAcknowledged=failure["protocol"].GetString()==Protocol && failure["transactionId"].GetString()==request["transactionId"].GetString() && failure["bindingSha256"].GetString()==request["bindingSha256"].GetString() && failure["linuxChildrenExited"].GetBoolean();
+                        throw new InvalidDataException("Independent key preparation refused");
+                    }
+                    if(ready.Item1!='B') throw new InvalidDataException("Independent key preparation refused");
+                    var binding=Object(ready.Item2,"protocol","transactionId","bindingSha256");
+                    foreach(var name in new[]{"protocol","transactionId","bindingSha256"})
+                        if(binding[name].GetString()!=request[name].GetString()) throw new InvalidDataException("Prepared binding");
+                }
                 async Task Produce() {
                     using var hash=IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
                     var buffer=new byte[65536]; long count=0; int read;
@@ -146,7 +205,7 @@ namespace Revealfleet.Backup {
                             hash.AppendData(frame.Item2); await output.WriteAsync(frame.Item2,token).ConfigureAwait(false); continue;
                         }
                         if(frame.Item1=='A' && candidate==null) {
-                            Receipt(frame.Item2,request);
+                            Receipt(frame.Item2,request,independentKey!=null);
                             if(count!=request["bytes"].GetInt64() || Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant()!=request["sha256"].GetString())
                                 throw new InvalidDataException("Readback count/hash");
                             await produce.ConfigureAwait(false); await output.FlushAsync(token).ConfigureAwait(false);
@@ -155,7 +214,7 @@ namespace Revealfleet.Backup {
                             await Send((byte)'K',JsonSerializer.SerializeToUtf8Bytes(new { receiptSha256=Digest(candidate) }),token).ConfigureAwait(false); continue;
                         }
                         if(frame.Item1=='Z' && candidate!=null) {
-                            Receipt(frame.Item2,request);
+                            Receipt(frame.Item2,request,independentKey!=null);
                             if(!frame.Item2.AsSpan().SequenceEqual(candidate)) throw new InvalidDataException("Final receipt changed");
                             workerAcknowledged=true;
                             // Final acknowledgment + EOF + process exit are all necessary.
@@ -201,7 +260,7 @@ namespace Revealfleet.Backup {
                     try { await child.WaitForExitAsync(shutdown.Token).ConfigureAwait(false); }
                     catch { workerAcknowledged=false; }
                 }
-                if(!settled) throw new InvalidDataException("Cold transaction rejected; stream tasks unsettled; retain caller custody");
+                if(!settled) { unsettled[request["transactionId"].GetString()]=io; throw new InvalidDataException("Cold transaction rejected; stream tasks unsettled; retain caller custody"); }
                 // A killed wsl.exe is NOT an acknowledgment from Linux. Closing the pipe
                 // triggers worker EOF/idle watchdog, but missing F/Z remains unconfirmed.
                 throw new InvalidDataException(workerAcknowledged ?

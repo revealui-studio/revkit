@@ -1,6 +1,6 @@
 # Test only: Linux .NET-to-Python integration. Never a production dependency.
 #Requires -Version 7.0
-param([Parameter(Mandatory)][string]$FixtureRoot,[Parameter(Mandatory)][string]$SourceRoot,[ValidateSet('roundtrip','cancel','timeout')][string]$Mode='roundtrip')
+param([Parameter(Mandatory)][string]$FixtureRoot,[Parameter(Mandatory)][string]$SourceRoot,[ValidateSet('roundtrip','cancel','timeout')][string]$Mode='roundtrip',[switch]$Keyfile)
 $ErrorActionPreference='Stop'
 if(-not $IsLinux){throw 'This receipt covers native Linux only.'}
 . (Join-Path $SourceRoot 'scripts/lib/WslBackup.ps1')
@@ -14,6 +14,7 @@ $child=[Diagnostics.Process]::new();$child.StartInfo=$psi
 $source=[IO.File]::OpenRead((Join-Path $FixtureRoot 'source.bin'))
 $secret=[IO.File]::OpenRead((Join-Path $FixtureRoot 'secure-input'))
 $output=[IO.File]::Open((Join-Path $FixtureRoot 'partial.bin'),[IO.FileMode]::CreateNew,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read)
+$key=if($Keyfile){[IO.File]::OpenRead((Join-Path $FixtureRoot 'key-artifact'))}else{$null}
 $request=[IO.File]::ReadAllBytes((Join-Path $FixtureRoot 'request.json'))
 Add-Type -TypeDefinition @'
 using System;
@@ -43,7 +44,7 @@ try {
     $deadline=if($Mode -eq 'timeout'){3000}else{30000}
     $incoming=if($Mode -eq 'roundtrip'){$source}else{[ColdBlockedTestSource]::new($source,$cts,($Mode -eq 'cancel'))}
     $failure=$null;$receipt=$null
-    try {$receipt=[Revealfleet.Backup.ColdProtocol]::ExchangeAsync($child,$incoming,$output,$secret,$request,$deadline,$cts.Token).GetAwaiter().GetResult()} catch {$failure=$_.Exception.GetBaseException().Message}
+    try {$receipt=[Revealfleet.Backup.ColdProtocol]::ExchangeAsync($child,$incoming,$output,$secret,$request,$deadline,$cts.Token,$null,$key).GetAwaiter().GetResult()} catch {$failure=$_.Exception.GetBaseException().Message}
     if(-not $child.HasExited -or -not $source.CanRead -or -not $output.CanWrite){throw 'Lifetime/custody failed before cleanup'}
     if($Mode -ne 'roundtrip'){
         if($failure -ne 'Cold transaction rejected; worker acknowledged teardown; retain partial custody'){throw 'Expected actual Linux teardown ACK before cleanup'}
@@ -58,5 +59,5 @@ try {
 } finally {
     # Defensive only; success assertions above must already have proved exit/custody.
     if(-not $child.HasExited){$child.Kill($true);[void]$child.WaitForExit(5000)}
-    $source.Dispose();$secret.Dispose();$output.Dispose();$child.Dispose();$cts.Dispose()
+    $source.Dispose();$secret.Dispose();$output.Dispose();$child.Dispose();$cts.Dispose();if($null -ne $key){$key.Dispose()}
 }

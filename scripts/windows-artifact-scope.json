@@ -31,6 +31,8 @@
     "scripts/lib/WslColdProtocol.cs",
     "scripts/lib/wsl_cold_container.py",
     "scripts/wsl-cold-worker.py",
-    "scripts/lib/WslColdSourceLease.cs"
+    "scripts/lib/WslColdSourceLease.cs",
+    "scripts/lib/wsl_cold_admission.py",
+    "scripts/Invoke-WslColdContainer.ps1"
   ]
 }

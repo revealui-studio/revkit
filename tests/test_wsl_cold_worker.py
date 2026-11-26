@@ -152,6 +152,9 @@ class LifetimeFaultTests(unittest.TestCase):
                 child=real_popen([sys.executable,'-I','-c','import time; time.sleep(20)'],
                     stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
                 children.append(child)
+                if fault=='cgroup':
+                    session.deployment=mock.Mock()
+                    session.deployment.children_absent.side_effect=PermissionError('unit proof denied')
                 if fault=='wait': child.wait=mock.Mock(side_effect=OSError('injected wait failure'))
                 return child
             real_blocking=cold.os.set_blocking
@@ -163,7 +166,7 @@ class LifetimeFaultTests(unittest.TestCase):
             stack=__import__('contextlib').ExitStack()
             stack.enter_context(mock.patch.object(session,'tool',return_value=None))
             stack.enter_context(mock.patch.object(cold.subprocess,'Popen',side_effect=launch))
-            if fault in ('pipe','kill','wait','reap'):
+            if fault in ('pipe','kill','wait','reap','cgroup'):
                 stack.enter_context(mock.patch.object(cold.os,'set_blocking',side_effect=blocking))
             if fault=='selector': stack.enter_context(mock.patch.object(cold.selectors,'DefaultSelector',side_effect=OSError('injected selector setup')))
             if fault=='register':
@@ -209,6 +212,7 @@ class LifetimeFaultTests(unittest.TestCase):
     def test_kill_refusal_never_claims_child_gone(self): self.exercise('kill',False)
     def test_wait_failure_never_claims_child_gone(self): self.exercise('wait',False)
     def test_reap_failure_never_claims_child_gone(self): self.exercise('reap',False)
+    def test_unit_proof_failure_never_claims_child_gone(self): self.exercise('cgroup',False)
 
 
 class RealWorkerTests(unittest.TestCase):
@@ -358,7 +362,7 @@ class RealWorkerTests(unittest.TestCase):
         self.send(b'E',{'bytes':0,'sha256':hashlib.sha256(b'').hexdigest()})
         self.complete(data,restored)
 
-    def dotnet_exchange(self, mode):
+    def dotnet_exchange(self, mode, keyfile=False):
         # The setUp worker has no request: close it and prove it exits before the
         # separate .NET-to-worker process test starts. No real distribution is used.
         self.a.shutdown(socket.SHUT_WR)
@@ -370,12 +374,20 @@ class RealWorkerTests(unittest.TestCase):
         (self.case/'source.bin').write_bytes(data)
         self.fixture.private_secret(self.case/'secure-input',self.secret)
         self.fixture.write_json(self.case/'request.json',value)
+        if keyfile:
+            self.repository=self.case/'keyfile-repository'
+            original=self.case/'keyfile-client';original.mkdir(mode=0o700)
+            env=self.fixture.private_env(original);env['BORG_KEY_FILE']=str(original/'key')
+            self.fixture.recovery_borg(self.binary,['init','--encryption=keyfile-blake2',str(self.repository)],cwd=self.case,env=env,passphrase=self.phrase)
+            self.fixture.recovery_borg(self.binary,['key','export',str(self.repository),str(self.case/'key-artifact')],cwd=self.case,env=env,passphrase=self.phrase)
+            (self.case/'key-artifact').chmod(0o600);original.rename(self.case/'original-keyfile-client-unavailable')
         context=dict(testKind='new-private-borg-protocol-test-v1',binary=str(self.binary),
                      repository=str(self.repository),state=str(self.state),binding='a'*64)
+        if keyfile:context['keyCustody']='keyfile-blake2-independent-v1'
         self.fixture.write_json(self.case/'synthetic-worker-context.json',context)
         (self.case/'synthetic-worker-context.json').chmod(0o600)
         result=subprocess.run(['/usr/bin/pwsh','-NoProfile','-NonInteractive','-File',
-            str(ROOT/'tests/helpers/Invoke-WslColdWorkerNativeTest.ps1'),'-FixtureRoot',str(self.case),'-SourceRoot',str(ROOT),'-Mode',mode],
+            str(ROOT/'tests/helpers/Invoke-WslColdWorkerNativeTest.ps1'),'-FixtureRoot',str(self.case),'-SourceRoot',str(ROOT),'-Mode',mode,*(['-Keyfile'] if keyfile else [])],
             capture_output=True,timeout=40)
         self.assertEqual(result.returncode,0,result.stderr.decode(errors='replace'))
         if mode != 'roundtrip':
@@ -391,11 +403,93 @@ class RealWorkerTests(unittest.TestCase):
     def test_dotnet_binary_protocol_to_actual_native_worker(self):
         self.dotnet_exchange('roundtrip')
 
+    def test_dotnet_keyfile_binary_protocol_to_actual_native_worker(self):
+        self.dotnet_exchange('roundtrip',True)
+
     def test_dotnet_cancellation_receives_linux_ack_before_cleanup(self):
         self.dotnet_exchange('cancel')
 
     def test_dotnet_timeout_receives_linux_ack_before_cleanup(self):
         self.dotnet_exchange('timeout')
+
+    def test_real_keyfile_import_fresh_client_and_native_archive_binding(self):
+        # Close the unused legacy fixture endpoint BEFORE the separate keyfile test.
+        self.a.shutdown(socket.SHUT_WR);kind,payload=read_frame(self.stream)
+        self.assertEqual(kind,b'F');self.thread.join(3);self.assertFalse(self.thread.is_alive())
+        self.a.close();self.stream.close()
+        repository=self.case/'keyfile-repository'
+        client=self.case/'original-keyfile-client';client.mkdir(mode=0o700)
+        env=self.fixture.private_env(client);env['BORG_KEY_FILE']=str(client/'private-key')
+        self.fixture.recovery_borg(self.binary,['init','--encryption=keyfile-blake2',str(repository)],cwd=self.case,env=env,passphrase=self.phrase)
+        key=self.case/'independent-key-artifact'
+        self.fixture.recovery_borg(self.binary,['key','export',str(repository),str(key)],cwd=self.case,env=env,passphrase=self.phrase)
+        key.chmod(0o600);client.rename(self.case/'original-client-unavailable')
+        fresh=self.case/'keyfile-state';fresh.mkdir(mode=0o700)
+        fresh_env=self.fixture.private_env(fresh)
+        self.fixture.recovery_borg(self.binary,['list',str(repository)],cwd=self.case,env=fresh_env,passphrase=self.phrase,expected_exit=42)
+        import configparser,fcntl
+        config=configparser.ConfigParser();config.read(repository/'config');native_id=config['repository']['id']
+        testcase=self
+        class SyntheticDeployment:
+            # Test-internal engine seam; NEVER a production CLI/admission flag.
+            policy={'repository':{'id':native_id},'controller':{'restore':{'nativeArchiveId':''}}}
+            def begin(self,request): self.check()
+            def custody(self):
+                fd=os.open(testcase.case/'custody.lock',os.O_CREAT|os.O_RDWR,0o600)
+                fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB);self.lock_fd=fd;return fd
+            def check(self):
+                self.assertions=True
+                if hasattr(self,'lock_fd'):
+                    probe=os.open(testcase.case/'custody.lock',os.O_RDWR)
+                    try:
+                        with testcase.assertRaises(BlockingIOError):fcntl.flock(probe,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                    finally:os.close(probe)
+                testcase.assertEqual(config['repository']['id'],native_id)
+            def reserve(self): pass
+        self.state=fresh;self.session=cold.Session(self.binary,repository,fresh,'a'*64,timeout=25,idle=3,deployment=SyntheticDeployment())
+        self.a,self.b=socket.socketpair();self.a.settimeout(10);self.stream=self.a.makefile('rb',buffering=0)
+        self.failure=None
+        def worker():
+            try:self.session.serve(self.b.fileno(),self.b.fileno())
+            except cold.Refused as exc:self.failure=str(exc)
+            finally:self.b.close()
+        self.thread=threading.Thread(target=worker,daemon=True);self.thread.start()
+        data=bytes(range(256))*4096+b'keyfile-independent-end'
+        value=self.start(data);self.send(b'Y',key.read_bytes())
+        ready,prepared=read_frame(self.stream);self.assertEqual(ready,b'B')
+        for offset in range(0,len(data),cold.MAX_DATA):self.send(b'D',data[offset:offset+cold.MAX_DATA])
+        self.send(b'E',{'bytes':len(data),'sha256':value['sha256']})
+        receipt=self.complete(data,value)
+        self.assertTrue(cold.sha(receipt['nativeArchiveId']))
+        imported=fresh/value['transactionId']/'imported-key'
+        self.assertTrue(imported.is_file())
+        config_after=configparser.ConfigParser();config_after.read(repository/'config')
+        wrong=self.case/'keyfile-wrong-input'
+        self.fixture.private_secret(wrong,secrets.token_hex(32).encode()+b'\n')
+        (self.case/'negative-client').mkdir(mode=0o700)
+        negative_env=self.fixture.private_env(self.case/'negative-client')
+        negative_env['BORG_KEY_FILE']=str(imported)
+        self.fixture.recovery_borg(self.binary,['list',str(repository)],cwd=self.case,env=negative_env,passphrase=wrong,expected_exit=52)
+        self.assertFalse(config_after.has_option('repository','key'))
+        self.assertEqual(config_after['repository']['id'],native_id)
+        self.summary.append({'test':self.id(),'keyfileFreshClientMissingKeyExit':42,'nativeArchiveId':receipt['nativeArchiveId'],'repositoryKeyNotOverwritten':True,'actualSystemdAdmissionAccepted':False})
+        self.heartbeat_stop.set();self.heartbeat.join(2);self.a.close();self.stream.close()
+        self.heartbeat_stop=threading.Event()
+        restore_state=self.case/'keyfile-restore-state';restore_state.mkdir(mode=0o700)
+        deployment=SyntheticDeployment()
+        deployment.policy=json.loads(json.dumps(deployment.policy));deployment.policy['controller']['restore']['nativeArchiveId']=receipt['nativeArchiveId']
+        self.state=restore_state
+        self.session=cold.Session(self.binary,repository,restore_state,'a'*64,timeout=25,idle=3,deployment=deployment)
+        self.a,self.b=socket.socketpair();self.a.settimeout(10);self.stream=self.a.makefile('rb',buffering=0)
+        self.failure=None
+        self.thread=threading.Thread(target=worker,daemon=True);self.thread.start()
+        restored=self.start(data,req(data,phase='restore',archive=value['archiveId']));self.send(b'Y',key.read_bytes())
+        self.assertEqual(read_frame(self.stream)[0],b'B')
+        self.send(b'E',{'bytes':0,'sha256':hashlib.sha256(b'').hexdigest()})
+        final=self.complete(data,restored)
+        self.assertEqual(final['nativeArchiveId'],receipt['nativeArchiveId'])
+        self.summary.append({'keyfileActualFreshRestore':True,'nativeArchiveId':final['nativeArchiveId'],'originalClientPathAbsent':not client.exists(),'continuousCustodyLockObserved':True})
+
 
     def test_partial_source_cancel_acknowledges_real_linux_exit_and_preserves_journal(self):
         self.start(b'x'*100000)
