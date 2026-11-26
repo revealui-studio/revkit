@@ -94,15 +94,15 @@ Describe 'Standard creator inheritance does not authorize another data reader' {
 
 Describe 'Exact filesystem capacity domains on MBR and GPT' {
     BeforeEach {
-        $script:disk=[pscustomobject]@{PartitionStyle='MBR';SerialNumber='synthetic serial  ';FriendlyName='synthetic USB';Size=2000000000L;Signature=389383;LogicalSectorSize=512;PhysicalSectorSize=4096}
+        $script:disk=[pscustomobject]@{PartitionStyle='MBR';SerialNumber='synthetic serial  ';FriendlyName='synthetic USB';Size=2000000000L;Signature=123456789;LogicalSectorSize=512;PhysicalSectorSize=4096}
         $script:part=[pscustomobject]@{Offset=1048576L;Size=1900000000L;MbrType=7}
-        $script:vol=[pscustomobject]@{UniqueId='\\?\Volume{0005f107-0000-0000-0000-100000000000}\';AllocationUnitSize=4096;FileSystem='NTFS'}
+        $script:vol=[pscustomobject]@{UniqueId='\\?\Volume{88888888-8888-4888-8888-888888888888}\';AllocationUnitSize=4096;FileSystem='NTFS'}
     }
     It 'accepts a fully observed MBR disk without a GPT GUID and shares the volume domain' {
         $expected=Get-WslColdVolumeIdentity $disk $part $vol
-        $expected.diskId|Should -Be 389383
+        $expected.diskId|Should -Be 123456789
         $expected.Contains('partitionUuid')|Should -BeFalse
-        (Assert-WslColdVolumeObservation $disk $part $vol $expected)|Should -Be '0005f107-0000-0000-0000-100000000000'
+        (Assert-WslColdVolumeObservation $disk $part $vol $expected)|Should -Be '88888888-8888-4888-8888-888888888888'
         $vol|Add-Member DriveLetter 'Z'
         (Assert-WslColdVolumeObservation $disk $part $vol $expected)|Should -Be $expected.volumeUuid
     }

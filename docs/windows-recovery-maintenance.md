@@ -303,3 +303,225 @@ The plan/apply primitive itself remains actual-Windows unaccepted. Stage changed
 cold transport/worker/disk suites from the SAME Git archive for host acceptance.
 No real disk is needed for those synthetic tests. Root must NOT repeat the
 completed temporary bare-attachment helper merely to obtain another receipt.
+
+## Opt-in volume-root custody transaction (source proposal, Windows acceptance pending)
+
+`Invoke-WslColdVolumeCustody.ps1` now owns an executable Plan/Apply/Rollback path
+through `lib/WslColdVolumeCustody.ps1` and the WslBackup native custody primitives.
+It does not activate a worker/controller, read any VHD, initialize credentials or
+operate on a disk. The proposed scope is exactly OWNER+DACL on one positively
+identified **NTFS volume root**, then exclusively created direct-root namespaces.
+Existing AI paths, VHDs, files and child/grandchild descriptors are not traversed
+or rewritten. Removing parent DELETE_CHILD intentionally removes the root-based
+deletion fallback for EXISTING immediate children too. Their direct DACL-derived
+grants/templates remain, but effective access is not universally identical.
+An existing child with its own DELETE still permits deletion; a protected child
+whose only deletion authority was the parent loses that fallback. The plan
+explicitly exposes this effect for owner review, and the elevated synthetic
+case verifies both controls before/after while comparing the unchanged child ACL. Unchanged old descendants retain their existing public/private
+permissions; this is NOT physical-drive-wide privacy or a retrofit of old data.
+
+This replaces the earlier *missing code* boundary with a concrete review target.
+It is not acceptance of that target on a real host. Before owner confirmation or
+UAC, the controller must review the complete plan and run the new Windows
+synthetic and explicitly elevated subsets. No source test authorizes a real ACL
+change. Keep ProgramFiles authority provisioning as a separate unactivated
+option; useful authority/journal/restore state may live on the selected E volume
+only AFTER this transaction and the normal source/file/capacity/lifetime gates
+are accepted.
+
+### Descriptor transformation and propagation boundary
+
+[Microsoft SetSecurityInfo](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo)
+documents default child propagation and the exception for a handle opened with
+MAXIMUM_ALLOWED. `ColdDirectorySecurityLease` uses CreateFileW with exactly that
+access mask, OPEN_EXISTING/BACKUP_SEMANTICS/OPEN_REPARSE_POINT and no delete sharing.
+It verifies NTFS, canonical final handle path, no alias/reparse, volume serial,
+file index and unchanged attributes; it reopens the same name to detect detached
+or substituted namespace resolution. SetSecurityInfo receives that SAME handle,
+OWNER+DACL only, with NO protected/unprotected transition flags. Target group/
+control changes refuse before mutation; the original protection state is preserved. Group and SACL are never
+selected; attributes are never set. SACL bytes are not read or claimed verified.
+
+The before record retains original descriptor bytes, exact owner SID and raw
+DACL bytes, group, DACL-related control flags and a deterministic snapshot SHA256.
+Unknown control forms, null DACLs, deny/callback/object/inherited root ACEs,
+no-propagate flags, unmapped generic masks and unknown principals refuse. This
+initial grammar supports standard allow ACEs for Everyone, CREATOR OWNER,
+SYSTEM, Administrators and the exact current user. An unsupported real descriptor
+requires source review; there is no automatic normalization or permissive fallback.
+
+The new owner is Administrators. SYSTEM/Admin get root-only full grants. An
+outside effective grant retains root-only list/read/traverse/READ_CONTROL/sync
+and file+directory creation (mask0x1200af), removing DELETE, DELETE_CHILD,
+WRITE_DAC, WRITE_OWNER and unneeded root metadata-write rights. Any inheritable
+portion stays as an otherwise unchanged inherit-only template, in its original
+template order. CREATOR OWNER stays a generic inherit-only template, even if the
+old literal ACE was effective+inheritable. Its child-owner mapping is preserved;
+the new concrete Admin owner receives its own effective grant. No blanket Deny
+Everyone is added. See [ACE inheritance](https://learn.microsoft.com/en-us/windows/win32/secauthz/ace-inheritance-rules)
+and [distinct creation/deletion rights](https://learn.microsoft.com/en-us/windows/win32/fileio/file-access-rights-constants).
+
+Windows tests intentionally alter a child template in a SEPARATE synthetic case:
+existing child/grandchild descriptors must stay byte-equivalent, while a NEW
+child must receive the altered template. This discriminates actual no-propagation
+from a merely equivalent inheritable-rights calculation. The real transformation
+also checks unchanged preexisting protected/nonprotected children, owners,
+creation/write timestamps, attributes and file hashes; it does not claim an
+unmeasured census of all NTFS metadata forms or SACLs.
+
+`Assert-WslColdAclGrants` now treats **all** inherit-only ACEs as ineffective on
+an ancestor. The leaf remains strict: untrusted inheritance templates which
+could expose future private files refuse. CREATOR OWNER is allowed only under
+the existing trusted-creator reasoning: untrusted effective/template leaf writes
+are independently rejected. A protected new private directory excludes public
+inheritance; an old unprotected public child continues to fail private admission.
+Code paths remain admin-owned and unwritable; private data still excludes outside
+readers. This is not a general relaxation of leaf privacy or code immutability.
+
+### Reviewed policy and read-only plan
+
+The strict policy has exactly: `schemaVersion:1`, `kind:cold-volume-custody-v1`,
+`volumeRoot`, `hardware`, `namespace`, `trustedUserSid`, `evidenceDirectory`,
+`evidenceHardware`, `sourceRoot`, `sourceManifestSha256`,
+`namespaceAdditionalBytes`, `evidenceAdditionalBytes`, `reserveBytes`. Hardware objects use the
+existing exact MBR/GPT identity contract. `volumeRoot` is one canonical uppercase
+local drive root, never a subtree, UNC, extended alias, mountpoint or reparse.
+Namespace is a fresh literal name (letters/digits/underscore/hyphen), bounded64;
+reserved device names/collisions refuse. No site identity/account is in source. Positive reviewed namespace/evidence
+growth allowances and >=64GiB reserve must fit each fresh actual filesystem.
+Namespace allowance exceeds full source+manifest bytes; metadata costs are an
+explicit reviewed allowance, not a fabricated worst-case bound or savings ratio.
+Observed growth/free reserves are rechecked before mutation and before completion;
+these are refusal monitors, not filesystem quotas. This small transaction
+admission does not accept full backup/restore capacity.
+
+The controller compares the hardware against independent retained evidence, then
+supplies actual observations. Plan binds volume/root handle identity, exact
+before/after snapshots, Windows user SID, independent evidence handle/descriptor,
+complete source closure/manifest, namespace, phase intent and <=1h expiry. The
+actual current descriptor is compared again immediately before mutation. The
+independently reviewed **saved plan's raw SHA256**, supplied at apply, is authority;
+a hash printed in self-described data is not. There is no test flag or unsigned
+acceptance boolean. No sampled boolean establishes custody.
+
+Root ACL setters have no kernel compare-and-swap for a descriptor. The retained
+handle and fresh checks bind the object, but cannot exclude a concurrent trusted
+administrator changing its ACL between comparison and SetSecurityInfo. Controller
+review must quiesce other security writers for this short transaction; no claim
+is made that a cooperative evidence-file lock blocks arbitrary administrators.
+After repair, ordinary callers have no root security mutation/deletion authority.
+
+### Independent evidence, privilege preflight and bootstrap
+
+Apply/Rollback require elevated Windows AND successful scoped SeRestorePrivilege
+BEFORE root mutation. The privilege is enabled on a duplicate impersonation
+token for the synchronous thread only; an existing impersonation context refuses.
+No account/process-wide privilege, security policy or trust setting is changed.
+The original thread context is restored. [Microsoft privilege semantics](https://learn.microsoft.com/en-us/windows/win32/secauthz/privilege-constants)
+allow an arbitrary valid owner SID with SeRestorePrivilege. The transaction
+actually assigns the ORIGINAL SID (including an unresolved SID) to a NEW private
+probe and restores it before touching the volume root. Missing privilege, API or
+control-flag preservation fails there first, retaining the probe evidence.
+
+Evidence must already be protected/private on separately identified hardware and
+filesystem, outside the root being repaired. It is independently reviewed, not
+bootstrapped by that unsafe root or a self-described receipt. A single held file
+lock serializes this owner at that evidence destination; no lock breaking/deletion.
+Each attempt is a NEW UUID. The reviewed plan, exact before and proposed target,
+pending record, and owner-preflight records are CreateNew/Flush(true) BEFORE the
+real root change. Actual after/completion or best-effort failure snapshots follow.
+An evidence write failure prevents progression; attempts and partial namespaces
+are never automatically deleted or hidden as success.
+
+Apply requires executing the complete hash-bound package from protected admin
+code ancestry. A user-owned E test package cannot bootstrap its own authority.
+If no independent protected code/evidence anchor exists, the optional maintained
+ProgramFiles provisioner can create its NEW reviewed code namespace and a NEW
+private `review-evidence` child (SYSTEM/Admin full, current user read/execute).
+This is a small explicit bootstrap/audit exception, not a C VHD/repository/cache/
+production-state move. Root must review its package-size/ACL plan first; this
+source does not install it. After root custody is accepted, the new direct-root
+namespace provides useful E authority/data without altering the old AI chain.
+
+### Apply, partial failure and rollback
+
+Apply creates the selected direct-root namespace with an admin-protected public
+read/execute descriptor AT exclusive creation. It creates separate `authority`
+and `private` children. Authority contains an exact-hash source-addressed code
+release, including the package source manifest; the private child grants only
+SYSTEM/Admin and the explicit trusted user. Directory and file descriptors are
+supplied to exclusive Win32 creation, not patched after public creation. Only
+directories created by the current call may be reused while copying the reviewed
+closure. Every code file is flushed and rehashed; existing targets/reparse/collision
+refuse. Source/file/cold/capacity/lifetime guards still run for later controller
+operations. The repair supplies no backup/restore/worker activation capability.
+
+A failed owner/DACL call, exact-control/byte mismatch, namespace collision/copy
+failure or evidence error retains all state. It does NOT auto-rollback; that could
+overwrite another owner's later edit. Rollback restores ONLY the original root
+OWNER+DACL, on the same actual hardware/root, when the current owner/DACL/group/
+control snapshot equals the exact planned accepted AFTER state. Later drift or
+an unexpected partial descriptor refuses. No created namespace or evidence is
+removed or rewritten; reverting the root also reopens its historical ancestor
+risk, so new controller admission must refuse until custody is reaccepted.
+Do not roll back while any controller depends on that namespace.
+
+After the review expires, `PlanRollback` may emit a NEW rollback-only plan from
+the original reviewed record, only if root identity and exact after hash still
+match. Review/save/hash that new output independently. It cannot authorize Apply.
+No ordinary source permission is missing; actual Windows acceptance and root's
+reviewed mutation/outage coordination are the remaining operational prerequisites.
+
+Interfaces (review placeholders, never run by the native source lane):
+
+```powershell
+# Plan only; stdout saved as exact JSON, independently reviewed and hashed.
+pwsh -NoLogo -NoProfile -NonInteractive -File PACKAGE\scripts\Invoke-WslColdVolumeCustody.ps1 -PolicyPath PRIVATE_POLICY
+# Later, ONLY after accepted Windows tests and owner/root review:
+pwsh -NoLogo -NoProfile -NonInteractive -File PROTECTED_PACKAGE\scripts\Invoke-WslColdVolumeCustody.ps1 -Phase Apply -PlanPath REVIEWED_PLAN -ReviewedPlanSha256 EXACT_SHA256
+# Root-only descriptor rollback; never adopt later edits or delete namespaces:
+pwsh -NoLogo -NoProfile -NonInteractive -File PROTECTED_PACKAGE\scripts\Invoke-WslColdVolumeCustody.ps1 -Phase Rollback -PlanPath REVIEWED_PLAN -ReviewedPlanSha256 EXACT_SHA256
+# If stale, obtain NEW rollback-only review data first:
+pwsh -NoLogo -NoProfile -NonInteractive -File PROTECTED_PACKAGE\scripts\Invoke-WslColdVolumeCustody.ps1 -Phase PlanRollback -PlanPath ORIGINAL_PLAN -ReviewedPlanSha256 ORIGINAL_SHA256
+```
+
+Stage the new `WslColdVolumeCustody.Tests.ps1` AND its tracked `.Fixture.cs`
+alongside the same signed package and existing Windows suites. Run a fresh
+noninteractive PowerShell. First exclude tag `Elevated` for ordinary synthetic
+acceptance; then run `Elevated` in a separately reviewed elevated process. Those
+cases transition a synthetic root to Admin, restore an unresolved synthetic SID,
+and use a duplicate filtered ordinary token to prove dangerous root access and
+protected namespace substitution are denied while real ordinary file/directory
+creation works. No account/group is modified. Tests never select a real volume
+root; production rejects their private subtree at its public entrypoint. Native
+model tests and Windows/elevated skips are explicit evidence gaps, never green
+acceptance. SACL auditing and real-volume application are separate unproved facts.
+
+For retained synthetic acceptance, pass `RetainedFixtureParent` to the Pester
+container (an existing protected private non-root directory outside Git). Each
+NEW UUID tree and its adjacent initial/final nonsecret descriptor/tree receipts
+stay there even on failure. No previous fixture is adopted. Omit it only for
+ephemeral TestDrive source checks; those do not retain Windows custody evidence.
+
+```powershell
+$c = New-PesterConfiguration
+$c.Run.Container = New-PesterContainer -Path PACKAGE\tests\powershell\WslColdVolumeCustody.Tests.ps1 -Data @{ RetainedFixtureParent = PRIVATE_SYNTHETIC_PARENT }
+$c.Filter.ExcludeTag = @('Elevated')
+$c.TestResult.Enabled = $true
+$c.TestResult.OutputPath = NEW_ORDINARY_XML
+$c.Run.PassThru = $true
+Invoke-Pester -Configuration $c
+# Separate explicitly elevated process, SAME immutable source and retained parent:
+# use $c.Filter.Tag = @('Elevated'); do not set ExcludeTag, use NEW_ELEVATED_XML.
+```
+
+The elevated namespace-installation/collision case additionally requires the
+retained parent to pass **code-authority** ancestor validation (admin-protected,
+not user-owned Temp). It exercises actual exclusive descriptor creation, nested
+file copy/hash, public authority/private data guards, partial-copy retention and
+root-only rollback without deleting new namespaces. Missing such a separately
+reviewed synthetic anchor is an explicit skip/gap. The test calls the owning
+inner namespace primitive; it does not bypass production root/hardware admission
+or claim real-volume Apply acceptance. Running without RetainedFixtureParent
+cannot close this case. Failure artifacts remain in the new UUID fixture tree.

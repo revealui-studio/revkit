@@ -237,6 +237,7 @@ function Install-RevkitColdAuthority {
         SourceManifestSha256=$ExpectedSourceManifestSha256;Files=$files.Count;PayloadBytes=$bytes;
         Parent='%ProgramFiles%';Namespace='RevKitCold';Release=$commit;
         Owner='S-1-5-32-544';WritePrincipals=@('S-1-5-18','S-1-5-32-544');OtherRead=$true;
+        PrivateReviewEvidence='NEW RevKitCold/review-evidence; audit/rollback only, no production data';
         ExistingPathsChanged=@();ProfileChanged=$false;PolicyInstalled=$false;Activated=$false;Applied=$false;
         Rollback='Retain partial new namespace. After review and no running controller, remove only this newly created namespace; no prior ACL/settings to restore.'}
     if(-not $Apply){return [pscustomobject]$plan}
@@ -283,6 +284,17 @@ function Install-RevkitColdAuthority {
     Set-ColdCreatedOwner (Join-Path $release 'artifact-source-manifest.json')
     [void](Assert-WslColdProtectedPath (Join-Path $release 'artifact-source-manifest.json'))
     if((Get-FileHash -LiteralPath (Join-Path $release 'artifact-source-manifest.json')).Hash.ToLowerInvariant() -cne $ExpectedSourceManifestSha256){throw 'Authority manifest changed; partial namespace retained.'}
+    $private=[Security.AccessControl.DirectorySecurity]::new()
+    $private.SetAccessRuleProtection($true,$false)
+    $private.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
+    foreach($sid in @('S-1-5-18','S-1-5-32-544')){
+        $private.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid),'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
+    }
+    $private.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.WindowsIdentity]::GetCurrent().User,'ReadAndExecute','ContainerInherit,ObjectInherit','None','Allow'))
+    $evidence=Join-Path $root 'review-evidence'
+    [Revealfleet.Backup.ColdSourceLease]::CreateProtectedDirectory($evidence,$private.GetSecurityDescriptorBinaryForm())
+    [void](Assert-WslColdProtectedPath $evidence -Directory -PrivateData)
+    $plan.PrivateReviewEvidence=$evidence
     $plan.Applied=$true;$plan.Parent=$parent;$plan.Release=$release
     return [pscustomobject]$plan
 }

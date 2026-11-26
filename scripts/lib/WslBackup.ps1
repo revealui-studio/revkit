@@ -792,7 +792,7 @@ function Initialize-WslColdWorkerProtocol {
     [CmdletBinding()]
     param()
     if (-not ('Revealfleet.Backup.ColdProtocol' -as [type])) {
-        Add-Type -Path @((Join-Path $PSScriptRoot 'WslColdProtocol.cs'),(Join-Path $PSScriptRoot 'WslColdSourceLease.cs')) -ErrorAction Stop
+        Add-Type -Path @((Join-Path $PSScriptRoot 'WslColdProtocol.cs'),(Join-Path $PSScriptRoot 'WslColdSourceLease.cs'),(Join-Path $PSScriptRoot 'WslColdVolumeCustody.cs')) -ErrorAction Stop
     }
 }
 
@@ -848,7 +848,11 @@ function Assert-WslColdAclGrants {
     if($Leaf){$mask=$mask -bor [Security.AccessControl.FileSystemRights]::Write}
     if($Leaf -and $PrivateData){$mask=$mask -bor [Security.AccessControl.FileSystemRights]::ReadData}
     foreach($entry in $Entries) {
-        # Inheritance-only CREATOR OWNER resolves to the trusted creator.
+        # An inherit-only ACE has NO effect on its current ancestor. The
+        # leaf is different: templates may expose future private children.
+        if($entry.InheritOnly -and -not $Leaf){continue}
+        # Only trusted creators can write the validated leaf; CREATOR OWNER
+        # therefore maps to that trusted creator, not a public child reader.
         if($entry.Sid -ceq 'S-1-3-0' -and $entry.InheritOnly){continue}
         if($entry.Allow -and $entry.Sid -notin $Allowed -and ([int]$entry.Rights -band [int]$mask)) {throw 'Cold custody ACL grants data or mutation rights outside trusted principals.'}
     }
@@ -966,7 +970,7 @@ function Read-WslColdAdmission {
         [void](Assert-WslColdProtectedPath $path)
         if((Get-FileHash -LiteralPath $path).Hash.ToLowerInvariant() -cne $p.controller.files[$path]){throw 'Controller runtime bytes differ from signed deployment.'}
     }
-    $required=@((Join-Path $PSScriptRoot 'WslBackup.ps1'),(Join-Path $PSScriptRoot 'WslColdProtocol.cs'),(Join-Path $PSScriptRoot 'WslColdSourceLease.cs'),(Join-Path $PSScriptRoot 'WslDiskIdentity.ps1'),(Join-Path $PSScriptRoot '..' 'Test-WslColdHardware.ps1'))
+    $required=@((Join-Path $PSScriptRoot 'WslBackup.ps1'),(Join-Path $PSScriptRoot 'WslColdProtocol.cs'),(Join-Path $PSScriptRoot 'WslColdSourceLease.cs'),(Join-Path $PSScriptRoot 'WslColdVolumeCustody.cs'),(Join-Path $PSScriptRoot 'WslDiskIdentity.ps1'),(Join-Path $PSScriptRoot '..' 'Test-WslColdHardware.ps1'))
     foreach($path in $required){if(-not $p.controller.files.Contains($path)){throw 'Signed controller source closure incomplete.'}}
     if($p.worker.registrationId -in @($p.controller.source.registrationId,$p.controller.protected.registrationId) -or $p.worker.distro -in @($p.controller.source.distro,$p.controller.protected.distro)){throw 'Worker aliases source/protected registration.'}
     Assert-WslRecoveryDisjoint @($p.controller.source.vhdx,$p.controller.protected.vhdx,$p.controller.workerVhdx.path,$p.controller.restore.path)
