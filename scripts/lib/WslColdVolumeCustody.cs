@@ -76,6 +76,21 @@ namespace Revealfleet.Backup {
             return result.ToArray();
         }
     }
+    public sealed class ColdSecurityWriterAdmission {
+        public string Profile => "trusted-root-security-writers-v1";
+        public bool Admissible {get;internal set;}
+        public string[] Reasons {get;internal set;}
+        public static ColdSecurityWriterAdmission Inspect(string owner,ColdRootGrant[] grants) {
+            var reasons=new List<string>();
+            if(owner!="S-1-5-18" && owner!="S-1-5-32-544")reasons.Add("Root owner has implicit WRITE_DAC outside SYSTEM/Administrators; trusted bootstrap required");
+            if(grants==null || grants.Length==0 || grants.Length>192)throw new IOException("Bounded explicit security writer grammar required");
+            foreach(var g in grants) {
+                if((g.Flags&8)!=0 || (g.Sid=="S-1-3-0" && (g.Flags&3)!=0))continue;
+                if(g.Sid!="S-1-5-18" && g.Sid!="S-1-5-32-544" && (g.Mask&0xc0000u)!=0)reasons.Add("Effective WRITE_DAC/WRITE_OWNER outside SYSTEM/Administrators; non-atomic bootstrap refused");
+            }
+            return new ColdSecurityWriterAdmission {Admissible=reasons.Count==0,Reasons=reasons.ToArray()};
+        }
+    }
     // Raw self-relative layout, independent of Windows account resolution.
     // Never replace AclSize with the parsed ACE size or drop spare/tail bytes.
     public sealed class ColdSecurityLayout {
@@ -165,6 +180,7 @@ namespace Revealfleet.Backup {
             }
             return grants.ToArray();
         }
+        public ColdSecurityWriterAdmission SecurityWriterAdmission() => ColdSecurityWriterAdmission.Inspect(OwnerSid,Grants());
         public string ChildInheritanceSha256 => ColdRootPolicy.ChildInheritanceHash(Grants());
         public void RequireReplacementScope(ColdSecuritySnapshot target) {
             Layout.RequireWritable();target?.Layout.RequireWritable();
@@ -411,6 +427,7 @@ namespace Revealfleet.Backup {
         }
         public PermissionCustodyTransaction OpenProductionPermissionTransaction(string rootIdentity,string volumeUuid,string originalBase64,string restrictedBase64,string user,string evidenceAttempt,string contextJson,Action validateBindings,string rollbackObservedBase64=null) {
             if(path.Length!=3 || path[1]!=':' || path[2]!='\\' || path[0]<'A' || path[0]>'Z' || observationOnly || FileIdentity!=rootIdentity || VolumeGuidPath!=@"\\?\Volume{"+Guid.ParseExact(volumeUuid,"D").ToString("D")+@"}\")throw new IOException("Production custody requires exact canonical NTFS volume/root handle binding");
+            if(!Read().SecurityWriterAdmission().Admissible)throw new IOException("Untrusted root security writers/owner: no atomic Windows descriptor CAS; separate trusted bootstrap required");
             return new PermissionCustodyTransaction(this,originalBase64,restrictedBase64,user,evidenceAttempt,contextJson,validateBindings,rollbackObservedBase64,"Global\\Revkit.VolumeCustody."+volumeUuid,false);
         }
         public PermissionCustodyTransaction OpenProductionShapedSyntheticTransaction(string originalBase64,string restrictedBase64,string user,string evidenceAttempt,string contextJson,Action validateBindings,string rollbackObservedBase64=null) {
@@ -459,7 +476,7 @@ namespace Revealfleet.Backup {
                     if(sid!="S-1-5-18" && sid!="S-1-5-32-544" && (sid!=user || (mask&~0x1200a9u)!=0))throw new IOException("Journal data/write access outside protected authority");
                 }
             }
-            void Validate(){if(closed)throw new ObjectDisposedException("Custody transaction");validate();lease.ValidateIdentity();journal.ValidateIdentity();RequireJournal();lease.RequireNoSacl();}
+            void Validate(){if(closed)throw new ObjectDisposedException("Custody transaction");validate();lease.ValidateIdentity();journal.ValidateIdentity();RequireJournal();if(BindingScope=="ProductionVolume" && !lease.Read().SecurityWriterAdmission().Admissible)throw new IOException("Security writer admission lost; no untrusted-writer CAS guarantee");lease.RequireNoSacl();}
             void Record(string name,object value) {
                 journal.ValidateIdentity();RequireJournal();byte[] bytes=JsonSerializer.SerializeToUtf8Bytes(value,new JsonSerializerOptions {MaxDepth=24});
                 if(bytes.Length>1048576)throw new IOException("Custody journal record bound");

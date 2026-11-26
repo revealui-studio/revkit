@@ -598,6 +598,15 @@ Describe 'Versioned production permission custody admission; no modeled mutation
             {Assert-WslColdPermissionPolicy $p}|Should -Throw -Because $fault
         }
     }
+    It 'refuses untrusted security writers but permits a trusted-owner deletion-fallback restriction' {
+        $world=[Revealfleet.Backup.ColdRootGrant]::new('S-1-1-0',0x1f01ff,3)
+        ([Revealfleet.Backup.ColdSecurityWriterAdmission]::Inspect('S-1-5-21-111-222-333-1001',@($world))).Admissible|Should -BeFalse
+        ([Revealfleet.Backup.ColdSecurityWriterAdmission]::Inspect('S-1-5-32-544',@($world))).Admissible|Should -BeFalse
+        $world.Mask=0x1301ff # Full minus WRITE_DAC/WRITE_OWNER, DELETE_CHILD remains
+        ([Revealfleet.Backup.ColdSecurityWriterAdmission]::Inspect('S-1-5-32-544',@($world))).Admissible|Should -BeTrue
+        $world.Mask=0x1f01ff;$world.Flags=11 # inherit-only has no current-root effect
+        ([Revealfleet.Backup.ColdSecurityWriterAdmission]::Inspect('S-1-5-32-544',@($world))).Admissible|Should -BeTrue
+    }
     It 'refuses a synthetic receipt as production authority before inspecting its raw proof' {
         $path=Join-Path $TestDrive 'receipt.json';Write-WslBackupJsonNew $path @{profile='cold-volume-permission-custody-v2';bindingScope='FreshSyntheticOnly';context=@{};outcome='Accepted';proof=@{}}
         Mock Assert-WslColdProtectedPath {}
@@ -614,9 +623,9 @@ Describe 'Versioned production permission custody admission; no modeled mutation
     }
     It 'expires execution plans but retains the original exact review as a historical rollback reference' {
         Mock Assert-WslColdPermissionPolicy {}
-        Mock Get-WslColdPermissionPair {return @{}}
+        Mock Get-WslColdPermissionPair { $before=[pscustomobject]@{};$before|Add-Member ScriptMethod SecurityWriterAdmission {return @{Profile='trusted-root-security-writers-v1';Admissible=$false;Reasons=@('modeled')}};return @{Before=$before} }
         $now=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-        $p=@{schemaVersion=4;kind='cold-volume-permission-custody-plan-v4';intent='ApplyOnly';transactionId=[guid]::NewGuid().ToString('D');policy=@{volumeRoot='X:';namespace='reviewed'};sourceCommit=('a'*40);sourceFiles=@();storage=@{};rootFileIdentity='bound';rootAttributes=16;before=@{};after=@{};evidenceFileIdentity='other';evidenceRawSha256=('b'*64);namespacePath=(Join-Path $TestDrive 'reviewed');createdAt=$now-7200;expiresAt=$now-3600;fidelity=@{};authority='review';scope='root';privileges=@();rollback=$null;productionActivated=$false;existingChildrenPrivatized=$false}
+        $p=@{schemaVersion=4;kind='cold-volume-permission-custody-plan-v4';intent='ApplyOnly';transactionId=[guid]::NewGuid().ToString('D');policy=@{volumeRoot='X:';namespace='reviewed'};sourceCommit=('a'*40);sourceFiles=@();storage=@{};rootFileIdentity='bound';rootAttributes=16;before=@{};after=@{};bootstrap=@{Profile='trusted-root-security-writers-v1';Admissible=$false;Reasons=@('modeled')};evidenceFileIdentity='other';evidenceRawSha256=('b'*64);namespacePath=(Join-Path $TestDrive 'reviewed');createdAt=$now-7200;expiresAt=$now-3600;fidelity=@{};authority='review';scope='root';privileges=@();rollback=$null;productionActivated=$false;existingChildrenPrivatized=$false}
         # Join-Path is not a host probe; use this platform's bounded test path.
         $p.policy.volumeRoot=$TestDrive
         {Assert-WslColdPermissionPlan $p Apply}|Should -Throw '*Fresh exact-phase*'
@@ -647,6 +656,16 @@ Describe 'Elevated production-shaped transaction on fresh synthetic custody only
             [Revealfleet.Backup.ColdSourceLease]::CreateProtectedDirectory($path,(New-WslColdCustodyJournalDescriptor ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)))
             return $path
         }
+    }
+    It 'demonstrates that retained delete exclusion does not exclude an ordinary WRITE_DAC-only handle' -Skip:(-not $IsWindows -or -not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))) {
+        $script:CustodyPrimaryFailure=$null;$root=New-SyntheticTree;$lease=$null
+        try {
+            $lease=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($root);$before=$lease.Read()
+            $ordinary=[Revealfleet.Tests.OrdinaryCaller]::new()
+            try {$ordinary.Enter();[Revealfleet.Tests.OrdinaryCaller]::CanOpen($root,0x40000)|Should -BeTrue}finally{$ordinary.Dispose()}
+            $lease.Read().DescriptorSha256|Should -BeExactly $before.DescriptorSha256;$lease.NativeMutationCalls|Should -Be 0
+            $before.SecurityWriterAdmission().Admissible|Should -BeFalse
+        } catch {$script:CustodyPrimaryFailure=$_;throw} finally {Complete-CustodyTest $root $lease}
     }
     It 'reads absent security components and refuses actual fresh audit and integrity-label SACLs' -Skip:(-not $IsWindows -or -not $AdminFixtureParent -or -not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))) {
         $scope=[Revealfleet.Backup.ColdRestorePrivilege]::CustodyScope()

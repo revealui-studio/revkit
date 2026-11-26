@@ -1461,3 +1461,34 @@ overhead plus64GiB reserve, encrypted full backup/readback and independent dense
 restore/import/boot remain open. Codex state relocation stays behind restore. Desktop
 RPC, Node24 strict offline producer, busctl rotation, Python/Nix/provenance and BOTH
 standard IDE entries and custom RevealUI Zed return remain required. Overall NOT GREEN.
+
+
+#### Initial untrusted-root bootstrap is a distinct unsupported admission
+
+Audit found a genuine bound on promotion: Windows descriptor query and mutation
+are separate operations. MAXIMUM_ALLOWED/no-delete sharing prevents substitution,
+not a second handle requesting WRITE_DAC only. A fresh synthetic ordinary-token
+regression demonstrates that read-only open while the retained lease exists,
+without changing the descriptor. No supported atomic NTFS OWNER+DACL CAS has been
+established. Named mutexes serialize our controllers, not untrusted applications.
+
+Production now additionally requires `trusted-root-security-writers-v1`: actual
+owner SYSTEM or Administrators, no effective WRITE_DAC/WRITE_OWNER grant outside
+those principals. Inherit-only templates remain distinct from effective root rights;
+DELETE/DELETE_CHILD may remain as the explicit repair target. This disposition is
+computed from actual raw policy state, included in the read-only plan and checked
+again from the held handle at execution/every write. It is NOT a supplied approval
+boolean. Fresh synthetic admission is explicitly separate and its receipts cannot
+activate a real volume.
+
+The observed unresolved E owner plus Everyone FullControl FAIL this admission.
+The new controller can produce a concrete read-only plan/disposition; it cannot
+safely bootstrap that starting state under the claimed CAS contract. Actual volume
+root permission fidelity proof does not prove exclusion of concurrent untrusted
+security writers. No real E mutation is promoted by this source turn. A separately
+supported trusted-maintenance/bootstrap contract must establish that exclusion (or
+an atomic supported transition) before source promotion for this initial E state.
+No such primitive/proof is claimed here. This is a platform/initial-state gap, not
+missing owner authorization, a request to weaken verification, an invitation to
+route E through synthetic code, or permission for a one-off offline/raw rewrite.
+All-writer outage alone must not be labeled an OS-enforced descriptor lock.

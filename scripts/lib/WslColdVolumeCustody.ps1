@@ -292,7 +292,7 @@ function Get-WslColdPermissionCustodyPlan {
         [ordered]@{schemaVersion=4;kind='cold-volume-permission-custody-plan-v4';intent='ApplyOnly';transactionId=[guid]::NewGuid().ToString('D');policy=$Policy;
             sourceCommit=$code.SourceCommit;sourceFiles=@($code.Files|ForEach-Object {@{path=$_.RelativePath;sha256=$_.Sha256}});storage=$storage;
             rootFileIdentity=$r.FileIdentity;rootAttributes=$r.Attributes;before=$a;after=$b;evidenceFileIdentity=$e.FileIdentity;evidenceRawSha256=$e.Read().DescriptorSha256;
-            namespacePath=$namespace;createdAt=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds();expiresAt=[DateTimeOffset]::UtcNow.AddHours(1).ToUnixTimeSeconds();
+            namespacePath=$namespace;bootstrap=$a.SecurityWriterAdmission();createdAt=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds();expiresAt=[DateTimeOffset]::UtcNow.AddHours(1).ToUnixTimeSeconds();
             fidelity=@{profile=$Policy.fidelityProfile;beforeRawSha256=$a.DescriptorSha256;requestedRawSha256=$b.DescriptorSha256;requestedPermissionSha256=$bi.UsedIdentitySha256;childInheritanceSha256=$a.ChildInheritanceSha256;rawByteRestorationPromised=$false;sacl='explicit-security-components-v1:no-sacl:0x1ff'};
             authority='Independent exact plan review PLUS actual elevated current owner; no receipt/test flag grants authority';
             scope='NTFS root OWNER+DACL only; unchanged control/group/child templates; no old descendant enumeration/mutation';
@@ -302,7 +302,7 @@ function Get-WslColdPermissionCustodyPlan {
 }
 function Assert-WslColdPermissionPlan {
     param($Plan,[string]$Phase,[switch]$OriginalRollbackReference)
-    Assert-WslRecoveryFields $Plan @('schemaVersion','kind','intent','transactionId','policy','sourceCommit','sourceFiles','storage','rootFileIdentity','rootAttributes','before','after','evidenceFileIdentity','evidenceRawSha256','namespacePath','createdAt','expiresAt','fidelity','authority','scope','privileges','rollback','productionActivated','existingChildrenPrivatized') 'permission custody plan'
+    Assert-WslRecoveryFields $Plan @('schemaVersion','kind','intent','transactionId','policy','sourceCommit','sourceFiles','storage','rootFileIdentity','rootAttributes','before','after','evidenceFileIdentity','evidenceRawSha256','namespacePath','bootstrap','createdAt','expiresAt','fidelity','authority','scope','privileges','rollback','productionActivated','existingChildrenPrivatized') 'permission custody plan'
     $now=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     foreach($n in @('schemaVersion','createdAt','expiresAt')){Assert-WslRecoveryInteger $Plan[$n] 1}
     if($Plan.schemaVersion -ne 4 -or $Plan.kind -cne 'cold-volume-permission-custody-plan-v4' -or $Plan.intent -cne ($Phase+'Only') -or (-not $OriginalRollbackReference -and $Plan.expiresAt -le $now) -or $Plan.createdAt -gt $now -or $Plan.expiresAt-$Plan.createdAt -gt 3600 -or $Plan.expiresAt -le $Plan.createdAt){throw 'Fresh exact-phase production permission plan required.'}
@@ -310,7 +310,8 @@ function Assert-WslColdPermissionPlan {
     Assert-WslColdPermissionPolicy $Plan.policy
     if($Plan.productionActivated -isnot [bool] -or $Plan.existingChildrenPrivatized -isnot [bool]){throw 'Exact boolean scope fields required.'}
     if($Plan.namespacePath -cne (Join-Path $Plan.policy.volumeRoot $Plan.policy.namespace) -or $Plan.productionActivated -cne $false -or $Plan.existingChildrenPrivatized -cne $false){throw 'Reviewed operation scope differs.'}
-    [void](Get-WslColdPermissionPair $Plan)
+    $pair=Get-WslColdPermissionPair $Plan
+    if((ConvertTo-Json $pair.Before.SecurityWriterAdmission() -Compress) -cne (ConvertTo-Json $Plan.bootstrap -Compress)){throw 'Reviewed security-writer disposition differs.'}
     if($Phase -ceq 'Apply' -and $null -ne $Plan.rollback){throw 'Forward plan cannot carry rollback capability.'}
     if($Phase -ceq 'Rollback') {Assert-WslRecoveryFields $Plan.rollback @('originalPlanPath','originalPlanSha256','applyReceiptPath','applyReceiptSha256','observedAfterBase64','observedAfterRawSha256','namespaceSnapshot') 'fresh rollback review'}
 }
@@ -426,6 +427,7 @@ function Invoke-WslColdPermissionCustody {
         $root=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($p.policy.volumeRoot);$parent=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($p.policy.evidenceDirectory)
         if($root.FileIdentity -cne $p.rootFileIdentity -or $root.Attributes -ne $p.rootAttributes -or $parent.FileIdentity -cne $p.evidenceFileIdentity -or $parent.Read().DescriptorSha256 -cne $p.evidenceRawSha256){throw 'Root/evidence handle/descriptor drift.'}
         [void](Assert-WslColdProtectedPath $p.policy.evidenceDirectory -Directory)
+        if(-not $root.Read().SecurityWriterAdmission().Admissible){throw 'Production bootstrap refused: ordinary WRITE_DAC/WRITE_OWNER or untrusted owner cannot be excluded by the retained handle; no atomic descriptor CAS.'}
         $initial=Assert-WslColdPermissionCapacity $p $code.Files
         $validateBody={param($p,$code,$held,$root,$parent,$initial)
             if([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -ge $p.expiresAt){throw 'Reviewed transaction expired.'}
