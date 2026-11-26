@@ -749,3 +749,108 @@ mutation/read principals are not allowed or omitted. A Windows synthetic orphan
 SID case exercises observation of a harmless synchronize-only grant and refusal
 of that same SID with dangerous authority. The original CI failure is retained;
 this source repair does not accept its host or relax ancestor trust.
+
+
+### Constrained child-inheritance transaction, after actual host experiments
+
+The ordinary source8e60f85 host run discovered100 cases:93 passed,2 failed,
+2 expected platform skips and3 explicitly filtered Elevated cases. Forward normal
+restriction passed exact root/control/group, existing child descriptor/metadata/
+content and new-child inheritance comparisons. Rollback then failed because the
+experiment reopened WRITE_OWNER after restriction removed it. A second experiment
+changed a child template and **did alter old children** with NtSetSecurityObject.
+The generalized no-propagation proposition is rejected. Original fixtures and
+failed receipts remain intact. The later SID-only regression passed1 case with
+21 deliberately filtered cases; it did not rerun or accept the unchanged failures.
+
+The proposed **unchanged-child-inheritance-v1** scope is enforced in the owning
+policy and version2 custody plan, in both directions, before any experimental
+native call. Plans of the old version refuse. The ACL revision and ordered inheritable ACE list
+must retain the exact SID, specific mask, OI/CI flags and inherited marker. Root-only
+ACEs have no child projection. IO on an inheritable ACE controls effectiveness
+on the current root, so adding/removing only IO preserves its child projection.
+CREATOR OWNER remains a generic SID mapped to the new child's owner, never expanded
+to the parent's old/new owner. Unknown controls, generic rights, no-propagate,
+deny/object/callback ACEs remain outside the grammar. Actual root restriction still
+rejects inherited root ACEs; inherited-marker preservation in a no-op scope check
+is not permission to transform those forms. Owner/group/control/raw exact checks
+remain; this projection is a prerequisite, not replacement evidence.
+
+See [Microsoft's ACE inheritance rules](https://learn.microsoft.com/en-us/windows/win32/secauthz/ace-inheritance-rules).
+A different SID/mask/order/count/OI/CI/mapping must refuse **before mutation**,
+with unchanged root AND children and zero native calls. It must never be normalized
+into a successful no-propagation experiment. Parent DELETE_CHILD restriction still
+has the separately documented intended effect on existing children's parent-based
+deletion fallback, despite unchanged child descriptors.
+
+The test-only candidate now duplicates the already acquired owning lease's original
+open file description using [DuplicateHandle SAME_ACCESS](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-duplicatehandle),
+non-inheritable and within the same process. No path reopen or WRITE_OWNER re-request
+occurs after mutation. Runtime name/final-handle/file identity and delete exclusion
+stay held throughout both directions. The duplicate closes before the original
+lease, including failure paths. Test-only reflection keeps the production handle
+surface closed and reuses the owning descriptor/scope validator; it is not packaged
+as runtime code. Native call count and handle lifetime are asserted before cleanup.
+This is still synthetic, not an accepted production API/support contract.
+
+New synthetic cases model explicit unprotected control0x8004 under a NEW private
+parent that contributes no inheritance, plus a separately elevated unresolved
+owner/group case. They assert the actual observed control, never clear/mask it.
+Real volume-root behavior, original ACL spare capacity/layout and actual owner/group
+restore on the real filesystem remain separate unproved gates. Protected fixture
+passes alone cannot accept the observed real nonprotected root form.
+
+### Windows runner components, anchor roles and exact inventory
+
+The ordinary component explicitly excludes only known Elevated cases. Receipts
+separate total/discovered/selected/excluded, raw Pester NotRun and unexpected
+selected NotRun; an excluded case must match the known name/file/elevated tag and
+ShouldRun=false. Unexpected skips/not-run, duplicates, missing cases or empty
+suites fail. A literal AST inventory of every selected test file binds discovery.
+Empty unexpected lists serialize as actual empty arrays. Ordinary success never
+sets elevatedAccepted/fullSyntheticAccepted; real elevated proof remains required.
+The added accounting owner is an eighth small suite, with refusal tests on native
+and Windows. No component result grants production admission.
+
+The CI ProgramFiles preflight previously treated a proposed ancestor as a public
+code leaf. That may refuse legitimate inheritable child templates; exact offending
+SID/rights were absent from its old generic error, so this is a diagnosis to test,
+not an asserted historical fact. New bounded readonly audits retain exact owners,
+SIDs, masks and flags, old-public-leaf offenders and ancestor offenders. The generic
+synthetic-anchor creator audits LocalApplicationData ancestry as **private data
+ancestry**, then creates a NEW exclusive protected user-owned UUID leaf. For the
+separate elevated namespace case it audits ProgramFiles as public-code ancestry
+and creates a separate new Admin-protected authority fixture. Existing ACLs are
+never changed. Actual operational public-code/ancestor/private-leaf guards are
+unchanged; final new leaf validation remains strict. If an ancestor has real
+outside DELETE/DELETE_CHILD/WRITE_DAC/WRITE_OWNER, refuses after retaining exact
+nonsecret observations; there is no trust exception or fallback permission repair.
+
+Root interfaces from a fresh signed package and matching complete supplement:
+
+```powershell
+# Ordinary component; original retained fixtures are never inputs.
+& PACKAGE\tests\powershell\Invoke-WslColdWindowsAcceptance.ps1 -OutputDirectory NEW_RESULTS -RetainedFixtureParent AUDITED_PRIVATE_PARENT -PythonPath REVIEWED_INSTALLED_PYTHON -PythonSha256 REVIEWED_PYTHON_HASH
+# Separately elevated, new output; namespace case needs its own code-protected ancestry.
+& PACKAGE\tests\powershell\Invoke-WslColdWindowsAcceptance.ps1 -OutputDirectory OTHER_RESULTS -RetainedFixtureParent AUDITED_PRIVATE_PARENT -AdminFixtureParent AUDITED_AUTHORITY_PARENT -IncludeElevated -PythonPath REVIEWED_INSTALLED_PYTHON -PythonSha256 REVIEWED_PYTHON_HASH
+```
+
+CI-only CreateCiAnchor chooses fixed role-aware parent candidates and saves bounded
+private-anchor-audit/authority-anchor-audit JSON. No recursive tree or real data
+payload is uploaded. Local supplied Python path/hash binds the installed public
+interpreter and avoids WindowsApps command aliases without changing system PATH;
+no interpreter installation or secret inputs are involved.
+
+Actual maintained controller cold probe passed40.322s and warm139ms, strict stderr,
+with controller8e60f85 and installed earlier worker explicitly distinguished.
+The worker Python/provisioner bytes were unchanged: no duplicate Borg installation
+is needed to restate that component proof. runtimeAdmitted=false and final consistent
+immutable production release/policy/device/cgroup admission remain pending.
+
+Latest controller live estimates leave2937942016 bytes before further overhead,
+or only519995392 after the metadata-only Codex move estimate, before its additional
+directory/database/link/cache overhead. These are not cold bounds. Preserve full
+backup/restore acceptance before simultaneous Codex relocation unless a complete
+fresh combined budget proves both. No sparse/compression/dedup credit; no source
+outage, real key/repository, full backup/restore, live ACL edit or relocation is
+accepted by this source increment. All deferred migration obligations remain.

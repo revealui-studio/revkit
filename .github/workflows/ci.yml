@@ -589,5 +589,7 @@ jobs:
           path: |
             ${{ env.REVKIT_WINDOWS_RESULTS }}/windows-results.xml
             ${{ env.REVKIT_WINDOWS_RESULTS }}/windows-acceptance.json
+            ${{ env.REVKIT_WINDOWS_RESULTS }}/private-anchor-audit.json
+            ${{ env.REVKIT_WINDOWS_RESULTS }}/authority-anchor-audit.json
           if-no-files-found: warn
           retention-days: 7

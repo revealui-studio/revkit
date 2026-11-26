@@ -18,6 +18,36 @@ namespace Revealfleet.Backup {
     }
     public static class ColdRootPolicy {
         public const uint Full=0x1f01ff, SafeRoot=0x1200af, Dangerous=0xd0040;
+        // Only IO representation may change: OI/CI, inherited marker, SID,
+        // specific rights and inheritable order stay exact. Generic CREATOR
+        // OWNER remains generic for mapping at the child's creation, never to
+        // the current parent owner. No deny/object/callback/NP/generic rights.
+        public static ColdRootGrant[] ChildInheritance(ColdRootGrant[] grants) {
+            if(grants==null || grants.Length==0 || grants.Length>192)throw new ArgumentException("Bounded inheritance grammar required");
+            var rows=new List<ColdRootGrant>();
+            foreach(var g in grants) {
+                if(g==null || String.IsNullOrWhiteSpace(g.Sid) || g.Sid.Length>184 || (g.Flags & ~27)!=0 ||
+                   ((g.Flags&8)!=0 && (g.Flags&3)==0) || g.Mask==0 || (g.Mask & ~Full)!=0)
+                    throw new ArgumentException("Unsupported child-inheritance ACE form");
+                if((g.Flags&3)!=0)rows.Add(new ColdRootGrant(g.Sid,g.Mask,(byte)(g.Flags&~8)));
+            }
+            return rows.ToArray();
+        }
+        public static string ChildInheritanceHash(ColdRootGrant[] grants) {
+            using var output=new MemoryStream();
+            using(var writer=new BinaryWriter(output,Encoding.UTF8,true)) {
+                writer.Write("unchanged-child-inheritance-v1");
+                var rows=ChildInheritance(grants);writer.Write(rows.Length);
+                foreach(var row in rows){writer.Write(row.Sid);writer.Write(row.Mask);writer.Write(row.Flags);}
+            }
+            return Convert.ToHexString(SHA256.HashData(output.ToArray())).ToLowerInvariant();
+        }
+        public static void RequireSameChildInheritance(ColdRootGrant[] before,ColdRootGrant[] after) {
+            var a=ChildInheritance(before);var b=ChildInheritance(after);
+            if(a.Length!=b.Length)throw new IOException("Changed child inheritance refused BEFORE mutation");
+            for(int i=0;i<a.Length;i++)if(a[i].Sid!=b[i].Sid || a[i].Mask!=b[i].Mask || a[i].Flags!=b[i].Flags)
+                throw new IOException("Changed child inheritance refused BEFORE mutation");
+        }
         public static ColdRootGrant[] Restrict(ColdRootGrant[] grants,string user) {
             if(grants==null || grants.Length==0 || grants.Length>64 || String.IsNullOrWhiteSpace(user)) throw new ArgumentException("Bounded explicit root ACL required");
             var result=new List<ColdRootGrant>();
@@ -71,7 +101,7 @@ namespace Revealfleet.Backup {
             var sd=new RawSecurityDescriptor(Convert.FromBase64String(DescriptorBase64),0);sd.Owner=new SecurityIdentifier(sid);
             byte[] bytes=new byte[sd.BinaryLength];sd.GetBinaryForm(bytes,0);return new ColdSecuritySnapshot(bytes);
         }
-        public ColdSecuritySnapshot Restricted(string user) {
+        ColdRootGrant[] Grants() {
             var sd=new RawSecurityDescriptor(Convert.FromBase64String(DescriptorBase64),0);
             var grants=new List<ColdRootGrant>();
             foreach(GenericAce item in sd.DiscretionaryAcl) {
@@ -79,12 +109,24 @@ namespace Revealfleet.Backup {
                 if(ace==null || ace.IsCallback || ace.OpaqueLength!=0 || ace.AceQualifier!=AceQualifier.AccessAllowed) throw new IOException("Only standard allow root ACEs supported");
                 grants.Add(new ColdRootGrant(ace.SecurityIdentifier.Value,unchecked((uint)ace.AccessMask),(byte)ace.AceFlags));
             }
-            var selected=ColdRootPolicy.Restrict(grants.ToArray(),user);
+            return grants.ToArray();
+        }
+        public string ChildInheritanceSha256 => ColdRootPolicy.ChildInheritanceHash(Grants());
+        public void RequireReplacementScope(ColdSecuritySnapshot target) {
+            if(target==null || target.Control!=Control || target.GroupBase64!=GroupBase64)
+                throw new IOException("Group/control changes are outside OWNER+DACL scope");
+            if(Convert.FromBase64String(DaclBase64)[0]!=Convert.FromBase64String(target.DaclBase64)[0])throw new IOException("ACL revision transition refused");
+            ColdRootPolicy.RequireSameChildInheritance(Grants(),target.Grants());
+        }
+        public ColdSecuritySnapshot Restricted(string user) {
+            var sd=new RawSecurityDescriptor(Convert.FromBase64String(DescriptorBase64),0);
+            var grants=Grants();
+            var selected=ColdRootPolicy.Restrict(grants,user);
             var acl=new RawAcl(sd.DiscretionaryAcl.Revision,selected.Length);
             foreach(var g in selected) acl.InsertAce(acl.Count,new CommonAce((AceFlags)g.Flags,AceQualifier.AccessAllowed,checked((int)g.Mask),new SecurityIdentifier(g.Sid),false,null));
             var target=new RawSecurityDescriptor(sd.ControlFlags,new SecurityIdentifier("S-1-5-32-544"),sd.Group,null,acl);
             byte[] bytes=new byte[target.BinaryLength];target.GetBinaryForm(bytes,0);
-            return new ColdSecuritySnapshot(bytes);
+            var result=new ColdSecuritySnapshot(bytes);RequireReplacementScope(result);return result;
         }
     }
     // Privilege is enabled only on a duplicate impersonation token for this
@@ -184,7 +226,7 @@ namespace Revealfleet.Backup {
             var current=Read();
             if(current.Sha256!=expectedSha256)throw new IOException("Owner/DACL/control/group drift; nothing replaced");
             var bytes=Convert.FromBase64String(targetDescriptorBase64);var target=new ColdSecuritySnapshot(bytes);
-            if(target.Control!=current.Control || target.GroupBase64!=current.GroupBase64)throw new IOException("Group/control changes are outside OWNER+DACL transaction scope");
+            current.RequireReplacementScope(target);
             // Actual Windows 0a9fecd evidence changed control bits AND child
             // descriptors. No API is promoted by a source check or test flag.
             throw new IOException("Root-only filesystem security contract unaccepted; no mutation performed");

@@ -80,25 +80,55 @@ namespace Revealfleet.Tests {
                 roots.Add(root);return root;
             } finally {if(attributes!=IntPtr.Zero)Marshal.FreeHGlobal(attributes);Marshal.FreeHGlobal(sd);}
         }
-        public static void SetNativeCandidate(string path,byte[] descriptor) {
-            if(!OperatingSystem.IsWindows())throw new PlatformNotSupportedException();
-            path=Path.GetFullPath(path);
-            bool owned=false;foreach(string root in roots)if(path==root || path.StartsWith(root+Path.DirectorySeparatorChar,StringComparison.OrdinalIgnoreCase))owned=true;
-            if(!owned)throw new IOException("Only newly created synthetic trees may use candidate API");
-            for(string current=path;current!=null;current=Path.GetDirectoryName(current))if((File.GetAttributes(current)&FileAttributes.ReparsePoint)!=0)throw new IOException("Synthetic target reparse refused");
-            // Explicit metadata security rights, no DELETE request; compatible
-            // with the separate MAXIMUM_ALLOWED/no-delete-share custody lease.
-            using var handle=CreateFileW(path,0x000e0080,7,IntPtr.Zero,3,0x02200000,IntPtr.Zero);
-            var name=new System.Text.StringBuilder(32768);
-            if(handle.IsInvalid || GetFinalPathNameByHandleW(handle,name,(uint)name.Capacity,0)==0 || name.ToString()!=@"\\?\"+path)throw new IOException("Synthetic final handle refused");
-            IntPtr buffer=Marshal.AllocHGlobal(descriptor.Length);
-            try {
-                Marshal.Copy(descriptor,0,buffer,descriptor.Length);
-                // Native user-mode API per Microsoft NtSetSecurityObject docs;
-                // filesystem propagation/control behavior is EXPERIMENTAL.
-                int status=NtSetSecurityObject(handle,5,buffer);
-                if(status<0)throw new Win32Exception((int)RtlNtStatusToDosError(status));
-            } finally {Marshal.FreeHGlobal(buffer);}
+        [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+        [DllImport("kernel32.dll",SetLastError=true)] static extern bool DuplicateHandle(IntPtr source,SafeFileHandle handle,IntPtr target,out SafeFileHandle copy,uint access,bool inherit,uint options);
+        public sealed class CandidateTransaction : IDisposable {
+            readonly object lease;readonly Type type;readonly SafeFileHandle handle;readonly string path,identity;
+            public int MutationCalls {get;private set;}
+            public bool IsClosed => handle.IsClosed;
+            internal CandidateTransaction(object original) {
+                if(!OperatingSystem.IsWindows())throw new PlatformNotSupportedException();
+                type=original?.GetType();
+                if(type?.FullName!="Revealfleet.Backup.ColdDirectorySecurityLease")throw new IOException("Exact owning lease required");
+                lease=original;path=(string)type.GetProperty("CanonicalPath").GetValue(lease);
+                bool owned=false;foreach(string root in roots)if(path==root || path.StartsWith(root+Path.DirectorySeparatorChar,StringComparison.OrdinalIgnoreCase))owned=true;
+                if(!owned)throw new IOException("Only newly created synthetic trees may use candidate API");
+                // TEST-ONLY reflection keeps the runtime authority surface
+                // closed. Duplicate the ORIGINAL open description, with SAME
+                // access and no inheritance, never re-request revoked rights.
+                var source=(SafeFileHandle)type.GetField("handle",System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance).GetValue(lease);
+                if(!DuplicateHandle(GetCurrentProcess(),source,GetCurrentProcess(),out handle,0,false,2))throw new Win32Exception(Marshal.GetLastWin32Error());
+                identity=(string)type.GetProperty("FileIdentity").GetValue(lease);
+                try {Validate();}catch {handle.Dispose();throw;}
+            }
+            void Validate() {
+                if(handle.IsClosed)throw new ObjectDisposedException("Synthetic transaction");
+                type.GetMethod("ValidateIdentity").Invoke(lease,null);
+                var name=new System.Text.StringBuilder(32768);
+                if(!GetFileInformationByHandle(handle,out var info) || info.Volume.ToString("x8")+":"+info.IndexHigh.ToString("x8")+info.IndexLow.ToString("x8")!=identity ||
+                   (info.Attributes&0x410)!=0x10 || GetFinalPathNameByHandleW(handle,name,(uint)name.Capacity,0)==0 || name.ToString()!=@"\\?\"+path)
+                    throw new IOException("Synthetic retained handle identity/name refused");
+            }
+            public void Replace(string expected,byte[] descriptor) {
+                Validate();
+                var before=type.GetMethod("Read").Invoke(lease,null);var snapshot=before.GetType();
+                if((string)snapshot.GetProperty("Sha256").GetValue(before)!=expected)throw new IOException("Synthetic descriptor drift");
+                var target=Activator.CreateInstance(snapshot,new object[]{descriptor});
+                // Reuse the owning versioned scope validator, not a parallel
+                // looser test policy. Any changed template fails before Nt.
+                snapshot.GetMethod("RequireReplacementScope").Invoke(before,new[]{target});
+                IntPtr buffer=Marshal.AllocHGlobal(descriptor.Length);
+                try {
+                    Marshal.Copy(descriptor,0,buffer,descriptor.Length);MutationCalls++;
+                    int status=NtSetSecurityObject(handle,5,buffer);
+                    if(status<0)throw new Win32Exception((int)RtlNtStatusToDosError(status));
+                } finally {Marshal.FreeHGlobal(buffer);}
+                Validate();
+                var after=type.GetMethod("Read").Invoke(lease,null);
+                if((string)snapshot.GetProperty("Sha256").GetValue(after)!=(string)snapshot.GetProperty("Sha256").GetValue(target))throw new IOException("Synthetic exact descriptor verification failed");
+            }
+            public void Dispose(){handle.Dispose();}
         }
+        public static CandidateTransaction OpenCandidate(object owningLease) => new CandidateTransaction(owningLease);
     }
 }
