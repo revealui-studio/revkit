@@ -19,10 +19,15 @@ namespace Revealfleet.Backup {
         }
         [StructLayout(LayoutKind.Sequential)] struct AttachParameters {public uint Version,Reserved;}
         [StructLayout(LayoutKind.Sequential)] struct FileInfo {public uint Attributes;public System.Runtime.InteropServices.ComTypes.FILETIME C,A,W;public uint Volume,High,Low,Links,IndexHigh,IndexLow;}
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [DllImport("virtdisk.dll",CharSet=CharSet.Unicode)] static extern uint CreateVirtualDisk(ref StorageType type,string path,uint access,IntPtr descriptor,uint flags,uint provider,ref CreateParameters parameters,IntPtr overlapped,out IntPtr handle);
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [DllImport("virtdisk.dll")] static extern uint AttachVirtualDisk(SafeFileHandle handle,IntPtr descriptor,uint flags,uint provider,ref AttachParameters parameters,IntPtr overlapped);
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [DllImport("virtdisk.dll")] static extern uint DetachVirtualDisk(SafeFileHandle handle,uint flags,uint provider);
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [DllImport("virtdisk.dll",CharSet=CharSet.Unicode)] static extern uint GetVirtualDiskPhysicalPath(SafeFileHandle handle,ref uint bytes,StringBuilder path);
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [DllImport("virtdisk.dll")] static extern uint GetVirtualDiskInformation(SafeFileHandle handle,ref uint bytes,IntPtr info,out uint used);
         [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern SafeFileHandle CreateFileW(string path,uint access,uint share,IntPtr security,uint creation,uint flags,IntPtr template);
         [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetFileInformationByHandle(SafeFileHandle handle,out FileInfo info);

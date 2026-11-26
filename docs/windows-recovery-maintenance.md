@@ -929,7 +929,7 @@ changes. Root reviews and runs it; the native source lane does not execute it.
 
 The new file is a fixed128MiB classic VHD (256MiB hard backing-file ceiling) in a
 NEW protected/private UUID C workspace. `CreateVirtualDisk` version1 uses a fresh
-identifier, no source/parent input and full physical allocation. Its live handle,
+identifier, no source/parent input and full physical allocation. The virtual-disk DLL imports resolve from System32 only. Its live handle,
 file ID/name/no-delete metadata custody, virtual identifier/geometry and attachment
 physical path remain bound. Attach requests NO_DRIVE_LETTER and no permanent
 lifetime. No Hyper-V cmdlet/feature installation, diskpart, WSL registration or
@@ -937,7 +937,7 @@ real/migration disk input exists.
 
 Storage association follows Microsoft's documented Get-DiskImage on the exact
 new image piped to Get-Disk. Native device-number metadata on that returned device
-path must match the held virtual handle; boot/system/read-only/offline/nonvirtual
+path must match the held virtual handle; boot/system/read-only/offline/clustered/nonvirtual
 or ambiguous objects refuse. Immediately before initialize/partition/format, the
 binding is rechecked. Writes accept only the returned Disk/Partition objects,
 never caller disk ordinals or drive letters; partition requery/identity/geometry

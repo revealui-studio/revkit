@@ -41,7 +41,7 @@ function Get-WslOwnedSyntheticStorage {
     $disks=@($images[0]|Storage\Get-Disk -ErrorAction Stop)
     if($disks.Count -ne 1){throw 'Ambiguous/missing image-to-Storage disk association.'}
     $d=$disks[0]
-    if([int]$d.BusType -notin @(14,15) -or $d.IsOffline -or $d.IsReadOnly){throw 'Fresh virtual writable online disk required; no policy workaround.'}
+    if([int]$d.BusType -notin @(14,15) -or $d.IsOffline -or $d.IsReadOnly -or $d.IsClustered){throw 'Fresh virtual writable online disk required; no policy workaround.'}
     $Owned.ValidateStorage($d.Path,[uint32]$d.Number,[uint64]$d.Size,[bool]$d.IsBoot,[bool]$d.IsSystem)
     return $d
 }
