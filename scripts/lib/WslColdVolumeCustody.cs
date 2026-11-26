@@ -403,7 +403,7 @@ namespace Revealfleet.Backup {
             ValidateIdentity();using var observer=CreateFileW(path,0x01020080,7,IntPtr.Zero,3,0x02200000,IntPtr.Zero);
             if(observer.IsInvalid || !GetFileInformationByHandle(observer,out var found) || found.Volume!=identity.Volume || found.IndexHigh!=identity.IndexHigh || found.IndexLow!=identity.IndexLow)throw new IOException("SACL observation access/identity refused");
             uint error=GetSecurityInfo(observer,1,0x10000,out var owner,out var group,out var dacl,out var sacl,out var descriptor);
-            if(error!=0)throw new Win32Exception((int)error);
+            if(error!=0)throw new Win32Exception((int)error,"Full security descriptor BACKUP observation refused (Win32 "+error+")");
             try {uint length=GetSecurityDescriptorLength(descriptor);if(length<20 || length>65536)throw new IOException("Full security observation bound");byte[] header=new byte[20];Marshal.Copy(descriptor,header,0,20);
                 if(sacl!=IntPtr.Zero || (BitConverter.ToUInt16(header,2)&~0x9406)!=0 || header[1]!=0)throw new IOException("Production permission profile refuses any observed SACL, including labels/attributes/empty/unsupported forms");}finally {LocalFree(descriptor);}
             ValidateIdentity();
@@ -434,17 +434,18 @@ namespace Revealfleet.Backup {
                 if(original.Restricted(user).DescriptorSha256!=restricted.DescriptorSha256)throw new IOException("Only exact reviewed root restriction and its inverse are admitted");
                 original.RequireReplacementScope(restricted);restricted.RequireReplacementScope(original);context=contextJson;
                 if(Interlocked.CompareExchange(ref lease.activeCustody,1,0)!=0)throw new IOException("Owning lease already has a custody transaction");
+                string stage="journal-open";
                 try {
                     journal=new ColdDirectorySecurityLease(attempt);journalRaw=journal.Read().DescriptorSha256;
-                    writer=new Mutex(false,lockName);try {ownsWriter=writer.WaitOne(0);}catch(AbandonedMutexException){writer.ReleaseMutex();throw new IOException("Abandoned custody exclusion refused; no lock breaking/retry");}
+                    stage="writer-exclusion";writer=new Mutex(false,lockName);try {ownsWriter=writer.WaitOne(0);}catch(AbandonedMutexException){writer.ReleaseMutex();throw new IOException("Abandoned custody exclusion refused; no lock breaking/retry");}
                     if(!ownsWriter)throw new IOException("Another custody transaction owns this volume");
                     if(journal.CanonicalPath==Path.GetPathRoot(journal.CanonicalPath) || (!syntheticOnly && journal.VolumeGuidPath==lease.VolumeGuidPath))throw new IOException("Independent journal filesystem and non-root attempt required");
-                    RequireJournal();Validate();
+                    stage="journal-security";RequireJournal();stage="external-bindings-and-security-observation";Validate();
                     if(rollbackObserved==null){expected=original.DescriptorSha256;State="Prepared";}
                     else {var observed=new ColdSecuritySnapshot(Convert.FromBase64String(rollbackObserved));ColdPermissionIdentity.Compare(Convert.FromBase64String(after),Convert.FromBase64String(rollbackObserved));expected=observed.DescriptorSha256;State="RollbackPrepared";}
                     ColdPermissionIdentity.RequireRawCas(Convert.FromBase64String(lease.Read().DescriptorBase64),expected);
-                    Record("prepared.json",new {profile=Profile,bindingScope=BindingScope,context=JsonSerializer.Deserialize<JsonElement>(context),original,restricted,expectedRawSha256=expected,rootIdentity=lease.FileIdentity,rootVolume=lease.VolumeGuidPath,rawByteRestorationPromised=false,state=State});
-                } catch {if(ownsWriter){writer.ReleaseMutex();ownsWriter=false;}writer?.Dispose();journal?.Dispose();Interlocked.Exchange(ref lease.activeCustody,0);throw;}
+                    stage="prepared-record";Record("prepared.json",new {profile=Profile,bindingScope=BindingScope,context=JsonSerializer.Deserialize<JsonElement>(context),original,restricted,expectedRawSha256=expected,rootIdentity=lease.FileIdentity,rootVolume=lease.VolumeGuidPath,rawByteRestorationPromised=false,state=State});
+                } catch(Exception error) {try{journal?.Dispose();}finally{try{if(ownsWriter){writer.ReleaseMutex();ownsWriter=false;}writer?.Dispose();}finally{Interlocked.Exchange(ref lease.activeCustody,0);}}throw new IOException("Custody preparation refused at "+stage+": "+error.Message,error);}
             }
             void RequireJournal() {
                 var snapshot=journal.Read();if(snapshot.DescriptorSha256!=journalRaw)throw new IOException("Journal owner/DACL/control drift");
