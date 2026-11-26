@@ -1004,3 +1004,58 @@ additional overhead must not silently consume this restore margin. Full restore
 first remains the hold absent a complete fresh combined budget. Main/recovery/
 worker, real E permissions, production key/repository/full backup/restore and
 all deferred runtime/editor/provenance work remain outside this source execution.
+
+### Read-only system Storage ownership preflight
+
+The controller's c5edc6f full nine-suite **laptop** elevated component passed:
+117 discovered/selected,115 passed,0 failed,2 expected platform skips,0 excluded
+or not-run;128 protected source/dependency files rehashed unchanged. Its separate
+volume attempt failed at **volume-plan**, before any reviewed plan, child or VHD
+existed: `Owned Microsoft Storage module required.` The first UAC was canceled
+without starting; the approved retry exited1 at that precondition. Component
+acceptance is retained. Actual synthetic volume/root and production acceptance
+remain false; no real E permission or existing VHD changed.
+
+The observed Microsoft Storage manifest exports functions from declared nested
+CDXML modules (`DiskImage`, `Disk`, `Partition`, `Volume`). Their command ModuleName
+is the child name, so requiring it to equal the parent `Storage` was incorrect.
+The maintained resolver now selects the native64-bit system Storage.psd1 by
+absolute SystemDirectory path, not PSModulePath. Before explicit import it requires
+protected non-reparse file ancestry, Valid Authenticode with an explicit Microsoft
+Windows/Corporation publisher identity, and validates every declared direct nested
+CDXML/script file the same way. No laptop file or certificate hash is hardcoded.
+Other declaration or publisher forms refuse for review. It binds the imported
+parent path/base/GUID/version, exact declared/imported child inventory, and each
+of the seven module-qualified commands to that parent's actual exported Function
+object and its declared CIM child. Foreign loaded parents, aliases, ambiguous
+resolution and session proxies refuse. It never unloads foreign modules to pass.
+
+The standalone preflight needs no fixture, disk inputs or elevation:
+
+```powershell
+& PACKAGE\scripts\Invoke-WslColdSyntheticVolume.ps1 -Phase StoragePreflight
+```
+
+It reads signatures/ACLs/files and imports the selected system module into the
+current process; it executes **no Storage disk command** and creates no plan,
+child or VHD. Preserve its nonsecret manifest/version/GUID/file-hash/command-path
+JSON before reviewing another elevated test. The Windows-only regression runs
+this real installed resolver twice to exercise stable revalidation; native tests
+of ownership observations remain models, not actual Windows acceptance.
+
+Synthetic volume plan schema2 binds that complete Storage receipt. Execute rejects
+older plans, rechecks the receipt before fixture creation and revalidates it before
+Storage operations. The fixed module-qualified image/disk/partition/volume path,
+returned-object writes, no ordinals/letters, original handle and all raw descriptor
+checks remain strict. Public production Apply/Rollback remains blocked.
+
+For capture comparison, c5edc6f to89a40a3 changed only four files: System32-only
+virtual-disk DLL imports; clustered-disk refusal; reviewed operation/privilege and
+false production-field binding; one-shot seed-attempt accounting including failure;
+actual native-call counters (rather than counting before validation), plus runbook
+wording. Those changes were not part of the c5 laptop capture. This resolver repair
+builds on89a40a3 and does not reinterpret that capture or promote volume acceptance.
+
+Primary references: [module manifests and NestedModules](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_module_manifests),
+[explicit-path Import-Module](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/import-module),
+[Authenticode and catalog signatures](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.security/get-authenticodesignature).

@@ -9,6 +9,70 @@ BeforeAll {
         return ,$data
     }
     function LayoutBytes([int]$Capacity=248,[byte[]]$Tail=$null) {[Revealfleet.Backup.ColdSecurityLayout]::Compose(0x8004,(SidBytes 1001),(SidBytes 513),(AclBytes),$Capacity,$Tail)}
+    function New-StorageOwnershipModel {
+        $base=Join-Path $TestDrive 'system/Storage';$manifest=Join-Path $base 'Storage.psd1';$path=Join-Path $base 'Disk.cdxml'
+        $nested=[pscustomobject]@{Name='Disk';ModuleType='Cim';ModuleBase=$base;Path=$path}
+        $command=[pscustomobject]@{Name='Get-Disk';CommandType='Function';ModuleName='Disk';Module=$nested}
+        $parent=[pscustomobject]@{Name='Storage';ModuleType='Manifest';ModuleBase=$base;Path=$manifest;Guid=[guid]'193c8b20-f199-43df-9b86-53ad824ed732';Version=[version]'2.0.0.0';NestedModules=@($nested);ExportedCommands=@{'Get-Disk'=$command}}
+        return @{Parent=$parent;ManifestPath=$manifest;ManifestGuid=$parent.Guid;ManifestVersion=$parent.Version;NestedPaths=@($path);Name='Get-Disk';Resolved=@($command)}
+    }
+}
+Describe 'Selected system Storage nested command ownership' {
+    It 'accepts modeled declared nested CDXML exports without misidentifying the child as the parent' {
+        $binding=New-StorageOwnershipModel
+        {Assert-WslColdStorageCommandBinding @binding}|Should -Not -Throw
+    }
+    It 'rejects forged parent name, manifest path, version and GUID' {
+        foreach($field in @('Name','Path','Version','Guid')){
+            $binding=New-StorageOwnershipModel
+            switch($field){
+                Name {$binding.Parent.Name='Imposter'}
+                Path {$binding.Parent.Path=Join-Path $TestDrive 'outside/Storage.psd1'}
+                Version {$binding.Parent.Version=[version]'9.0.0.0'}
+                Guid {$binding.Parent.Guid=[guid]'44444444-4444-4444-4444-444444444444'}
+            }
+            {Assert-WslColdStorageCommandBinding @binding}|Should -Throw
+        }
+    }
+    It 'rejects undeclared, escaping and renamed nested modules and incomplete inventories' {
+        foreach($fault in @('outside','renamed','undeclared','missing','duplicate')){
+            $binding=New-StorageOwnershipModel
+            switch($fault){
+                outside {$binding.Parent.NestedModules[0].Path=Join-Path $TestDrive 'outside/Disk.cdxml';$binding.NestedPaths=@($binding.Parent.NestedModules[0].Path)}
+                renamed {$binding.Parent.NestedModules[0].Name='DiskImposter'}
+                undeclared {$binding.NestedPaths=@((Join-Path $TestDrive 'system/Storage/Other.cdxml'))}
+                missing {$binding.NestedPaths+=Join-Path $TestDrive 'system/Storage/Volume.cdxml'}
+                duplicate {$binding.Parent.NestedModules+=@($binding.Parent.NestedModules[0])}
+            }
+            {Assert-WslColdStorageCommandBinding @binding}|Should -Throw
+        }
+    }
+    It 'rejects shadow commands, aliases and same-name proxies outside the selected export object' {
+        foreach($fault in @('ambiguous','alias','proxy','foreignModule')){
+            $binding=New-StorageOwnershipModel;$original=$binding.Resolved[0]
+            switch($fault){
+                ambiguous {$binding.Resolved+=($original.PSObject.Copy())}
+                alias {$original.CommandType='Alias'}
+                proxy {$binding.Resolved=@($original.PSObject.Copy())}
+                foreignModule {$original.Module=$original.Module.PSObject.Copy()}
+            }
+            {Assert-WslColdStorageCommandBinding @binding}|Should -Throw
+        }
+    }
+    It 'refuses module search names, traversal, unsupported declarations and non-CDXML command owners' {
+        $binding=New-StorageOwnershipModel
+        foreach($relative in @('../Disk.cdxml','sub/Disk.cdxml','sub\Disk.cdxml','C:\Disk.cdxml','Disk.dll','Disk','')){{Resolve-WslColdStorageNestedPath $binding.ManifestPath $relative}|Should -Throw}
+        (Resolve-WslColdStorageNestedPath $binding.ManifestPath 'Disk.cdxml')|Should -BeExactly $binding.NestedPaths[0]
+        $binding.Parent.NestedModules[0].Path=Join-Path $TestDrive 'system/Storage/Disk.psm1';$binding.Parent.NestedModules[0].ModuleType='Script';$binding.NestedPaths=@($binding.Parent.NestedModules[0].Path)
+        {Assert-WslColdStorageCommandBinding @binding}|Should -Throw
+    }
+    It 'resolves the real installed Microsoft Storage manifest and CDXML commands without executing disk commands' -Skip:(-not $IsWindows) {
+        $first=Get-WslColdStoragePreflight;$second=Get-WslColdStoragePreflight
+        $first.commands.Count|Should -Be 7;$first.files.Count|Should -BeGreaterThan 1
+        $first.readOnly|Should -BeTrue;$first.diskCommandsExecuted|Should -BeFalse;$first.volumeAccepted|Should -BeFalse;$first.productionAccepted|Should -BeFalse
+        (ConvertTo-Json -InputObject $second -Depth 12 -Compress)|Should -BeExactly (ConvertTo-Json -InputObject $first -Depth 12 -Compress)
+        foreach($command in $first.commands){[IO.Path]::GetExtension($command.modulePath)|Should -BeExactly '.cdxml'}
+    }
 }
 Describe 'Raw descriptor layout and synthetic-only volume admission' {
     It 'distinguishes compact ACL bytes from declared zero spare and preserves complete raw bytes' {

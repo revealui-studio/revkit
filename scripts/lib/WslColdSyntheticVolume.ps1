@@ -1,5 +1,63 @@
 # Bounded synthetic VOLUME ROOT protocol. Never imported as production execution.
 . (Join-Path $PSScriptRoot 'WslColdVolumeCustody.ps1')
+function Resolve-WslColdStorageNestedPath {
+    param([string]$ManifestPath,[string]$Relative)
+    # The selected system manifest currently declares direct files. Refuse
+    # other grammars instead of resolving a module name through PSModulePath.
+    if(-not $Relative -or [IO.Path]::IsPathRooted($Relative) -or $Relative.Contains(':') -or $Relative.Contains('\') -or $Relative.Contains('/') -or [IO.Path]::GetExtension($Relative) -cnotin @('.cdxml','.psm1')){throw 'Storage nested declaration must be a direct CDXML/script file.'}
+    return [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetDirectoryName($ManifestPath)) $Relative))
+}
+function Assert-WslColdStorageCommandBinding {
+    param($Parent,[string]$ManifestPath,[guid]$ManifestGuid,[version]$ManifestVersion,[string[]]$NestedPaths,[string]$Name,[object[]]$Resolved)
+    $base=[IO.Path]::GetDirectoryName($ManifestPath)
+    if(-not $Parent -or $Parent.Name -cne 'Storage' -or $Parent.ModuleType.ToString() -cne 'Manifest' -or -not [string]::Equals($Parent.Path,$ManifestPath,[StringComparison]::OrdinalIgnoreCase) -or -not [string]::Equals($Parent.ModuleBase,$base,[StringComparison]::OrdinalIgnoreCase) -or $Parent.Guid -ne $ManifestGuid -or $Parent.Version -ne $ManifestVersion){throw 'Selected Storage manifest identity differs from imported parent.'}
+    $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach($nested in @($Parent.NestedModules)){
+        if(-not $nested.Path -or -not $seen.Add($nested.Path) -or $NestedPaths -inotcontains $nested.Path){throw 'Imported Storage nested module was not declared by selected manifest.'}
+        $kind=if([IO.Path]::GetExtension($nested.Path) -ceq '.cdxml'){'Cim'}else{'Script'}
+        if(-not [string]::Equals([IO.Path]::GetDirectoryName($nested.Path),$base,[StringComparison]::OrdinalIgnoreCase) -or -not [string]::Equals($nested.ModuleBase,$base,[StringComparison]::OrdinalIgnoreCase) -or $nested.Name -cne [IO.Path]::GetFileNameWithoutExtension($nested.Path) -or $nested.ModuleType.ToString() -cne $kind){throw 'Imported Storage nested path/name/type differs from declaration.'}
+    }
+    if($seen.Count -ne $NestedPaths.Count){throw 'Storage declared/imported nested inventory differs.'}
+    if($Resolved.Count -ne 1){throw ('Ambiguous or shadowed Storage command: '+$Name)}
+    $command=$Resolved[0];$origin=@($Parent.NestedModules|Where-Object {[object]::ReferenceEquals($_,$command.Module)})
+    if($command.Name -cne $Name -or $command.CommandType.ToString() -cne 'Function' -or $origin.Count -ne 1 -or [IO.Path]::GetExtension($origin[0].Path) -cne '.cdxml' -or $command.ModuleName -cne $origin[0].Name -or -not [object]::ReferenceEquals($command,$Parent.ExportedCommands[$Name])){throw ('Storage command is not the selected manifest CDXML export: '+$Name)}
+}
+function Get-WslColdMicrosoftStorageFile {
+    param([string]$Path)
+    [void](Assert-WslColdProtectedPath $Path)
+    $signature=Microsoft.PowerShell.Security\Get-AuthenticodeSignature -LiteralPath $Path -ErrorAction Stop
+    # Publisher identity, not a machine-specific file/certificate hash. Other
+    # publisher forms require review, even if the local trust store accepts them.
+    $subjects=@('CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US','CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US')
+    if($signature.Status.ToString() -cne 'Valid' -or -not $signature.SignerCertificate -or $signature.SignerCertificate.Subject -cnotin $subjects){throw ('Valid Microsoft Storage signature required: '+$Path)}
+    return [ordered]@{path=$Path;sha256=(Microsoft.PowerShell.Utility\Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant();signer=$signature.SignerCertificate.Subject}
+}
+function Get-WslColdStoragePreflight {
+    if(-not $IsWindows -or -not [Environment]::Is64BitProcess){throw 'Read-only Storage preflight requires native 64-bit PowerShell on Windows.'}
+    $manifest=[IO.Path]::GetFullPath((Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell/v1.0/Modules/Storage/Storage.psd1'))
+    $files=[Collections.Generic.List[object]]::new();$files.Add((Get-WslColdMicrosoftStorageFile $manifest))
+    $data=Microsoft.PowerShell.Utility\Import-PowerShellDataFile -LiteralPath $manifest -ErrorAction Stop
+    $declarations=@($data.NestedModules)
+    if($declarations.Count -lt 1 -or $declarations.Count -gt 128){throw 'Bounded declared Storage nested inventory required.'}
+    $paths=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach($relative in $declarations){
+        if($relative -isnot [string]){throw 'Unsupported Storage nested module specification.'}
+        $path=Resolve-WslColdStorageNestedPath $manifest $relative
+        if(-not $paths.Add($path)){throw 'Duplicate Storage nested declaration.'};$files.Add((Get-WslColdMicrosoftStorageFile $path))
+    }
+    foreach($loaded in @(Microsoft.PowerShell.Core\Get-Module -Name Storage -All)){
+        if(-not [string]::Equals($loaded.Path,$manifest,[StringComparison]::OrdinalIgnoreCase)){throw 'Ambient Storage module differs from selected system manifest; fresh process required.'}
+    }
+    $parents=@(Microsoft.PowerShell.Core\Import-Module -Name $manifest -PassThru -Global -NoClobber -ErrorAction Stop)
+    if($parents.Count -ne 1){throw 'Exactly one selected Storage parent required.'};$parent=$parents[0]
+    $commands=[Collections.Generic.List[object]]::new()
+    foreach($name in @('Get-DiskImage','Get-Disk','Get-Partition','Initialize-Disk','New-Partition','Format-Volume','Get-Volume')){
+        $resolved=@(Microsoft.PowerShell.Core\Get-Command -Name ('Storage\'+$name) -All -ListImported -ErrorAction Stop)
+        Assert-WslColdStorageCommandBinding $parent $manifest ([guid]$data.GUID) ([version]$data.ModuleVersion) @($paths) $name $resolved
+        $commands.Add([ordered]@{name=$name;moduleName=$resolved[0].ModuleName;modulePath=$resolved[0].Module.Path;commandType=$resolved[0].CommandType.ToString()})
+    }
+    return [ordered]@{profile='microsoft-system-storage-cdxml-v1';readOnly=$true;manifest=$manifest;guid=$parent.Guid.ToString();version=$parent.Version.ToString();files=@($files);commands=@($commands);diskCommandsExecuted=$false;volumeAccepted=$false;productionAccepted=$false}
+}
 function Assert-WslSyntheticCParent {
     param([string]$Path)
     if(-not $IsWindows -or [IO.Path]::GetFullPath($Path) -cne $Path -or -not $Path.StartsWith('C:\',[StringComparison]::Ordinal) -or $Path -ceq 'C:\'){throw 'Canonical protected non-root C synthetic parent required.'}
@@ -15,14 +73,10 @@ function Get-WslColdSyntheticVolumePlan {
     if($FixtureParent -ceq $EvidenceParent -or $FixtureParent.StartsWith($EvidenceParent+'\',[StringComparison]::OrdinalIgnoreCase) -or $EvidenceParent.StartsWith($FixtureParent+'\',[StringComparison]::OrdinalIgnoreCase)){throw 'Disjoint fixture and evidence parents required.'}
     $code=Get-WslColdCustodyCode $source $SourceManifestSha256 -RequireProtected
     Initialize-WslColdWorkerProtocol
-    foreach($name in @('Get-DiskImage','Get-Disk','Get-Partition','Initialize-Disk','New-Partition','Format-Volume','Get-Volume')){
-        $command=Get-Command ('Storage\'+$name) -ErrorAction Stop
-        if($command.ModuleName -cne 'Storage' -or -not $command.Module.Path){throw 'Owned Microsoft Storage module required.'}
-        [void](Assert-WslColdProtectedPath $command.Module.Path)
-    }
+    $storage=Get-WslColdStoragePreflight
     $f=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($FixtureParent);$e=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($EvidenceParent)
     try {
-        [ordered]@{schemaVersion=1;kind='new-private-synthetic-volume-root-v1';sourceRoot=$source;sourceCommit=$code.SourceCommit;sourceManifestSha256=$SourceManifestSha256;
+        [ordered]@{schemaVersion=2;kind='new-private-synthetic-volume-root-v1';sourceRoot=$source;sourceCommit=$code.SourceCommit;sourceManifestSha256=$SourceManifestSha256;storage=$storage;
             ownerSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;fixtureParent=$FixtureParent;evidenceParent=$EvidenceParent;fixtureIdentity=$f.FileIdentity;evidenceIdentity=$e.FileIdentity;
             fixtureDescriptor=$f.Read().DescriptorSha256;evidenceDescriptor=$e.Read().DescriptorSha256;
             virtualBytes=[long][Revealfleet.Backup.ColdSyntheticVirtualDisk]::VirtualBytes;hardFileBytes=[long][Revealfleet.Backup.ColdSyntheticVirtualDisk]::HardFileBytes;
@@ -32,8 +86,9 @@ function Get-WslColdSyntheticVolumePlan {
     } finally {$f.Dispose();$e.Dispose()}
 }
 function Get-WslOwnedSyntheticStorage {
-    param([Revealfleet.Backup.ColdSyntheticVirtualDisk]$Owned)
+    param([Revealfleet.Backup.ColdSyntheticVirtualDisk]$Owned,[Collections.IDictionary]$StorageBinding)
     $Owned.Validate()
+    if(-not $StorageBinding -or (ConvertTo-Json -InputObject (Get-WslColdStoragePreflight) -Depth 12 -Compress) -cne (ConvertTo-Json -InputObject $StorageBinding -Depth 12 -Compress)){throw 'Reviewed Storage ownership changed before disk operation.'}
     $images=@(Storage\Get-DiskImage -ImagePath $Owned.ImagePath -ErrorAction Stop)
     if($images.Count -ne 1 -or -not $images[0].Attached -or $images[0].DevicePath -cne $Owned.PhysicalPath -or $images[0].ImagePath -cne $Owned.ImagePath){throw 'Exact created image association refused.'}
     # Microsoft's documented Get-DiskImage | Get-Disk association. No global
@@ -46,8 +101,8 @@ function Get-WslOwnedSyntheticStorage {
     return $d
 }
 function Assert-WslOwnedSyntheticPartition {
-    param([Revealfleet.Backup.ColdSyntheticVirtualDisk]$Owned,$Partition)
-    $disk=Get-WslOwnedSyntheticStorage $Owned
+    param([Revealfleet.Backup.ColdSyntheticVirtualDisk]$Owned,$Partition,[Collections.IDictionary]$StorageBinding)
+    $disk=Get-WslOwnedSyntheticStorage $Owned $StorageBinding
     $parents=@(Storage\Get-Disk -Partition $Partition -ErrorAction Stop)
     $current=@($disk|Storage\Get-Partition -ErrorAction Stop)
     if($current.Count -ne 1 -or $current[0].ObjectId -cne $Partition.ObjectId -or $current[0].Offset -ne $Partition.Offset -or $current[0].Size -ne $Partition.Size){throw 'Partition identity/layout drift before write.'}
@@ -55,25 +110,25 @@ function Assert-WslOwnedSyntheticPartition {
     $Owned.ValidateStorage($parents[0].Path,[uint32]$parents[0].Number,[uint64]$parents[0].Size,[bool]$parents[0].IsBoot,[bool]$parents[0].IsSystem)
 }
 function Initialize-WslOwnedSyntheticVolume {
-    param([Revealfleet.Backup.ColdSyntheticVirtualDisk]$Owned,[string]$Evidence)
-    $disk=Get-WslOwnedSyntheticStorage $Owned
+    param([Revealfleet.Backup.ColdSyntheticVirtualDisk]$Owned,[string]$Evidence,[Collections.IDictionary]$StorageBinding)
+    $disk=Get-WslOwnedSyntheticStorage $Owned $StorageBinding
     if($disk.PartitionStyle.ToString() -cne 'RAW' -or $disk.NumberOfPartitions -ne 0){throw 'Never initialize an existing partitioned disk.'}
     Write-WslBackupJsonNew (Join-Path $Evidence 'before-initialize.json') @{image=$Owned.ImagePath;identifier=$Owned.Identifier;physical=$Owned.PhysicalPath;storagePath=$disk.Path;number=$disk.Number;size=$disk.Size}
-    $disk=Get-WslOwnedSyntheticStorage $Owned # immediately before destructive command
+    $disk=Get-WslOwnedSyntheticStorage $Owned $StorageBinding # immediately before destructive command
     if($disk.PartitionStyle.ToString() -cne 'RAW' -or $disk.NumberOfPartitions -ne 0){throw 'RAW identity drift before initialize.'}
     $null=Storage\Initialize-Disk -InputObject $disk -PartitionStyle MBR -PassThru -Confirm:$false -ErrorAction Stop
-    $disk=Get-WslOwnedSyntheticStorage $Owned
+    $disk=Get-WslOwnedSyntheticStorage $Owned $StorageBinding
     if($disk.PartitionStyle.ToString() -cne 'MBR' -or $disk.NumberOfPartitions -ne 0){throw 'Unexpected initialized layout.'}
     Write-WslBackupJsonNew (Join-Path $Evidence 'before-partition.json') @{identifier=$Owned.Identifier;storagePath=$disk.Path;uniqueId=$disk.UniqueId}
-    $disk=Get-WslOwnedSyntheticStorage $Owned
+    $disk=Get-WslOwnedSyntheticStorage $Owned $StorageBinding
     if($disk.PartitionStyle.ToString() -cne 'MBR' -or $disk.NumberOfPartitions -ne 0){throw 'Partition layout drift before creation.'}
     $parts=@(Storage\New-Partition -InputObject $disk -UseMaximumSize -MbrType IFS -ErrorAction Stop)
     if($parts.Count -ne 1){throw 'Exactly one returned synthetic partition required.'};$part=$parts[0]
-    Assert-WslOwnedSyntheticPartition $Owned $part
+    Assert-WslOwnedSyntheticPartition $Owned $part $StorageBinding
     Write-WslBackupJsonNew (Join-Path $Evidence 'before-format.json') @{identifier=$Owned.Identifier;partition=$part.ObjectId;offset=$part.Offset;size=$part.Size}
-    Assert-WslOwnedSyntheticPartition $Owned $part # immediately before format
+    Assert-WslOwnedSyntheticPartition $Owned $part $StorageBinding # immediately before format
     $volumes=@(Storage\Format-Volume -Partition $part -FileSystem NTFS -AllocationUnitSize 4096 -NewFileSystemLabel 'RevkitSynthetic' -Confirm:$false -ErrorAction Stop)
-    Assert-WslOwnedSyntheticPartition $Owned $part
+    Assert-WslOwnedSyntheticPartition $Owned $part $StorageBinding
     if($volumes.Count -ne 1 -or $volumes[0].FileSystemType.ToString() -cne 'NTFS' -or $volumes[0].AllocationUnitSize -ne 4096){throw 'Returned NTFS volume refused.'}
     $Owned.BindVolume($volumes[0].Path,[uint64]$part.Offset,[uint64]$part.Size)
     Write-WslBackupJsonNew (Join-Path $Evidence 'volume-bound.json') @{identifier=$Owned.Identifier;root=$Owned.VolumeRoot;offset=$part.Offset;size=$part.Size}
@@ -110,11 +165,12 @@ function Invoke-WslColdSyntheticVolume {
     if(-not $IsWindows){throw 'Actual Windows/root review required; native cannot execute synthetic volume.'}
     Assert-WslBackupHash $ReviewedPlanSha256;$doc=Read-WslRecoveryDocument $PlanPath
     if($doc.Sha256 -cne $ReviewedPlanSha256){throw 'Independent reviewed plan digest differs.'};$p=$doc.Value
-    Assert-WslRecoveryFields $p @('schemaVersion','kind','sourceRoot','sourceCommit','sourceManifestSha256','ownerSid','fixtureParent','evidenceParent','fixtureIdentity','evidenceIdentity','fixtureDescriptor','evidenceDescriptor','virtualBytes','hardFileBytes','createdAt','expiresAt','operations','actualProductionAccepted','existingVhdAccepted','physicalDiskAccepted','rootPrivileges') 'synthetic volume review plan'
-    if($p.schemaVersion -ne 1 -or $p.kind -cne 'new-private-synthetic-volume-root-v1' -or $p.expiresAt -le [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -or $p.expiresAt-$p.createdAt -gt 3600){throw 'Fresh synthetic-only plan required.'}
+    Assert-WslRecoveryFields $p @('schemaVersion','kind','sourceRoot','sourceCommit','sourceManifestSha256','storage','ownerSid','fixtureParent','evidenceParent','fixtureIdentity','evidenceIdentity','fixtureDescriptor','evidenceDescriptor','virtualBytes','hardFileBytes','createdAt','expiresAt','operations','actualProductionAccepted','existingVhdAccepted','physicalDiskAccepted','rootPrivileges') 'synthetic volume review plan'
+    if($p.schemaVersion -ne 2 -or $p.kind -cne 'new-private-synthetic-volume-root-v1' -or $p.expiresAt -le [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -or $p.expiresAt-$p.createdAt -gt 3600){throw 'Fresh synthetic-only plan required.'}
     $fresh=Get-WslColdSyntheticVolumePlan $p.fixtureParent $p.evidenceParent $p.sourceManifestSha256
     foreach($name in @('sourceRoot','sourceCommit','ownerSid','fixtureIdentity','evidenceIdentity','fixtureDescriptor','evidenceDescriptor','virtualBytes','hardFileBytes')){if($fresh[$name] -cne $p[$name]){throw 'Reviewed synthetic source/parent binding drift.'}}
     foreach($name in @('operations','rootPrivileges','actualProductionAccepted','existingVhdAccepted','physicalDiskAccepted')){if((ConvertTo-Json -InputObject $fresh[$name] -Compress) -cne (ConvertTo-Json -InputObject $p[$name] -Compress)){throw 'Reviewed synthetic operation/privilege scope differs.'}}
+    if((ConvertTo-Json -InputObject $fresh.storage -Depth 12 -Compress) -cne (ConvertTo-Json -InputObject $p.storage -Depth 12 -Compress)){throw 'Reviewed Microsoft Storage binding drift.'}
     if([IO.DriveInfo]::new('C:\').AvailableFreeSpace -lt 1GB+[Revealfleet.Backup.ColdSyntheticVirtualDisk]::HardFileBytes){throw 'Conservative C synthetic capacity refused.'}
     $scope=[Revealfleet.Backup.ColdSyntheticVirtualDisk]::OpenPrivilegeScope();$owned=$lease=$transaction=$null;$failure=$null;$evidence=$null
     try {
@@ -123,7 +179,7 @@ function Invoke-WslColdSyntheticVolume {
         Write-WslBackupJsonNew (Join-Path $evidence 'reviewed-plan.json') $p
         $owned=[Revealfleet.Backup.ColdSyntheticVirtualDisk]::CreateNew($p.fixtureParent,$dir,$file)
         Write-WslBackupJsonNew (Join-Path $evidence 'created.json') @{workspace=$owned.Workspace;image=$owned.ImagePath;identifier=$owned.Identifier;virtualBytes=$fresh.virtualBytes;backingFileBytes=$owned.BackingFileBytes;productionAccepted=$false}
-        $owned.Attach();Initialize-WslOwnedSyntheticVolume $owned $evidence
+        $owned.Attach();Initialize-WslOwnedSyntheticVolume $owned $evidence $fresh.storage
         $systems=Get-WslOwnedSyntheticTree $owned -SystemOnly;Write-WslBackupJsonNew (Join-Path $evidence 'system-before-seed.json') @{tree=$systems}
         $seed=New-WslGenericPaddedRoot;Write-WslBackupJsonNew (Join-Path $evidence 'seed-proposed.json') $seed
         $owned.SeedRoot($seed)
