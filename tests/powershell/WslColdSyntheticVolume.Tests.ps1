@@ -19,6 +19,82 @@ BeforeAll {
     function New-StorageUInt16Model {
         return @{SystemProperties=[pscustomobject]@{ClassName='MSFT_Disk';Namespace='root/Microsoft/Windows/Storage';ServerName=$null};Properties=@([pscustomobject]@{Name='BusType';CimType=[Microsoft.Management.Infrastructure.CimType]::UInt16;Value=[uint16]15});ClassName='MSFT_Disk';PropertyName='BusType'}
     }
+    function New-PartitionObservationModel {
+        $disk=@{Path='owned-synthetic-device';UniqueId='synthetic-native-id';Number=[uint32]3;Size=[uint64]128MB;LogicalSectorSize=[uint32]512;IsBoot=$false;IsSystem=$false}
+        $part=@{ObjectId='synthetic-partition-id';DiskNumber=[uint32]3;Offset=[uint64]1MB;Size=[uint64]126MB}
+        return @{disk=$disk;returned=$part;parents=@($disk.Clone());current=@($part.Clone())}
+    }
+}
+Describe 'Reviewed partition layout and format boundary' {
+    It 'requests one MiB offset and alignment and refuses the observed default before modeled format' {
+        $layout=Get-WslColdSyntheticPartitionLayout
+        $layout.offsetBytes|Should -BeOfType ([uint64]);$layout.offsetBytes|Should -Be 1MB
+        $layout.alignmentBytes|Should -BeOfType ([uint32]);$layout.alignmentBytes|Should -Be 1MB
+        $script:modeledFormats=0;$model=New-PartitionObservationModel
+        & {Assert-WslColdSyntheticPartitionObservation $model $layout ([Revealfleet.Backup.ColdSyntheticVirtualDisk]::VirtualBytes);$script:modeledFormats++}
+        $script:modeledFormats|Should -Be 1
+        $script:modeledFormats=0;$model.returned.Offset=[uint64]65536;$model.current[0].Offset=[uint64]65536
+        {& {Assert-WslColdSyntheticPartitionObservation $model $layout ([Revealfleet.Backup.ColdSyntheticVirtualDisk]::VirtualBytes);$script:modeledFormats++}}|Should -Throw '*minimum-offset*'
+        $script:modeledFormats|Should -Be 0
+    }
+    It 'distinguishes remaining association mismatches instead of attributing every predicate to offset' {
+        foreach($fault in @('current-count','current-object-id','current-layout-drift','parent-count','parent-path','parent-unique-id','disk-number')){
+            $model=New-PartitionObservationModel
+            switch($fault){
+                current-count {$model.current=@()}
+                current-object-id {$model.current[0].ObjectId='changed'}
+                current-layout-drift {$model.current[0].Size=[uint64]125MB}
+                parent-count {$model.parents+=@($model.parents[0].Clone())}
+                parent-path {$model.parents[0].Path='different-device'}
+                parent-unique-id {$model.parents[0].UniqueId='different-id'}
+                disk-number {$model.returned.DiskNumber=[uint32]4}
+            }
+            {Assert-WslColdSyntheticPartitionObservation $model (Get-WslColdSyntheticPartitionLayout) ([Revealfleet.Backup.ColdSyntheticVirtualDisk]::VirtualBytes)}|Should -Throw ('*'+$fault+'*')
+        }
+    }
+    It 'refuses changed requested layout and finite extent or sector errors without integer wraparound' {
+        foreach($fault in @('offset-size-types','requested-offset','zero-size','overflow-size','sector-alignment')){
+            $model=New-PartitionObservationModel
+            switch($fault){
+                offset-size-types {$model.returned.Offset='1048576'}
+                requested-offset {$model.returned.Offset=[uint64]2MB}
+                zero-size {$model.returned.Size=[uint64]0}
+                overflow-size {$model.returned.Size=[uint64]::MaxValue}
+                sector-alignment {$model.disk.LogicalSectorSize=[uint32]768}
+            }
+            $model.current[0].Offset=$model.returned.Offset;$model.current[0].Size=$model.returned.Size
+            {Assert-WslColdSyntheticPartitionObservation $model (Get-WslColdSyntheticPartitionLayout) ([Revealfleet.Backup.ColdSyntheticVirtualDisk]::VirtualBytes)}|Should -Throw
+        }
+        $changed=Get-WslColdSyntheticPartitionLayout;$changed.offsetBytes=[uint64]65536
+        {Assert-WslColdSyntheticPartitionLayout $changed}|Should -Throw '*reviewed-layout-contract*'
+    }
+    It 'binds explicit creation arguments and validation immediately before the real format command in source' {
+        $tokens=$null;$errors=$null;$ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../../scripts/lib/WslColdSyntheticVolume.ps1'),[ref]$tokens,[ref]$errors)
+        $body=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Initialize-WslOwnedSyntheticVolume'},$true).Body
+        $calls=@($body.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst]},$true))
+        $create=@($calls|Where-Object {$_.GetCommandName() -ceq 'Storage\New-Partition'})[0]
+        foreach($pair in @(@('Offset','offsetBytes'),@('Alignment','alignmentBytes'))){
+            $index=0;while($create.CommandElements[$index] -isnot [Management.Automation.Language.CommandParameterAst] -or $create.CommandElements[$index].ParameterName -cne $pair[0]){$index++;if($index -ge $create.CommandElements.Count){throw 'Missing explicit creation contract'}}
+            $arg=$create.CommandElements[$index+1];$arg|Should -BeOfType ([Management.Automation.Language.MemberExpressionAst]);$arg.Expression.VariablePath.UserPath|Should -BeExactly 'Layout';$arg.Member.Value|Should -BeExactly $pair[1]
+        }
+        $format=@($calls|Where-Object {$_.GetCommandName() -ceq 'Storage\Format-Volume'})[0]
+        $previous=@($calls|Where-Object {$_.Extent.EndOffset -lt $format.Extent.StartOffset}|Sort-Object {$_.Extent.EndOffset})[-1]
+        $previous.GetCommandName()|Should -BeExactly 'Assert-WslOwnedSyntheticPartition'
+        $previous.CommandElements[-1].Value|Should -BeExactly 'pre-format'
+        $gate=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Assert-WslOwnedSyntheticPartition'},$true)
+        @($gate.Body.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ceq 'Assert-WslColdSyntheticPartitionObservation'},$true)).Count|Should -Be 1
+    }
+    It 'verifies real readonly Storage parameter types and client-only partition projection without any disk operation' -Skip:(-not $IsWindows) {
+        [void](Get-WslColdStoragePreflight)
+        $command=Microsoft.PowerShell.Core\Get-Command Storage\New-Partition -ErrorAction Stop
+        $sets=@($command.ParameterSets|Where-Object {('InputObject' -cin $_.Parameters.Name) -and ('Offset' -cin $_.Parameters.Name) -and ('Alignment' -cin $_.Parameters.Name) -and ('UseMaximumSize' -cin $_.Parameters.Name)})
+        $sets.Count|Should -BeGreaterThan 0
+        @($sets[0].Parameters|Where-Object Name -CEQ Offset)[0].ParameterType|Should -Be ([uint64])
+        @($sets[0].Parameters|Where-Object Name -CEQ Alignment)[0].ParameterType|Should -Be ([uint32])
+        $partition=CimCmdlets\New-CimInstance -Namespace root/Microsoft/Windows/Storage -ClassName MSFT_Partition -Property @{ObjectId='synthetic-partition-id';DiskNumber=[uint32]3;Offset=[uint64]1MB;Size=[uint64]126MB} -ClientOnly
+        $model=New-PartitionObservationModel;$model.returned=Get-WslColdSyntheticStorageSnapshot $partition;$model.current=@($model.returned)
+        {Assert-WslColdSyntheticPartitionObservation $model (Get-WslColdSyntheticPartitionLayout) ([Revealfleet.Backup.ColdSyntheticVirtualDisk]::VirtualBytes)}|Should -Not -Throw
+    }
 }
 Describe 'Typed local Storage CIM enum classification' {
     It 'reads exact raw UInt16 observations without consulting adapted display labels' {

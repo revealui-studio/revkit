@@ -101,7 +101,7 @@ namespace Revealfleet.Backup {
             Validate();if(!attached || observedNumber!=DeviceNumber || observedSize!=VirtualBytes || isBoot || isSystem || String.IsNullOrWhiteSpace(storagePath) || NumberForPath(storagePath)!=DeviceNumber)throw new IOException("Storage object is not the owned new VHD");
         }
         public void BindVolume(string root,ulong offset,ulong size) {
-            Validate();if(!attached || VolumeRoot!=null || offset<1048576 || size==0 || offset+size>VirtualBytes)throw new IOException("Fresh owned partition required");
+            Validate();if(!attached || VolumeRoot!=null || offset<1048576 || offset>VirtualBytes || size==0 || size>VirtualBytes-offset)throw new IOException("Fresh owned partition required");
             if(root==null || root.Length!=49 || !root.StartsWith(@"\\?\Volume{",StringComparison.Ordinal) || !root.EndsWith("}\\",StringComparison.Ordinal) || !Guid.TryParse(root.Substring(11,36),out var id) || id==Guid.Empty)throw new IOException("Canonical volume GUID root required");
             VolumeRoot=@"\\?\Volume{"+id.ToString("D")+"}\\";partitionOffset=offset;partitionBytes=size;ValidateVolume();
         }

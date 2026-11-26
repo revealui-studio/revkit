@@ -95,6 +95,14 @@ function Assert-WslSyntheticCParent {
     if(-not $IsWindows -or [IO.Path]::GetFullPath($Path) -cne $Path -or -not $Path.StartsWith('C:\',[StringComparison]::Ordinal) -or $Path -ceq 'C:\'){throw 'Canonical protected non-root C synthetic parent required.'}
     [void](Assert-WslColdProtectedPath $Path -Directory -PrivateData)
 }
+function Get-WslColdSyntheticPartitionLayout {
+    return [ordered]@{profile='fixed-mbr-1m-offset-alignment-v1';offsetBytes=[uint64]1MB;alignmentBytes=[uint32]1MB}
+}
+function Assert-WslColdSyntheticPartitionLayout {
+    param([Collections.IDictionary]$Layout)
+    $fixed=Get-WslColdSyntheticPartitionLayout
+    if(-not $Layout -or $Layout.Count -ne $fixed.Count -or $Layout.profile -cne $fixed.profile -or $Layout.offsetBytes -ne $fixed.offsetBytes -or $Layout.alignmentBytes -ne $fixed.alignmentBytes){throw 'Partition predicate refused: reviewed-layout-contract.'}
+}
 function Get-WslColdSyntheticVolumePlan {
     param([string]$FixtureParent,[string]$EvidenceParent,[string]$SourceManifestSha256)
     Assert-WslSyntheticCParent $FixtureParent;Assert-WslSyntheticCParent $EvidenceParent
@@ -108,7 +116,7 @@ function Get-WslColdSyntheticVolumePlan {
     $storage=Get-WslColdStoragePreflight
     $f=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($FixtureParent);$e=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($EvidenceParent)
     try {
-        [ordered]@{schemaVersion=2;kind='new-private-synthetic-volume-root-v1';sourceRoot=$source;sourceCommit=$code.SourceCommit;sourceManifestSha256=$SourceManifestSha256;storage=$storage;
+        [ordered]@{schemaVersion=3;kind='new-private-synthetic-volume-root-v1';sourceRoot=$source;sourceCommit=$code.SourceCommit;sourceManifestSha256=$SourceManifestSha256;storage=$storage;partitionLayout=(Get-WslColdSyntheticPartitionLayout);
             ownerSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;fixtureParent=$FixtureParent;evidenceParent=$EvidenceParent;fixtureIdentity=$f.FileIdentity;evidenceIdentity=$e.FileIdentity;
             fixtureDescriptor=$f.Read().DescriptorSha256;evidenceDescriptor=$e.Read().DescriptorSha256;
             virtualBytes=[long][Revealfleet.Backup.ColdSyntheticVirtualDisk]::VirtualBytes;hardFileBytes=[long][Revealfleet.Backup.ColdSyntheticVirtualDisk]::HardFileBytes;
@@ -153,17 +161,51 @@ function Get-WslOwnedSyntheticStorage {
     $Owned.ValidateStorage($d.Path,[uint32]$d.Number,[uint64]$d.Size,[bool]$d.IsBoot,[bool]$d.IsSystem)
     return $d
 }
+function Get-WslColdSyntheticStorageSnapshot {
+    param($Value,[switch]$Disk)
+    $names=if($Disk){@('Path','UniqueId','Number','Size','LogicalSectorSize','IsBoot','IsSystem','IsOffline','IsReadOnly','IsClustered')}else{@('ObjectId','DiskNumber','Offset','Size')}
+    $row=[ordered]@{};$types=[ordered]@{}
+    foreach($name in $names){
+        $field=$Value.$name;$types[$name]=if($null -eq $field){'null'}else{$field.GetType().FullName}
+        if($null -eq $field -or $field -is [bool] -or $field -is [uint32] -or $field -is [uint64] -or ($field -is [string] -and $field.Length -le 4096)){$row[$name]=$field}else{throw ('Partition observation field type/length refused: '+$name)}
+    }
+    $row['clrTypes']=$types;return $row
+}
+function Assert-WslColdSyntheticPartitionObservation {
+    param([Collections.IDictionary]$Observation,[Collections.IDictionary]$Layout,[uint64]$VirtualBytes)
+    Assert-WslColdSyntheticPartitionLayout $Layout
+    $disk=$Observation.disk;$part=$Observation.returned
+    if($Observation.current.Count -ne 1){throw 'Partition predicate refused: current-count.'}
+    $current=$Observation.current[0]
+    if($part.ObjectId -isnot [string] -or [string]::IsNullOrWhiteSpace($part.ObjectId) -or $current.ObjectId -cne $part.ObjectId){throw 'Partition predicate refused: current-object-id.'}
+    if($current.Offset -isnot [uint64] -or $current.Size -isnot [uint64] -or $current.Offset -cne $part.Offset -or $current.Size -cne $part.Size){throw 'Partition predicate refused: current-layout-drift.'}
+    if($Observation.parents.Count -ne 1){throw 'Partition predicate refused: parent-count.'}
+    $parent=$Observation.parents[0]
+    if($disk.Path -isnot [string] -or [string]::IsNullOrWhiteSpace($disk.Path) -or $parent.Path -cne $disk.Path){throw 'Partition predicate refused: parent-path.'}
+    if($disk.UniqueId -isnot [string] -or [string]::IsNullOrWhiteSpace($disk.UniqueId) -or $parent.UniqueId -cne $disk.UniqueId){throw 'Partition predicate refused: parent-unique-id.'}
+    if($disk.Number -isnot [uint32] -or $part.DiskNumber -isnot [uint32] -or $part.DiskNumber -ne $disk.Number){throw 'Partition predicate refused: disk-number.'}
+    if($part.Offset -isnot [uint64] -or $part.Size -isnot [uint64]){throw 'Partition predicate refused: offset-size-types.'}
+    if($part.Offset -lt 1MB){throw 'Partition predicate refused: minimum-offset.'}
+    if($part.Offset -ne $Layout.offsetBytes){throw 'Partition predicate refused: requested-offset.'}
+    # Subtract only after bounding the offset. Never add untrusted UInt64
+    # values and hope that wraparound or floating conversion is harmless.
+    if($VirtualBytes -ne [Revealfleet.Backup.ColdSyntheticVirtualDisk]::VirtualBytes -or $part.Offset -gt $VirtualBytes -or $part.Size -eq 0 -or $part.Size -gt $VirtualBytes-$part.Offset){throw 'Partition predicate refused: extent-bounds.'}
+    if($disk.LogicalSectorSize -isnot [uint32] -or $disk.LogicalSectorSize -eq 0 -or $Layout.alignmentBytes % $disk.LogicalSectorSize -ne 0 -or $part.Offset % $Layout.alignmentBytes -ne 0 -or $part.Size % $disk.LogicalSectorSize -ne 0){throw 'Partition predicate refused: sector-alignment.'}
+}
 function Assert-WslOwnedSyntheticPartition {
-    param([Revealfleet.Backup.ColdSyntheticVirtualDisk]$Owned,$Partition,[Collections.IDictionary]$StorageBinding)
+    param([Revealfleet.Backup.ColdSyntheticVirtualDisk]$Owned,$Partition,[Collections.IDictionary]$StorageBinding,[Collections.IDictionary]$Layout,[string]$Evidence,[ValidateSet('post-create','pre-format','post-format')][string]$Stage)
     $disk=Get-WslOwnedSyntheticStorage $Owned $StorageBinding
     $parents=@(Storage\Get-Disk -Partition $Partition -ErrorAction Stop)
     $current=@($disk|Storage\Get-Partition -ErrorAction Stop)
-    if($current.Count -ne 1 -or $current[0].ObjectId -cne $Partition.ObjectId -or $current[0].Offset -ne $Partition.Offset -or $current[0].Size -ne $Partition.Size){throw 'Partition identity/layout drift before write.'}
-    if($parents.Count -ne 1 -or $parents[0].Path -cne $disk.Path -or $parents[0].UniqueId -cne $disk.UniqueId -or $Partition.DiskNumber -ne $disk.Number -or $Partition.Offset -lt 1MB -or $Partition.Size -le 0 -or $Partition.Offset+$Partition.Size -gt [Revealfleet.Backup.ColdSyntheticVirtualDisk]::VirtualBytes){throw 'Returned partition no longer belongs to owned VHD.'}
-    $Owned.ValidateStorage($parents[0].Path,[uint32]$parents[0].Number,[uint64]$parents[0].Size,[bool]$parents[0].IsBoot,[bool]$parents[0].IsSystem)
+    if($parents.Count -gt 4 -or $current.Count -gt 4){throw 'Partition association inventory bound exceeded; no format.'}
+    $observed=[ordered]@{stage=$Stage;layout=$Layout;owned=@{identifier=$Owned.Identifier;deviceNumber=$Owned.DeviceNumber;physicalPath=$Owned.PhysicalPath;virtualBytes=[Revealfleet.Backup.ColdSyntheticVirtualDisk]::VirtualBytes};disk=(Get-WslColdSyntheticStorageSnapshot $disk -Disk);returned=(Get-WslColdSyntheticStorageSnapshot $Partition);parents=@($parents|ForEach-Object {Get-WslColdSyntheticStorageSnapshot $_ -Disk});current=@($current|ForEach-Object {Get-WslColdSyntheticStorageSnapshot $_})}
+    Write-WslBackupJsonNew (Join-Path $Evidence ('partition-'+$Stage+'-observation.json')) $observed
+    Assert-WslColdSyntheticPartitionObservation $observed $Layout ([Revealfleet.Backup.ColdSyntheticVirtualDisk]::VirtualBytes)
+    try {$Owned.ValidateStorage($parents[0].Path,[uint32]$parents[0].Number,[uint64]$parents[0].Size,[bool]$parents[0].IsBoot,[bool]$parents[0].IsSystem)}catch{throw ('Partition predicate refused: native-parent-corroboration. '+$_.Exception.Message)}
 }
 function Initialize-WslOwnedSyntheticVolume {
-    param([Revealfleet.Backup.ColdSyntheticVirtualDisk]$Owned,[string]$Evidence,[Collections.IDictionary]$StorageBinding)
+    param([Revealfleet.Backup.ColdSyntheticVirtualDisk]$Owned,[string]$Evidence,[Collections.IDictionary]$StorageBinding,[Collections.IDictionary]$Layout)
+    Assert-WslColdSyntheticPartitionLayout $Layout
     $disk=Get-WslOwnedSyntheticStorage $Owned $StorageBinding
     # MSFT_Disk uses 0 for uninitialized/unknown (displayed RAW), 1 for MBR;
     # these are not the different Win32 PARTITION_STYLE enum values.
@@ -174,16 +216,16 @@ function Initialize-WslOwnedSyntheticVolume {
     $null=Storage\Initialize-Disk -InputObject $disk -PartitionStyle MBR -PassThru -Confirm:$false -ErrorAction Stop
     $disk=Get-WslOwnedSyntheticStorage $Owned $StorageBinding
     if((Get-WslColdStorageUInt16 $disk 'MSFT_Disk' 'PartitionStyle') -ne 1 -or $disk.NumberOfPartitions -ne 0){throw 'Unexpected initialized layout.'}
-    Write-WslBackupJsonNew (Join-Path $Evidence 'before-partition.json') @{identifier=$Owned.Identifier;storagePath=$disk.Path;uniqueId=$disk.UniqueId}
+    Write-WslBackupJsonNew (Join-Path $Evidence 'before-partition.json') @{identifier=$Owned.Identifier;storagePath=$disk.Path;uniqueId=$disk.UniqueId;partitionLayout=$Layout}
     $disk=Get-WslOwnedSyntheticStorage $Owned $StorageBinding
     if((Get-WslColdStorageUInt16 $disk 'MSFT_Disk' 'PartitionStyle') -ne 1 -or $disk.NumberOfPartitions -ne 0){throw 'Partition layout drift before creation.'}
-    $parts=@(Storage\New-Partition -InputObject $disk -UseMaximumSize -MbrType IFS -ErrorAction Stop)
+    $parts=@(Storage\New-Partition -InputObject $disk -Offset $Layout.offsetBytes -Alignment $Layout.alignmentBytes -UseMaximumSize -MbrType IFS -ErrorAction Stop)
     if($parts.Count -ne 1){throw 'Exactly one returned synthetic partition required.'};$part=$parts[0]
-    Assert-WslOwnedSyntheticPartition $Owned $part $StorageBinding
+    Assert-WslOwnedSyntheticPartition $Owned $part $StorageBinding $Layout $Evidence 'post-create'
     Write-WslBackupJsonNew (Join-Path $Evidence 'before-format.json') @{identifier=$Owned.Identifier;partition=$part.ObjectId;offset=$part.Offset;size=$part.Size}
-    Assert-WslOwnedSyntheticPartition $Owned $part $StorageBinding # immediately before format
+    Assert-WslOwnedSyntheticPartition $Owned $part $StorageBinding $Layout $Evidence 'pre-format' # immediately before format
     $volumes=@(Storage\Format-Volume -Partition $part -FileSystem NTFS -AllocationUnitSize 4096 -NewFileSystemLabel 'RevkitSynthetic' -Confirm:$false -ErrorAction Stop)
-    Assert-WslOwnedSyntheticPartition $Owned $part $StorageBinding
+    Assert-WslOwnedSyntheticPartition $Owned $part $StorageBinding $Layout $Evidence 'post-format'
     if($volumes.Count -ne 1 -or (Get-WslColdStorageUInt16 $volumes[0] 'MSFT_Volume' 'FileSystemType') -ne 14 -or $volumes[0].AllocationUnitSize -ne 4096){throw 'Returned NTFS volume refused.'}
     $Owned.BindVolume($volumes[0].Path,[uint64]$part.Offset,[uint64]$part.Size)
     Write-WslBackupJsonNew (Join-Path $Evidence 'volume-bound.json') @{identifier=$Owned.Identifier;root=$Owned.VolumeRoot;offset=$part.Offset;size=$part.Size}
@@ -220,12 +262,13 @@ function Invoke-WslColdSyntheticVolume {
     if(-not $IsWindows){throw 'Actual Windows/root review required; native cannot execute synthetic volume.'}
     Assert-WslBackupHash $ReviewedPlanSha256;$doc=Read-WslRecoveryDocument $PlanPath
     if($doc.Sha256 -cne $ReviewedPlanSha256){throw 'Independent reviewed plan digest differs.'};$p=$doc.Value
-    Assert-WslRecoveryFields $p @('schemaVersion','kind','sourceRoot','sourceCommit','sourceManifestSha256','storage','ownerSid','fixtureParent','evidenceParent','fixtureIdentity','evidenceIdentity','fixtureDescriptor','evidenceDescriptor','virtualBytes','hardFileBytes','createdAt','expiresAt','operations','actualProductionAccepted','existingVhdAccepted','physicalDiskAccepted','rootPrivileges') 'synthetic volume review plan'
-    if($p.schemaVersion -ne 2 -or $p.kind -cne 'new-private-synthetic-volume-root-v1' -or $p.expiresAt -le [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -or $p.expiresAt-$p.createdAt -gt 3600){throw 'Fresh synthetic-only plan required.'}
+    Assert-WslRecoveryFields $p @('schemaVersion','kind','sourceRoot','sourceCommit','sourceManifestSha256','storage','partitionLayout','ownerSid','fixtureParent','evidenceParent','fixtureIdentity','evidenceIdentity','fixtureDescriptor','evidenceDescriptor','virtualBytes','hardFileBytes','createdAt','expiresAt','operations','actualProductionAccepted','existingVhdAccepted','physicalDiskAccepted','rootPrivileges') 'synthetic volume review plan'
+    if($p.schemaVersion -ne 3 -or $p.kind -cne 'new-private-synthetic-volume-root-v1' -or $p.expiresAt -le [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -or $p.expiresAt-$p.createdAt -gt 3600){throw 'Fresh synthetic-only plan required.'}
     $fresh=Get-WslColdSyntheticVolumePlan $p.fixtureParent $p.evidenceParent $p.sourceManifestSha256
     foreach($name in @('sourceRoot','sourceCommit','ownerSid','fixtureIdentity','evidenceIdentity','fixtureDescriptor','evidenceDescriptor','virtualBytes','hardFileBytes')){if($fresh[$name] -cne $p[$name]){throw 'Reviewed synthetic source/parent binding drift.'}}
     foreach($name in @('operations','rootPrivileges','actualProductionAccepted','existingVhdAccepted','physicalDiskAccepted')){if((ConvertTo-Json -InputObject $fresh[$name] -Compress) -cne (ConvertTo-Json -InputObject $p[$name] -Compress)){throw 'Reviewed synthetic operation/privilege scope differs.'}}
     if((ConvertTo-Json -InputObject $fresh.storage -Depth 12 -Compress) -cne (ConvertTo-Json -InputObject $p.storage -Depth 12 -Compress)){throw 'Reviewed Microsoft Storage binding drift.'}
+    if((ConvertTo-Json -InputObject $fresh.partitionLayout -Compress) -cne (ConvertTo-Json -InputObject $p.partitionLayout -Compress)){throw 'Reviewed partition layout drift.'}
     if([IO.DriveInfo]::new('C:\').AvailableFreeSpace -lt 1GB+[Revealfleet.Backup.ColdSyntheticVirtualDisk]::HardFileBytes){throw 'Conservative C synthetic capacity refused.'}
     $scope=[Revealfleet.Backup.ColdSyntheticVirtualDisk]::OpenPrivilegeScope();$owned=$lease=$transaction=$null;$failure=$null;$evidence=$null
     try {
@@ -234,7 +277,7 @@ function Invoke-WslColdSyntheticVolume {
         Write-WslBackupJsonNew (Join-Path $evidence 'reviewed-plan.json') $p
         $owned=[Revealfleet.Backup.ColdSyntheticVirtualDisk]::CreateNew($p.fixtureParent,$dir,$file)
         Write-WslBackupJsonNew (Join-Path $evidence 'created.json') @{workspace=$owned.Workspace;image=$owned.ImagePath;identifier=$owned.Identifier;virtualBytes=$fresh.virtualBytes;backingFileBytes=$owned.BackingFileBytes;productionAccepted=$false}
-        $owned.Attach();Initialize-WslOwnedSyntheticVolume $owned $evidence $fresh.storage
+        $owned.Attach();Initialize-WslOwnedSyntheticVolume $owned $evidence $fresh.storage $fresh.partitionLayout
         $systems=Get-WslOwnedSyntheticTree $owned -SystemOnly;Write-WslBackupJsonNew (Join-Path $evidence 'system-before-seed.json') @{tree=$systems}
         $seed=New-WslGenericPaddedRoot;Write-WslBackupJsonNew (Join-Path $evidence 'seed-proposed.json') $seed
         $owned.SeedRoot($seed)

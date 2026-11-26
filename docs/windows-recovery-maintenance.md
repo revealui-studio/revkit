@@ -1121,3 +1121,49 @@ rollback, full backup/restore/key/cold capacity and migration acceptance remain 
 
 Primary schema references: [MSFT_Disk UInt16 BusType/PartitionStyle](https://learn.microsoft.com/en-us/windows-hardware/drivers/storage/msft-disk),
 [MSFT_Volume UInt16 FileSystemType](https://learn.microsoft.com/en-us/windows-hardware/drivers/storage/msft-volume).
+
+### Explicit synthetic partition creation contract
+
+The controller accepted dc346ea's actual laptop preflight and scoped21/21 readonly
+tests, then the owner-approved elevated component131 selected/129 passed/zero
+failed/two expected platform skips. Protected source/dependencies128 unchanged.
+The separate NEW VHD attempt passed the raw bus/RAW/MBR checks, initialized MBR
+and created one partition, then refused before format. Explicit own detach and
+independent exact-image detached observation succeeded. All receipts/image remain
+retained. This is not format, volume-root, raw-layout/rollback or production proof.
+
+The controller's bounded read-only MBR/footer inspection proves the retained image
+has a type7 partition at65536bytes, below the existing1048576byte guard. That proves
+the default-offset mismatch only; the remaining association predicates were not
+individually captured and must not be inferred successful. Source creation had
+requested maximum size/IFS without Offset or Alignment, allowing provider defaults
+that contradicted its own minimum guard.
+
+Synthetic plan schema3 now binds fixed offset1048576bytes (UInt64) and alignment
+1048576bytes (UInt32). New-Partition supplies BOTH explicitly with the same verified
+InputObject/UseMaximumSize/IFS contract. No larger VHD, relaxed minimum, disk ordinal,
+letter selector, retry or machine exception. Returned offset must equal the reviewed
+request and still meet the original minimum; sector divisibility and finite positive
+extent bounds are checked. UseMaximumSize does not imply an invented exact returned
+size; provider-reserved space is allowed within the verified container bound.
+
+Before format, bounded observations retain returned/current partition IDs, offsets,
+sizes/types, local disk and parent identities/geometry/state, and owned native-device
+identity. Each association/layout refusal names its predicate; unvisited predicates
+are not certified by the receipt. Separate post-create/pre-format/post-format records
+are new-only and flushed before validation. The existing parent/native handle check
+still runs; observation facts are not a substitute for that capability. Unsigned
+or modeled receipts never authorize an operation. UInt64 extent checks subtract only
+after offset bounds, including the native BindVolume boundary, avoiding wraparound.
+
+Native tests exercise the actual readonly validation gate and model format remaining
+unreachable after refusal, coupled to AST ordering of the production pre-format gate
+and explicit creation parameters. Windows-only tests read the real InputObject
+parameter types and project client-only CIM partitions; no provider enumeration or
+disk operation. Actual creation at the requested layout and every subsequent
+format/extent/root/rollback gate still require a NEW controller-reviewed isolated
+test. Never reuse the old image/plan. Production Apply/Rollback remains blocked.
+
+Primary references: [MSFT_Disk CreatePartition Offset/Alignment](https://learn.microsoft.com/en-us/windows-hardware/drivers/storage/createpartition-msft-disk),
+[New-Partition InputObject parameter set](https://learn.microsoft.com/en-us/powershell/module/storage/new-partition?view=windowsserver2025-ps),
+[MSFT_Partition identity/size properties](https://learn.microsoft.com/en-us/windows-hardware/drivers/storage/msft-partition).
