@@ -108,8 +108,7 @@ and protected recovery names. The exact policy fields are `schemaVersion:1`,
 `initTimeoutMs` (10000..120000), and original `wslConfSha256`. Bind the controller's
 selected registration BEFORE invoking this command in that distro. The Linux
 owner independently observes root filesystem UUID and the existing passwd UID;
-it cannot attest the Windows registration by echoing it. Preserve worker `joshu`
-UID1000. No account rename or user-session keeper is used.
+it cannot attest the Windows registration by echoing it. Preserve the selected worker account and its measured UID. No account rename or user-session keeper is used.
 
 The parser requires existing `[boot]systemd=true` and the exact default user. It
 preserves every unrelated byte, including owner network/memory choices, and

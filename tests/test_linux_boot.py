@@ -60,10 +60,10 @@ class SelectedWorkerBootTests(unittest.TestCase):
     def policy(self,original):
         return {'schemaVersion':1,'role':'cold-backup-worker-v1','registrationId':'11111111-1111-4111-8111-111111111111',
                 'distro':'spare-worker','rootfsUuid':'22222222-2222-4222-8222-222222222222',
-                'defaultUser':'joshu','defaultUid':1000,'initTimeoutMs':60000,'wslConfSha256':hashlib.sha256(original).hexdigest()}
+                'defaultUser':'fixtureuser','defaultUid':1000,'initTimeoutMs':60000,'wslConfSha256':hashlib.sha256(original).hexdigest()}
 
     def test_selected_role_adds_only_timeout_and_preserves_owner_bytes(self):
-        original=b'# owner\r\n[boot]\r\nsystemd=true\r\n[user]\r\ndefault=joshu\r\n[network]\r\ngenerateResolvConf=false\r\n'
+        original=b'# owner\r\n[boot]\r\nsystemd=true\r\n[user]\r\ndefault=fixtureuser\r\n[network]\r\ngenerateResolvConf=false\r\n'
         policy=self.policy(original)
         plan,desired=boot.worker_boot_plan(boot.worker_policy(json.dumps(policy)),original,root_uuid=policy['rootfsUuid'],account_uid=1000)
         self.assertEqual(desired,original.replace(b'[user]',b'initTimeout=60000\r\n[user]'))
@@ -73,7 +73,7 @@ class SelectedWorkerBootTests(unittest.TestCase):
         self.assertFalse(repeat['changed']);self.assertEqual(desired,new)
 
     def test_role_account_rootfs_and_prior_bytes_are_fail_closed(self):
-        original=b'[boot]\nsystemd=true\n[user]\ndefault=joshu\n'
+        original=b'[boot]\nsystemd=true\n[user]\ndefault=fixtureuser\n'
         policy=self.policy(original)
         for key,value in [('distro','Ubuntu'),('distro','Ubuntu-Recovery-20261124'),('initTimeoutMs',True),('initTimeoutMs',9999),('defaultUid',0)]:
             changed=dict(policy);changed[key]=value
@@ -84,7 +84,7 @@ class SelectedWorkerBootTests(unittest.TestCase):
         with self.assertRaises(ValueError):boot.worker_boot_plan(policy,original,root_uuid=policy['rootfsUuid'],account_uid=1000)
 
     def test_failed_worker_publication_retains_actual_original_and_new_attempt(self):
-        original=b'[boot]\nsystemd=true\n[user]\ndefault=joshu\n';policy=self.policy(original)
+        original=b'[boot]\nsystemd=true\n[user]\ndefault=fixtureuser\n';policy=self.policy(original)
         plan,desired=boot.worker_boot_plan(policy,original,root_uuid=policy['rootfsUuid'],account_uid=1000)
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);path=root/'wsl.conf';path.write_bytes(original);state=root/'custody'
@@ -101,7 +101,7 @@ class SelectedWorkerBootTests(unittest.TestCase):
             self.assertEqual(len(list(root.glob('.revkit-worker-*'))),1)
 
     def test_readiness_requires_actual_system_manager_and_user_session_not_timeout_assumption(self):
-        original=b'[boot]\nsystemd=true\ninitTimeout=60000\n[user]\ndefault=joshu\n';policy=self.policy(original)
+        original=b'[boot]\nsystemd=true\ninitTimeout=60000\n[user]\ndefault=fixtureuser\n';policy=self.policy(original)
         def query(argv,**kwargs):
             value=b'running\n' if argv[-1]=='is-system-running' else b'ActiveState=active\nSubState=running\nResult=success\n'
             return subprocess.CompletedProcess(argv,0,stdout=value,stderr=b'')
