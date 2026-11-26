@@ -16,6 +16,77 @@ BeforeAll {
         $parent=[pscustomobject]@{Name='Storage';ModuleType='Manifest';ModuleBase=$base;Path=$manifest;Guid=[guid]'193c8b20-f199-43df-9b86-53ad824ed732';Version=[version]'2.0.0.0';NestedModules=@($nested);ExportedCommands=@{'Get-Disk'=$command}}
         return @{Parent=$parent;ManifestPath=$manifest;ManifestGuid=$parent.Guid;ManifestVersion=$parent.Version;NestedPaths=@($path);Name='Get-Disk';Resolved=@($command)}
     }
+    function New-StorageUInt16Model {
+        return @{SystemProperties=[pscustomobject]@{ClassName='MSFT_Disk';Namespace='root/Microsoft/Windows/Storage';ServerName=$null};Properties=@([pscustomobject]@{Name='BusType';CimType=[Microsoft.Management.Infrastructure.CimType]::UInt16;Value=[uint16]15});ClassName='MSFT_Disk';PropertyName='BusType'}
+    }
+}
+Describe 'Typed local Storage CIM enum classification' {
+    It 'reads exact raw UInt16 observations without consulting adapted display labels' {
+        foreach($value in @([uint16]14,[uint16]15)){
+            $model=New-StorageUInt16Model;$model.Properties[0].Value=$value
+            $raw=Assert-WslColdStorageUInt16Observation @model
+            $raw|Should -BeOfType ([uint16]);$raw|Should -Be $value
+            {Assert-WslColdSyntheticBusValue $raw}|Should -Not -Throw
+        }
+        foreach($local in @('','.','localhost',[Environment]::MachineName)){
+            $model=New-StorageUInt16Model;$model.SystemProperties.ServerName=$local;$model.SystemProperties.Namespace='Root\Microsoft\Windows\Storage'
+            (Assert-WslColdStorageUInt16Observation @model)|Should -Be 15
+        }
+        {Get-WslColdStorageUInt16 ([pscustomobject]@{BusType='File Backed Virtual'}) 'MSFT_Disk' 'BusType'}|Should -Throw
+    }
+    It 'refuses wrong class, namespace, remote identity and malformed identity types' {
+        foreach($fault in @('class','namespace','remote','serverType','namespaceType')){
+            $model=New-StorageUInt16Model
+            switch($fault){
+                class {$model.SystemProperties.ClassName='MSFT_Volume'}
+                namespace {$model.SystemProperties.Namespace='root/cimv2'}
+                remote {$model.SystemProperties.ServerName='not-the-local-host.invalid'}
+                serverType {$model.SystemProperties.ServerName=42}
+                namespaceType {$model.SystemProperties.Namespace=42}
+            }
+            {Assert-WslColdStorageUInt16Observation @model}|Should -Throw
+        }
+    }
+    It 'refuses absent or duplicate properties, CIM type spoofing and coerced values' {
+        foreach($fault in @('missing','duplicate','wrongCimType','stringCimType','intValue','stringValue','nullValue')){
+            $model=New-StorageUInt16Model
+            switch($fault){
+                missing {$model.Properties=@()}
+                duplicate {$model.Properties+=@($model.Properties[0])}
+                wrongCimType {$model.Properties[0].CimType=[Microsoft.Management.Infrastructure.CimType]::UInt32}
+                stringCimType {$model.Properties[0].CimType='UInt16'}
+                intValue {$model.Properties[0].Value=[int]15}
+                stringValue {$model.Properties[0].Value='15'}
+                nullValue {$model.Properties[0].Value=$null}
+            }
+            {Assert-WslColdStorageUInt16Observation @model}|Should -Throw
+        }
+    }
+    It 'refuses physical and unknown buses even if a display string could claim virtual ownership' {
+        foreach($value in @([uint16]0,[uint16]1,[uint16]7,[uint16]16,[uint16]17,15,'15','File Backed Virtual',$null)){{Assert-WslColdSyntheticBusValue $value}|Should -Throw}
+    }
+    It 'classifies real client-only Microsoft CIM disks through the loaded Storage adapter without provider enumeration' -Skip:(-not $IsWindows) {
+        [void](Get-WslColdStoragePreflight)
+        foreach($value in @([uint16]14,[uint16]15,[uint16]7)){
+            $disk=CimCmdlets\New-CimInstance -Namespace root/Microsoft/Windows/Storage -ClassName MSFT_Disk -Property @{BusType=$value} -ClientOnly
+            $disk.BusType|Should -BeOfType ([string])
+            $raw=Get-WslColdStorageUInt16 $disk 'MSFT_Disk' 'BusType'
+            $raw|Should -BeOfType ([uint16]);$raw|Should -Be $value
+            if($value -eq 7){{Assert-WslColdSyntheticBusValue $raw}|Should -Throw}else{{Assert-WslColdSyntheticBusValue $raw}|Should -Not -Throw}
+        }
+        $wrong=CimCmdlets\New-CimInstance -Namespace root/Microsoft/Windows/Storage -ClassName MSFT_Disk -Property @{BusType=[uint32]15} -ClientOnly
+        {Get-WslColdStorageUInt16 $wrong 'MSFT_Disk' 'BusType'}|Should -Throw
+    }
+    It 'reads real client-only partition and filesystem enum values without adapted display comparisons' -Skip:(-not $IsWindows) {
+        [void](Get-WslColdStoragePreflight)
+        foreach($value in @([uint16]0,[uint16]1,[uint16]2)){
+            $disk=CimCmdlets\New-CimInstance -Namespace root/Microsoft/Windows/Storage -ClassName MSFT_Disk -Property @{PartitionStyle=$value} -ClientOnly
+            (Get-WslColdStorageUInt16 $disk 'MSFT_Disk' 'PartitionStyle')|Should -Be $value
+        }
+        $volume=CimCmdlets\New-CimInstance -Namespace root/Microsoft/Windows/Storage -ClassName MSFT_Volume -Property @{FileSystemType=[uint16]14} -ClientOnly
+        (Get-WslColdStorageUInt16 $volume 'MSFT_Volume' 'FileSystemType')|Should -Be 14
+        {Get-WslColdStorageUInt16 $volume 'MSFT_Disk' 'FileSystemType'}|Should -Throw
+    }
 }
 Describe 'Selected system Storage nested command ownership' {
     It 'reads literal declarations without evaluating other supported manifest expressions' {

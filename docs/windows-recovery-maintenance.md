@@ -1079,3 +1079,45 @@ Primary references: [module manifests and NestedModules](https://learn.microsoft
 [explicit-path Import-Module](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/import-module),
 [safe AST values](https://learn.microsoft.com/en-us/dotnet/api/system.management.automation.language.ast.safegetvalue),
 [Authenticode and catalog signatures](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.security/get-authenticodesignature).
+
+### Typed Storage CIM enums after the first owned VHD observation
+
+The controller accepted f21a166 on the actual laptop: ordinary StoragePreflight
+exit0/no stderr (30 signed files/seven commands), then separately approved full
+elevated component125 selected/123 passed/0 failed/two expected platform skips,
+zero excluded/not-run;128 code/dependency files independently rehashed unchanged.
+After independent exact plan review, the separate maintained synthetic attempt
+created/attached its NEW fixed128MiB VHD, but failed at its first owned Storage
+observation, before initialize/partition/format. Explicit own-handle detach passed
+and the controller independently observed that exact image as detached. The VHD
+and receipts remain retained. These are accepted component and bounded creation/
+attachment/detachment observations, not root-layout/rollback or production proof.
+
+The real Storage type adapter exposes BusType as a display string, while the
+underlying CIM property's type/value remain UInt16. The disk classifier now requires
+an actual local MSFT_Disk CIM instance, the Storage namespace and a single raw
+UInt16 BusType property; only schema values14/15 qualify. Missing/duplicate/mistyped
+properties, proxies, remote/wrong-class/namespace identities and physical/unknown
+buses refuse. It does not parse display text. Exact owned image/native handle,
+path/number/geometry, boot/system/offline/read-only/cluster and command-binding
+checks still apply independently; a client-only CIM object grants no disk custody.
+
+Adjacent PartitionStyle/FileSystemType comparisons were intentional display-label
+checks, not integer casts. They now use the same raw typed reader to avoid depending
+on adapter presentation: MSFT_Disk0 is uninitialized/unknown (PowerShell RAW),1 MBR,
+and MSFT_Volume14 NTFS. The MSFT values differ from Win32 PARTITION_STYLE values;
+they are never mixed. Fixed cmdlet input arguments MBR/NTFS remain intentional API
+arguments. Other ToString uses concern real CLR module/command/signature enums;
+FileAttributes is a real CLR flags conversion. Those are unchanged.
+
+The Windows-only regression uses New-CimInstance **-ClientOnly** with the real
+installed Storage types. It proves adapter/raw-value behavior for virtual and USB
+buses, malformed raw types, partition styles and NTFS without provider enumeration,
+disk selection, attachment or format. Native typed-observation/refusal tests remain
+models. Root can run the scoped WslColdSyntheticVolume.Tests.ps1 read-only before
+reviewing any NEW plan/UAC. Never reuse the retained failed VHD or its old plan.
+Public production Apply/Rollback stays blocked; actual new volume-root/raw-layout/
+rollback, full backup/restore/key/cold capacity and migration acceptance remain open.
+
+Primary schema references: [MSFT_Disk UInt16 BusType/PartitionStyle](https://learn.microsoft.com/en-us/windows-hardware/drivers/storage/msft-disk),
+[MSFT_Volume UInt16 FileSystemType](https://learn.microsoft.com/en-us/windows-hardware/drivers/storage/msft-volume).

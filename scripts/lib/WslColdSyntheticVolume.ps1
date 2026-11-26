@@ -117,6 +117,26 @@ function Get-WslColdSyntheticVolumePlan {
             actualProductionAccepted=$false;existingVhdAccepted=$false;physicalDiskAccepted=$false;rootPrivileges=@('SeRestorePrivilege','SeManageVolumePrivilege')}
     } finally {$f.Dispose();$e.Dispose()}
 }
+function Assert-WslColdStorageUInt16Observation {
+    param($SystemProperties,[object[]]$Properties,[string]$ClassName,[string]$PropertyName)
+    # Names are CIM identities, not the display strings supplied by Storage's
+    # PowerShell type adapter. WMI accepts either namespace separator.
+    if(-not $SystemProperties -or $SystemProperties.ClassName -isnot [string] -or -not [string]::Equals($SystemProperties.ClassName,$ClassName,[StringComparison]::OrdinalIgnoreCase) -or $SystemProperties.Namespace -isnot [string] -or -not [string]::Equals($SystemProperties.Namespace.Replace('\','/'),'root/Microsoft/Windows/Storage',[StringComparison]::OrdinalIgnoreCase)){throw 'Expected local Storage CIM class/namespace required.'}
+    $server=$SystemProperties.ServerName
+    if(($null -ne $server -and $server -isnot [string]) -or ($server -and @('.','localhost',[Environment]::MachineName) -inotcontains $server)){throw 'Remote or malformed Storage CIM identity refused.'}
+    $fields=@($Properties|Where-Object {$_.Name -ieq $PropertyName})
+    if($fields.Count -ne 1 -or $fields[0].CimType -isnot [Microsoft.Management.Infrastructure.CimType] -or $fields[0].CimType -ne [Microsoft.Management.Infrastructure.CimType]::UInt16 -or $fields[0].Value -isnot [uint16]){throw ('One raw UInt16 CIM property required: '+$PropertyName)}
+    return $fields[0].Value
+}
+function Get-WslColdStorageUInt16 {
+    param($Instance,[string]$ClassName,[string]$PropertyName)
+    if($Instance -isnot [Microsoft.Management.Infrastructure.CimInstance]){throw 'Actual Storage CIM instance required, not a display/PSCustomObject proxy.'}
+    return Assert-WslColdStorageUInt16Observation $Instance.psbase.CimSystemProperties @($Instance.psbase.CimInstanceProperties) $ClassName $PropertyName
+}
+function Assert-WslColdSyntheticBusValue {
+    param($Value)
+    if($Value -isnot [uint16] -or $Value -notin @([uint16]14,[uint16]15)){throw 'Raw virtual/file-backed-virtual bus required; physical/unknown bus refused.'}
+}
 function Get-WslOwnedSyntheticStorage {
     param([Revealfleet.Backup.ColdSyntheticVirtualDisk]$Owned,[Collections.IDictionary]$StorageBinding)
     $Owned.Validate()
@@ -128,7 +148,8 @@ function Get-WslOwnedSyntheticStorage {
     $disks=@($images[0]|Storage\Get-Disk -ErrorAction Stop)
     if($disks.Count -ne 1){throw 'Ambiguous/missing image-to-Storage disk association.'}
     $d=$disks[0]
-    if([int]$d.BusType -notin @(14,15) -or $d.IsOffline -or $d.IsReadOnly -or $d.IsClustered){throw 'Fresh virtual writable online disk required; no policy workaround.'}
+    Assert-WslColdSyntheticBusValue (Get-WslColdStorageUInt16 $d 'MSFT_Disk' 'BusType')
+    if($d.IsOffline -or $d.IsReadOnly -or $d.IsClustered){throw 'Fresh virtual writable online disk required; no policy workaround.'}
     $Owned.ValidateStorage($d.Path,[uint32]$d.Number,[uint64]$d.Size,[bool]$d.IsBoot,[bool]$d.IsSystem)
     return $d
 }
@@ -144,16 +165,18 @@ function Assert-WslOwnedSyntheticPartition {
 function Initialize-WslOwnedSyntheticVolume {
     param([Revealfleet.Backup.ColdSyntheticVirtualDisk]$Owned,[string]$Evidence,[Collections.IDictionary]$StorageBinding)
     $disk=Get-WslOwnedSyntheticStorage $Owned $StorageBinding
-    if($disk.PartitionStyle.ToString() -cne 'RAW' -or $disk.NumberOfPartitions -ne 0){throw 'Never initialize an existing partitioned disk.'}
+    # MSFT_Disk uses 0 for uninitialized/unknown (displayed RAW), 1 for MBR;
+    # these are not the different Win32 PARTITION_STYLE enum values.
+    if((Get-WslColdStorageUInt16 $disk 'MSFT_Disk' 'PartitionStyle') -ne 0 -or $disk.NumberOfPartitions -ne 0){throw 'Never initialize an existing partitioned disk.'}
     Write-WslBackupJsonNew (Join-Path $Evidence 'before-initialize.json') @{image=$Owned.ImagePath;identifier=$Owned.Identifier;physical=$Owned.PhysicalPath;storagePath=$disk.Path;number=$disk.Number;size=$disk.Size}
     $disk=Get-WslOwnedSyntheticStorage $Owned $StorageBinding # immediately before destructive command
-    if($disk.PartitionStyle.ToString() -cne 'RAW' -or $disk.NumberOfPartitions -ne 0){throw 'RAW identity drift before initialize.'}
+    if((Get-WslColdStorageUInt16 $disk 'MSFT_Disk' 'PartitionStyle') -ne 0 -or $disk.NumberOfPartitions -ne 0){throw 'RAW identity drift before initialize.'}
     $null=Storage\Initialize-Disk -InputObject $disk -PartitionStyle MBR -PassThru -Confirm:$false -ErrorAction Stop
     $disk=Get-WslOwnedSyntheticStorage $Owned $StorageBinding
-    if($disk.PartitionStyle.ToString() -cne 'MBR' -or $disk.NumberOfPartitions -ne 0){throw 'Unexpected initialized layout.'}
+    if((Get-WslColdStorageUInt16 $disk 'MSFT_Disk' 'PartitionStyle') -ne 1 -or $disk.NumberOfPartitions -ne 0){throw 'Unexpected initialized layout.'}
     Write-WslBackupJsonNew (Join-Path $Evidence 'before-partition.json') @{identifier=$Owned.Identifier;storagePath=$disk.Path;uniqueId=$disk.UniqueId}
     $disk=Get-WslOwnedSyntheticStorage $Owned $StorageBinding
-    if($disk.PartitionStyle.ToString() -cne 'MBR' -or $disk.NumberOfPartitions -ne 0){throw 'Partition layout drift before creation.'}
+    if((Get-WslColdStorageUInt16 $disk 'MSFT_Disk' 'PartitionStyle') -ne 1 -or $disk.NumberOfPartitions -ne 0){throw 'Partition layout drift before creation.'}
     $parts=@(Storage\New-Partition -InputObject $disk -UseMaximumSize -MbrType IFS -ErrorAction Stop)
     if($parts.Count -ne 1){throw 'Exactly one returned synthetic partition required.'};$part=$parts[0]
     Assert-WslOwnedSyntheticPartition $Owned $part $StorageBinding
@@ -161,7 +184,7 @@ function Initialize-WslOwnedSyntheticVolume {
     Assert-WslOwnedSyntheticPartition $Owned $part $StorageBinding # immediately before format
     $volumes=@(Storage\Format-Volume -Partition $part -FileSystem NTFS -AllocationUnitSize 4096 -NewFileSystemLabel 'RevkitSynthetic' -Confirm:$false -ErrorAction Stop)
     Assert-WslOwnedSyntheticPartition $Owned $part $StorageBinding
-    if($volumes.Count -ne 1 -or $volumes[0].FileSystemType.ToString() -cne 'NTFS' -or $volumes[0].AllocationUnitSize -ne 4096){throw 'Returned NTFS volume refused.'}
+    if($volumes.Count -ne 1 -or (Get-WslColdStorageUInt16 $volumes[0] 'MSFT_Volume' 'FileSystemType') -ne 14 -or $volumes[0].AllocationUnitSize -ne 4096){throw 'Returned NTFS volume refused.'}
     $Owned.BindVolume($volumes[0].Path,[uint64]$part.Offset,[uint64]$part.Size)
     Write-WslBackupJsonNew (Join-Path $Evidence 'volume-bound.json') @{identifier=$Owned.Identifier;root=$Owned.VolumeRoot;offset=$part.Offset;size=$part.Size}
 }
