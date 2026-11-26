@@ -374,13 +374,18 @@ Describe 'Elevated synthetic owner transition and rollback' -Tag 'Elevated' {
             $scope.Dispose();$scope=$null
             $ordinary=[Revealfleet.Tests.OrdinaryCaller]::new()
             try {
-                $ordinary.Enter();$actual=[Convert]::FromBase64String($forward.Observed.DescriptorBase64)
+                $ordinary.Enter();$ordinaryOwner=[Security.Principal.WindowsIdentity]::GetCurrent().Owner.Value;$actual=[Convert]::FromBase64String($forward.Observed.DescriptorBase64)
                 foreach($right in @(0x10000,0x40,0x40000,0x80000)){$ordinary.AllowedByDacl($actual,$right)|Should -BeFalse}
                 foreach($right in @(2,4)){$ordinary.AllowedByDacl($actual,$right)|Should -BeTrue}
                 [Revealfleet.Tests.OrdinaryCaller]::CreateChildren($root)
                 [IO.File]::ReadAllText((Join-Path $root 'ordinary-created-file'))|Should -BeExactly 'ordinary synthetic bytes'
             } finally {$ordinary.Dispose()}
-            (Get-Acl -LiteralPath (Join-Path $root 'ordinary-created-file')).Sddl|Should -BeExactly (Get-Acl -LiteralPath (Join-Path $root 'baseline.txt')).Sddl
+            # CREATOR OWNER maps to each child's actual creator. Do not compare
+            # filtered-user and administrator-created children as if identical.
+            (Get-Acl -LiteralPath (Join-Path $root 'ordinary-created-file')).GetOwner([Security.Principal.SecurityIdentifier]).Value|Should -BeExactly $ordinaryOwner
+            $newAdminChild=Join-Path $root 'candidate-admin-created-file'
+            [IO.File]::WriteAllText($newAdminChild,'retained synthetic bytes')
+            (Get-Acl -LiteralPath $newAdminChild).Sddl|Should -BeExactly (Get-Acl -LiteralPath (Join-Path $root 'baseline.txt')).Sddl
             $rollbackTree=Tree-Receipt $root
             $scope=[Revealfleet.Backup.ColdRestorePrivilege]::new()
             $rollback=$transaction.Replace($forward.Observed.DescriptorSha256,[Convert]::FromBase64String($padded.DescriptorBase64))
