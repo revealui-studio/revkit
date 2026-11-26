@@ -691,6 +691,9 @@ Describe 'Elevated production-shaped transaction on fresh synthetic custody only
             # turn this receipt or capability into a real volume authority.
             {$lease.OpenProductionPermissionTransaction($lease.FileIdentity,[guid]::NewGuid().ToString('D'),$before.DescriptorBase64,$after.DescriptorBase64,$user,$journal,'{}',[Action]{})}|Should -Throw '*canonical NTFS volume*'
             Test-Path (Join-Path $journal 'prepared.json')|Should -BeFalse
+            # Nonsecret fresh-fixture observation only; preserves unsupported
+            # component evidence rather than normalizing it into acceptance.
+            Write-Host ('SECURITY-OBSERVATION '+($lease.ObserveSecurityComponents()|ConvertTo-Json -Depth 4 -Compress))
             $seen=[Collections.Generic.List[string]]::new()
             $observer={if(Test-Path (Join-Path $journal 'apply-intent.json')){$seen.Add($lease.Read().DescriptorSha256)}}.GetNewClosure()
             $tx=$lease.OpenProductionShapedSyntheticTransaction($before.DescriptorBase64,$after.DescriptorBase64,$user,$journal,'{"syntheticOnly":true}',[Action]$observer)

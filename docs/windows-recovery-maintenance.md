@@ -1492,3 +1492,26 @@ No such primitive/proof is claimed here. This is a platform/initial-state gap, n
 missing owner authorization, a request to weaken verification, an invitation to
 route E through synthetic code, or permission for a one-off offline/raw rewrite.
 All-writer outage alone must not be labeled an OS-enforced descriptor lock.
+
+
+#### Full-security observation admission remains unaccepted
+
+Hosted Windows confirmed that the explicit component query succeeds, while the
+fresh synthetic source directories return SACL/control information rejected by
+the no-SACL production contract. The new transaction cases remain FAILED; they
+are not skipped or relabeled green. The earlier BACKUP umbrella-query failures
+remain retained separately. A bounded READ-ONLY `ObserveSecurityComponents` result
+now preserves the full returned descriptor, raw hash, exact control/reserved data,
+SACL pointer presence/allocated bytes/ACE count, mask and held root identity.
+It grants no capability and performs no setter. Fresh synthetic failure output
+includes this nonsecret observation for controller/source review. Existing root
+metadata must not be normalized or rewritten to make the absence check pass.
+
+A further supported security-observation/preservation contract needs review of
+those actual returned fields, including null versus empty and label/attribute/
+other security data. No such expansion is approved or implemented by inference
+here. Together with the initial untrusted-writer bootstrap, this BLOCKS real E
+promotion. The read-only production plan and journals/inverse code are reviewable,
+but successful native modeling, old volume fidelity proof or an implemented path
+is NOT whole-production readiness. Keep the failing hosted cases and exact gate
+in the source PR/checkpoint until a sound contract is established.

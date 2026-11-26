@@ -414,16 +414,31 @@ namespace Revealfleet.Backup {
                 string value=text.ToString();int end=value.IndexOf('}');if(!value.StartsWith(@"\\?\Volume{",StringComparison.Ordinal) || end<0)throw new IOException("Held local volume GUID refused");return value.Substring(0,end+1)+@"\";}
         }
         public const uint SecurityObservationMask=0x1ff; // SDK OWNER/GROUP/DACL/SACL/LABEL/ATTRIBUTE/SCOPE/TRUST/FILTER
-        public void RequireNoSacl() {
-            // OWNER/GROUP/DACL-only GetSecurityInfo cannot establish SACL absence.
-            // This separate read needs scoped SeSecurityPrivilege; it never sets it.
+        public sealed class SecurityObservation {
+            public string Profile => "explicit-security-components-v1";
+            public uint Mask => SecurityObservationMask;
+            public string RootIdentity {get;internal set;} public string DescriptorBase64 {get;internal set;} public string DescriptorSha256 {get;internal set;}
+            public int DescriptorBytes {get;internal set;} public ushort Control {get;internal set;} public byte Reserved {get;internal set;}
+            public bool SaclPointerPresent {get;internal set;} public int SaclBytes {get;internal set;} public int SaclAceCount {get;internal set;}
+            public bool AbsenceContractSatisfied => !SaclPointerPresent && (Control&~0x9406)==0 && Reserved==0;
+        }
+        public SecurityObservation ObserveSecurityComponents() {
+            // Read-only evidence. This method neither grants mutation authority
+            // nor drops component flags when a platform/query refuses access.
             ValidateIdentity();using var observer=CreateFileW(path,0x01020080,7,IntPtr.Zero,3,0x02200000,IntPtr.Zero);
-            if(observer.IsInvalid || !GetFileInformationByHandle(observer,out var found) || found.Volume!=identity.Volume || found.IndexHigh!=identity.IndexHigh || found.IndexLow!=identity.IndexLow)throw new IOException("SACL observation access/identity refused");
+            if(observer.IsInvalid || !GetFileInformationByHandle(observer,out var found) || found.Volume!=identity.Volume || found.IndexHigh!=identity.IndexHigh || found.IndexLow!=identity.IndexLow)throw new IOException("Security observation access/identity refused");
             uint error=GetSecurityInfo(observer,1,SecurityObservationMask,out var owner,out var group,out var dacl,out var sacl,out var descriptor);
             if(error!=0)throw new Win32Exception((int)error,"Explicit full security component observation refused (Win32 "+error+")");
-            try {uint length=GetSecurityDescriptorLength(descriptor);if(length<20 || length>65536)throw new IOException("Full security observation bound");byte[] header=new byte[20];Marshal.Copy(descriptor,header,0,20);
-                if(sacl!=IntPtr.Zero || (BitConverter.ToUInt16(header,2)&~0x9406)!=0 || header[1]!=0)throw new IOException("Production permission profile refuses any observed SACL, including labels/attributes/empty/unsupported forms");}finally {LocalFree(descriptor);}
-            ValidateIdentity();
+            try {
+                uint length=GetSecurityDescriptorLength(descriptor);if(length<20 || length>65536)throw new IOException("Full security observation bound");byte[] raw=new byte[length];Marshal.Copy(descriptor,raw,0,raw.Length);
+                int saclBytes=0,count=0;
+                if(sacl!=IntPtr.Zero){long at=sacl.ToInt64()-descriptor.ToInt64();if(at<20 || at>raw.Length-8)throw new IOException("SACL observation pointer bound");saclBytes=BitConverter.ToUInt16(raw,(int)at+2);count=BitConverter.ToUInt16(raw,(int)at+4);if(saclBytes<8 || saclBytes>raw.Length-at)throw new IOException("SACL observation length bound");}
+                ValidateIdentity();return new SecurityObservation {RootIdentity=FileIdentity,DescriptorBase64=Convert.ToBase64String(raw),DescriptorSha256=Convert.ToHexString(SHA256.HashData(raw)).ToLowerInvariant(),DescriptorBytes=raw.Length,Control=BitConverter.ToUInt16(raw,2),Reserved=raw[1],SaclPointerPresent=sacl!=IntPtr.Zero,SaclBytes=saclBytes,SaclAceCount=count};
+            } finally {LocalFree(descriptor);}
+        }
+        public void RequireNoSacl() {
+            var observed=ObserveSecurityComponents();
+            if(!observed.AbsenceContractSatisfied)throw new IOException("Production permission profile refuses observed SACL/control data: control="+observed.Control+", reserved="+observed.Reserved+", saclPresent="+observed.SaclPointerPresent+", saclBytes="+observed.SaclBytes+", saclAceCount="+observed.SaclAceCount+", descriptorSha256="+observed.DescriptorSha256);
         }
         public PermissionCustodyTransaction OpenProductionPermissionTransaction(string rootIdentity,string volumeUuid,string originalBase64,string restrictedBase64,string user,string evidenceAttempt,string contextJson,Action validateBindings,string rollbackObservedBase64=null) {
             if(path.Length!=3 || path[1]!=':' || path[2]!='\\' || path[0]<'A' || path[0]>'Z' || observationOnly || FileIdentity!=rootIdentity || VolumeGuidPath!=@"\\?\Volume{"+Guid.ParseExact(volumeUuid,"D").ToString("D")+@"}\")throw new IOException("Production custody requires exact canonical NTFS volume/root handle binding");
