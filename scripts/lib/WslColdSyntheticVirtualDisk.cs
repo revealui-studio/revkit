@@ -118,6 +118,10 @@ namespace Revealfleet.Backup {
             if(seeded)throw new IOException("Fixture seed attempt already consumed; retain failed attempt");seeded=true;using var root=OpenRoot();
             try {root.SeedFreshSynthetic(Convert.FromBase64String(descriptor.DescriptorBase64));}finally {SeedMutationCalls=root.NativeMutationCalls;}
         }
+        public ColdPermissionChangeEvidence SeedRootPermissionCandidate(string expectedRawSha256,ColdSecuritySnapshot descriptor) {
+            if(seeded)throw new IOException("Fixture seed attempt already consumed; retain failed attempt");seeded=true;using var root=OpenRoot();
+            try {return root.ReplacePermissionCandidate(expectedRawSha256,Convert.FromBase64String(descriptor.DescriptorBase64),true);}finally {SeedMutationCalls=root.NativeMutationCalls;}
+        }
         [StructLayout(LayoutKind.Sequential)] struct SidAndAttributes {public IntPtr Sid;public uint Attributes;}
         [StructLayout(LayoutKind.Sequential)] struct GenericMapping {public uint Read,Write,Execute,All;}
         [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();

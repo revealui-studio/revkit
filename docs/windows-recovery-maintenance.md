@@ -1167,3 +1167,119 @@ test. Never reuse the old image/plan. Production Apply/Rollback remains blocked.
 Primary references: [MSFT_Disk CreatePartition Offset/Alignment](https://learn.microsoft.com/en-us/windows-hardware/drivers/storage/createpartition-msft-disk),
 [New-Partition InputObject parameter set](https://learn.microsoft.com/en-us/powershell/module/storage/new-partition?view=windowsserver2025-ps),
 [MSFT_Partition identity/size properties](https://learn.microsoft.com/en-us/windows-hardware/drivers/storage/msft-partition).
+
+
+### Separate permission-fidelity candidate; raw-layout failure remains evidence
+
+The actual laptop957 partition-layout attempt accepted26/26 focused tests and
+134/136 elevated component tests (two expected platform skips, no failures).
+Its separate new128MiB VHD passed creation/attachment, MBR initialization, the
+explicit1MiB offset/alignment,132120576-byte partition, NTFS4096 format and native
+volume extent binding. System-before-seed was empty. The strict seed then FAILED:
+requested descriptor324/ACL248/used68/free180 became descriptor144/ACL68/used68/free0.
+Owner/group bytes, control0x8004, ACL revision/reserved/count and ordered ACE bytes
+matched. The controller's read-only comparison found ONLY removal of180 all-zero
+unused ACL bytes and the corresponding AclSize change. Explicit own detach and
+independent exact-image Attached=false succeeded. No root rollback or real E
+permission change was accepted. These facts supersede the earlier unrun-layout
+scope above; they do not relabel the strict raw-profile failure as success.
+
+Documented fact: [ACL_SIZE_INFORMATION](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-acl_size_information)
+distinguishes AclBytesInUse (header plus ACEs) from AclBytesFree (unused allocation).
+The reviewed [NtSetSecurityObject contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntsetsecurityobject)
+sets security state and required access; it provides no reviewed guarantee of the
+caller's unused allocation or binary-layout round trip. Observation: this NTFS
+fixture discarded zero free capacity and retained every meaningful byte. Inference:
+a separately reviewed permission/ACE-fidelity candidate is reasonable; continuing
+to demand undocumented padding retention would leave exact raw restoration blocked.
+No claim that every possible setter was exhaustively disproved is made. No raw NTFS
+write, driver trick, live-volume normalization or alternative setter is introduced.
+
+`exact-raw-acl-capacity-v1` remains the DEFAULT, schema3 synthetic profile, with its
+original raw equality postconditions and failed receipts. The distinct OPT-IN
+`permission-ace-zero-unused-v1` is a schema4 synthetic candidate, kind
+`new-private-permission-fidelity-candidate-v1`. Its plan binds candidate status,
+mandatory raw evidence, full raw CAS, exact descendants and
+`rawByteRestorationPromised=false`; reviewed operations describe this distinction.
+Execute accepts no independent profile flag: it derives the profile exclusively
+from the independently reviewed plan and rechecks every candidate field. Old plans
+or receipts cannot establish candidate acceptance. Public production Replace,
+Apply and Rollback STILL REFUSE. Neither candidate plan nor synthetic provenance
+can authorize an existing volume, path or production mutation.
+
+Forensic raw identity and permission identity have separate jobs:
+
+- Every before/requested/observed descriptor remains immutable full-byte evidence,
+  with complete SHA256 and raw layout. Native calls receive the ORIGINAL requested
+  bytes. Full raw SHA256 of the currently observed descriptor is the CAS input;
+  even permission-equivalent padding drift refuses before a native call. A used-byte
+  identity hash is never a CAS capability. Failed postconditions retain raw evidence.
+- Candidate comparison accepts only the existing bounded self-relative contiguous
+  OWNER/GROUP/DACL layout, standard nonempty allow ACEs with specific file rights,
+  supported inheritance flags and ACL revision2 or4. Header offsets, exact owner
+  and group bytes/lengths, ALL supported control bits, revision/reserved/count and
+  every ordered ACE byte (flags/mask/SID/size) must match. Each ACE consumes its
+  exact SID length, so opaque bytes cannot hide in a declared ACE. There is no SDDL
+  or broad effective-access comparison, ACE sorting, SID remapping or coercion.
+- The ONLY excluded representation is structurally validated all-zero UNUSED ACL
+  capacity plus its AclSize field. Parsing walks the declared ACE count and checks
+  every bound/alignment; every remaining byte INSIDE AclSize must be zero. Outer
+  trailing allocation, gaps/overlap, nonzero spare/reserved data, malformed/hidden
+  ACEs, null/empty DACL, SACL, object/callback/conditional/audit/deny/generic/unsupported
+  forms refuse. Control/inheritance differences remain failures. The private
+  comparison representation is never written back or substituted for raw evidence.
+- A delta records `ExactRaw` or `ValidatedZeroUnusedAclCapacityOnly`, both raw
+  digests, ACL used/allocated sizes and the separately named used-identity hash.
+  Candidate rollback promises exact supported permission/ordered-ACE identity,
+  NOT restoration of unused raw capacity or the original complete descriptor hash.
+  Raw bytes are preserved as evidence, not promised as a setter result. Existing
+  descendant raw descriptor/metadata/content evidence remains EXACT and unchanged.
+
+The candidate uses the same original retained handle, named/file identity checks,
+no-delete-sharing custody, unchanged-child-template precondition and fresh synthetic
+capability as the strict implementation. One seed attempt is consumed even if it
+fails; its full raw pre-seed observation is saved before mutation. The initial
+fresh NTFS descriptor is forensic evidence, not claimed permission-equivalent to
+the deliberately different seed. Seed/forward/rollback each retain requested and
+observed raw snapshots and explicit delta. Forward and rollback compare exact
+permissions against their respective requested targets, then compare the final
+state to the observed baseline. CAS uses the actual post-forward raw hash. Exact
+system/descendant/ordinary-access/new-child inheritance checks, retained rollback
+capability, two transaction calls, explicit own detach and failure retention remain.
+Candidate acceptance has a DIFFERENT receipt filename and false strict-profile,
+real-E and production acceptance fields. Existing generic initial/final test-tree
+receipts alone are never candidate acceptance.
+
+Native pure-byte coverage checks padded/compact comparison, all meaningful compact
+bytes, supported control/revision/order differences, malformed/unsupported grammar,
+nonzero spare/hidden data and raw CAS refusal. Existing five platform-specific skips
+in the scoped volume test file retain their meaning. A separate elevated Windows
+subtree test exercises the new candidate transaction, foreign owner/group,
+nonprotected control, exact descendants, real ordinary-token creation and retained
+rollback capability; native skips do not certify these behaviors. Hosted/subtree
+proof cannot prove actual NTFS VOLUME ROOT behavior or real E rollback.
+
+Root's next read-only review uses a NEW protected exact signed package and complete
+supplement, then StoragePreflight and the scoped WslColdSyntheticVolume tests. Only
+root, after separate current-source/plan/UAC review, may request a NEW image:
+
+```powershell
+& PACKAGE\scripts\Invoke-WslColdSyntheticVolume.ps1 -Phase StoragePreflight
+Invoke-Pester -Path PACKAGE\tests\powershell\WslColdSyntheticVolume.Tests.ps1 -Output Detailed
+# NEW protected/disjoint private C parents; old image/plan/marker remain untouched.
+& PACKAGE\scripts\Invoke-WslColdSyntheticVolume.ps1 -FidelityProfile permission-ace-zero-unused-v1 -FixtureParent REVIEWED_NEW_C_FIXTURE_PARENT -EvidenceParent REVIEWED_NEW_C_EVIDENCE_PARENT -SourceManifestSha256 REVIEWED_CURRENT_MANIFEST
+# Independently review/schema4/candidate fields/operations/raw policy/digest first.
+& PACKAGE\scripts\Invoke-WslColdSyntheticVolume.ps1 -Phase Execute -PlanPath REVIEWED_NEW_CANDIDATE_PLAN -ReviewedPlanSha256 REVIEWED_EXACT_PLAN_DIGEST
+```
+
+Actual NEW Windows candidate volume proof is UNRUN until root supplies receipts.
+No production promotion follows automatically. Full encrypted backup/readback,
+keyfile bootstrap/export and Google+Apple off-laptop recovery drill, source outage,
+fresh shared-filesystem cold capacity (dense restore PLUS positive transaction/cache/
+worker overhead PLUS64GiB reserve) and full restore/import/boot remain open. Prepare
+accepting an absent repository is NOT repository initialization; existing private
+key import does not close bootstrap/export. Live2.825GB headroom is not admission.
+Codex relocation stays behind restore absent a complete combined budget. All prior
+failed filesystem/sparse/ACL receipts, old fixtures, root storage-owner/busctl gaps,
+Node24 producer, Python/Nix/provenance and deferred standard plus custom Zed IDE
+return obligations remain intact. Overall migration is NOT GREEN.

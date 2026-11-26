@@ -337,6 +337,56 @@ Describe 'Elevated synthetic owner transition and rollback' -Tag 'Elevated' {
     BeforeAll {
         if($IsWindows -and -not ('Revealfleet.Tests.OrdinaryCaller' -as [type])){Add-Type -Path (Join-Path $PSScriptRoot 'WslColdVolumeCustody.Fixture.cs')}
     }
+    It 'records candidate raw representations and preserves exact descendants through padded-target rollback' -Skip:(-not $IsWindows -or -not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))) {
+        $script:CustodyPrimaryFailure=$null;$root=$lease=$null
+        $scope=[Revealfleet.Backup.ColdRestorePrivilege]::new()
+        try {
+            $root=New-SyntheticTree -UnprotectedExplicit -ForeignIdentity;$original=Stable-TreeReceipt $root
+            $lease=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($root);$before=$lease.Read()
+            $before.Control|Should -Be 0x8004
+            $padded=[Revealfleet.Backup.ColdSecuritySnapshot]::new([Revealfleet.Backup.ColdSecurityLayout]::Compose([uint16]$before.Control,[Convert]::FromBase64String($before.OwnerBase64),[Convert]::FromBase64String($before.GroupBase64),[Convert]::FromBase64String($before.DaclBase64),248,$null))
+            $target=$padded.Restricted([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
+            if($RetainedFixtureParent){Write-WslBackupJsonNew ($root+'-candidate-before.json') @{profile='permission-ace-zero-unused-v1';before=$before;requested=$target;rollbackRequested=$padded;tree=$original;productionAccepted=$false}}
+            $transaction=$lease.OpenPermissionCandidateTransaction();$lease|Add-Member NoteProperty SyntheticTransaction $transaction
+            # The new comparator does not authorize changed child templates.
+            $changed=[Security.AccessControl.RawSecurityDescriptor]::new([Convert]::FromBase64String($target.DescriptorBase64),0)
+            foreach($ace in $changed.DiscretionaryAcl){if($ace.SecurityIdentifier.Value -eq 'S-1-1-0' -and ($ace.AceFlags -band 3)){$ace.AccessMask=0x1200a9}}
+            $changedBytes=[byte[]]::new($changed.BinaryLength);$changed.GetBinaryForm($changedBytes,0)
+            {$transaction.Replace($before.DescriptorSha256,$changedBytes)}|Should -Throw '*Changed child inheritance*'
+            $transaction.MutationCalls|Should -Be 0
+            $lease.Read().DescriptorSha256|Should -BeExactly $before.DescriptorSha256
+            (Tree-Receipt $root)|Should -BeExactly $original
+            # A stale full-raw digest refuses before the first native call.
+            {$transaction.Replace(('0'*64),[Convert]::FromBase64String($target.DescriptorBase64))}|Should -Throw '*raw CAS drift*'
+            $transaction.MutationCalls|Should -Be 0
+            $forward=$transaction.Replace($before.DescriptorSha256,[Convert]::FromBase64String($target.DescriptorBase64))
+            if($RetainedFixtureParent){Write-WslBackupJsonNew ($root+'-candidate-forward.json') $forward}
+            $forward.Profile|Should -BeExactly 'permission-ace-zero-unused-v1'
+            $forward.Delta.RawByteRestorationPromised|Should -BeFalse
+            (Tree-Receipt $root)|Should -BeExactly $original
+            $lease.ValidateIdentity();$transaction.IsClosed|Should -BeFalse
+            # Permission hashes cannot substitute for current full-raw identity.
+            {$transaction.Replace($forward.Delta.UsedIdentitySha256,[Convert]::FromBase64String($padded.DescriptorBase64))}|Should -Throw '*raw CAS drift*'
+            $transaction.MutationCalls|Should -Be 1
+            $ordinary=[Revealfleet.Tests.OrdinaryCaller]::new()
+            try {
+                $ordinary.Enter();$actual=[Convert]::FromBase64String($forward.Observed.DescriptorBase64)
+                foreach($right in @(0x10000,0x40,0x40000,0x80000)){$ordinary.AllowedByDacl($actual,$right)|Should -BeFalse}
+                foreach($right in @(2,4)){$ordinary.AllowedByDacl($actual,$right)|Should -BeTrue}
+                [Revealfleet.Tests.OrdinaryCaller]::CreateChildren($root)
+                [IO.File]::ReadAllText((Join-Path $root 'ordinary-created-file'))|Should -BeExactly 'ordinary synthetic bytes'
+            } finally {$ordinary.Dispose()}
+            (Get-Acl -LiteralPath (Join-Path $root 'ordinary-created-file')).Sddl|Should -BeExactly (Get-Acl -LiteralPath (Join-Path $root 'baseline.txt')).Sddl
+            $rollbackTree=Tree-Receipt $root
+            $rollback=$transaction.Replace($forward.Observed.DescriptorSha256,[Convert]::FromBase64String($padded.DescriptorBase64))
+            if($RetainedFixtureParent){Write-WslBackupJsonNew ($root+'-candidate-rollback.json') $rollback}
+            $restored=[Revealfleet.Backup.ColdPermissionIdentity]::Compare([Convert]::FromBase64String($before.DescriptorBase64),[Convert]::FromBase64String($rollback.Observed.DescriptorBase64))
+            $restored.RawByteRestorationPromised|Should -BeFalse
+            $rollback.Requested.DescriptorSha256|Should -BeExactly $padded.DescriptorSha256
+            (Tree-Receipt $root)|Should -BeExactly $rollbackTree
+            $transaction.MutationCalls|Should -Be 2;$transaction.IsClosed|Should -BeFalse;$lease.ValidateIdentity()
+        } catch {$script:CustodyPrimaryFailure=$_;throw} finally {if($root){Complete-CustodyTest $root $lease $scope}else{$scope.Dispose()}}
+    }
     It 'restores an unresolved SID with scoped privilege and leaves all descendants unchanged' -Skip:(-not $IsWindows -or -not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))) {
         $script:CustodyPrimaryFailure=$null
         # Shared private-tree helpers are loaded by the file BeforeAll.

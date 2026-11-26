@@ -183,6 +183,64 @@ namespace Revealfleet.Backup {
             RequireReplacementScope(result);return result;
         }
     }
+    // Candidate ONLY. Raw input is never rewritten or supplied to a setter in
+    // compacted form. The identity omits precisely AclSize and validated zero
+    // unused allocation; every header/control/owner/group/ordered ACE byte stays.
+    public sealed class ColdPermissionIdentity {
+        public const string Profile="permission-ace-zero-unused-v1";
+        readonly byte[] usedIdentity;
+        public string RawSha256 {get;private set;}
+        public string UsedIdentitySha256 {get;private set;}
+        public ColdSecurityLayout Layout {get;private set;}
+        public ColdPermissionIdentity(byte[] input) {
+            var data=input==null?null:(byte[])input.Clone();Layout=ColdSecurityLayout.Inspect(data);Layout.RequireWritable();
+            ushort control=BitConverter.ToUInt16(data,2);
+            if((control & ~0x9406)!=0 || Layout.AceCount==0)throw new IOException("Candidate supports bounded nonempty OWNER/GROUP/DACL only; control/SACL/empty forms refused");
+            int at=Layout.DaclOffset+8;
+            for(int i=0;i<Layout.AceCount;i++) {
+                int size=BitConverter.ToUInt16(data,at+2);
+                if(data[at]!=0 || (data[at+1]&~27)!=0 || ((data[at+1]&8)!=0 && (data[at+1]&3)==0) || size<16)
+                    throw new IOException("Candidate supports standard allow ACEs only; object/callback/audit/opaque flags refused");
+                uint mask=BitConverter.ToUInt32(data,at+4);int sid=at+8;
+                if(mask==0 || (mask & ~ColdRootPolicy.Full)!=0 || data[sid]!=1 || data[sid+1]>15 || size!=16+4*data[sid+1])
+                    throw new IOException("Candidate ACE mask/SID/exact-size grammar refused");
+                at+=size;
+            }
+            RawSha256=Convert.ToHexString(SHA256.HashData(data)).ToLowerInvariant();
+            using var bytes=new MemoryStream();using(var writer=new BinaryWriter(bytes,Encoding.UTF8,true)) {
+                writer.Write(Profile);writer.Write(data,0,Layout.DaclOffset);
+                // Preserve revision/reserved/count and ordered ACE bytes; only
+                // these two size bytes describe the excluded zero free area.
+                int d=Layout.DaclOffset;writer.Write(data[d]);writer.Write(data[d+1]);writer.Write((ushort)Layout.ParsedAclBytes);
+                writer.Write(data,d+4,Layout.ParsedAclBytes-4);
+            }
+            usedIdentity=bytes.ToArray();UsedIdentitySha256=Convert.ToHexString(SHA256.HashData(usedIdentity)).ToLowerInvariant();
+        }
+        public static void RequireRawCas(byte[] current,string expectedRawSha256) {
+            // Forensic identity is independent of permission equivalence. The
+            // initial fresh-volume descriptor may have a broader default ACL;
+            // seed does not compare its permissions with the requested seed.
+            if(current==null || current.Length<20 || current.Length>65536 || Convert.ToHexString(SHA256.HashData(current)).ToLowerInvariant()!=expectedRawSha256)
+                throw new IOException("Candidate full raw CAS drift; no mutation admitted, even if permissions match");
+        }
+        public static ColdPermissionDelta Compare(byte[] requested,byte[] observed) {
+            var a=new ColdPermissionIdentity(requested);var b=new ColdPermissionIdentity(observed);
+            if(!CryptographicOperations.FixedTimeEquals(a.usedIdentity,b.usedIdentity))throw new IOException("Candidate meaningful header/control/owner/group/ordered ACE identity differs");
+            return new ColdPermissionDelta {Profile=Profile,Classification=a.RawSha256==b.RawSha256?"ExactRaw":"ValidatedZeroUnusedAclCapacityOnly",RawEqual=a.RawSha256==b.RawSha256,RequestedRawSha256=a.RawSha256,ObservedRawSha256=b.RawSha256,UsedIdentitySha256=a.UsedIdentitySha256,RequestedAclBytes=a.Layout.AclBytes,ObservedAclBytes=b.Layout.AclBytes,AclBytesInUse=a.Layout.ParsedAclBytes};
+        }
+    }
+    public sealed class ColdPermissionDelta {
+        public string Profile {get;internal set;} public string Classification {get;internal set;}
+        public bool RawEqual {get;internal set;} public bool RawByteRestorationPromised => false;
+        public string RequestedRawSha256 {get;internal set;} public string ObservedRawSha256 {get;internal set;}
+        public string UsedIdentitySha256 {get;internal set;}
+        public int RequestedAclBytes {get;internal set;} public int ObservedAclBytes {get;internal set;} public int AclBytesInUse {get;internal set;}
+    }
+    public sealed class ColdPermissionChangeEvidence {
+        public string Profile => ColdPermissionIdentity.Profile;
+        public ColdSecuritySnapshot Before {get;internal set;} public ColdSecuritySnapshot Requested {get;internal set;} public ColdSecuritySnapshot Observed {get;internal set;}
+        public ColdPermissionDelta Delta {get;internal set;}
+    }
     // Privilege is enabled only on a duplicate impersonation token for this
     // synchronous thread, never the process/account. Original context restored.
     public sealed class ColdRestorePrivilege : IDisposable {
@@ -312,6 +370,17 @@ namespace Revealfleet.Backup {
             SetNative(bytes,7);var after=Read();
             if(after.DescriptorSha256!=target.DescriptorSha256)throw new IOException("Synthetic seed raw layout not retained; capacity/root gate remains open");
         }
+        internal ColdPermissionChangeEvidence ReplacePermissionCandidate(string expectedRaw,byte[] bytes,bool seed) {
+            RequireSynthetic();if(observationOnly)throw new IOException("Observation-only lease");
+            var before=Read();ColdPermissionIdentity.RequireRawCas(Convert.FromBase64String(before.DescriptorBase64),expectedRaw);
+            var target=new ColdSecuritySnapshot((byte[])bytes.Clone());new ColdPermissionIdentity(Convert.FromBase64String(target.DescriptorBase64));
+            if(!seed){new ColdPermissionIdentity(Convert.FromBase64String(before.DescriptorBase64));before.RequireReplacementScope(target);}
+            // Same original retained handle and selection as the strict path.
+            // Seed is reachable only via the fresh one-attempt volume method.
+            SetNative(Convert.FromBase64String(target.DescriptorBase64),seed?7u:5u);
+            var observed=Read();var delta=ColdPermissionIdentity.Compare(Convert.FromBase64String(target.DescriptorBase64),Convert.FromBase64String(observed.DescriptorBase64));
+            return new ColdPermissionChangeEvidence {Before=before,Requested=target,Observed=observed,Delta=delta};
+        }
         void SetNative(byte[] bytes,uint selection) {
             RequireSynthetic();IntPtr buffer=Marshal.AllocHGlobal(bytes.Length);
             try {Marshal.Copy(bytes,0,buffer,bytes.Length);NativeMutationCalls++;int status=NtSetSecurityObject(handle,selection,buffer);if(status<0)throw new Win32Exception((int)RtlNtStatusToDosError(status));}
@@ -351,6 +420,18 @@ namespace Revealfleet.Backup {
             public void Dispose(){closed=true;}
         }
         public SyntheticTransaction OpenSyntheticTransaction(){RequireSynthetic();return new SyntheticTransaction(this);}
+        public sealed class PermissionCandidateTransaction : IDisposable {
+            readonly ColdDirectorySecurityLease lease;bool closed;
+            public string Profile => ColdPermissionIdentity.Profile;public bool IsClosed => closed;
+            public int MutationCalls => lease.NativeMutationCalls;
+            internal PermissionCandidateTransaction(ColdDirectorySecurityLease owner){lease=owner;lease.RequireSynthetic();}
+            public ColdPermissionChangeEvidence Replace(string expectedRawSha256,byte[] target) {
+                if(closed)throw new ObjectDisposedException("Permission candidate transaction");
+                return lease.ReplacePermissionCandidate(expectedRawSha256,target,false);
+            }
+            public void Dispose(){closed=true;}
+        }
+        public PermissionCandidateTransaction OpenPermissionCandidateTransaction(){RequireSynthetic();return new PermissionCandidateTransaction(this);}
         [StructLayout(LayoutKind.Sequential)] struct SecurityAttributes {public uint Length;public IntPtr Descriptor;public int Inherit;}
         public static void CopyNewProtectedFile(string source,string destination,byte[] descriptor) {
             if(!OperatingSystem.IsWindows())throw new PlatformNotSupportedException();

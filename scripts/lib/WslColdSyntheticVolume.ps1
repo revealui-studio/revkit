@@ -104,7 +104,8 @@ function Assert-WslColdSyntheticPartitionLayout {
     if(-not $Layout -or $Layout.Count -ne $fixed.Count -or $Layout.profile -cne $fixed.profile -or $Layout.offsetBytes -ne $fixed.offsetBytes -or $Layout.alignmentBytes -ne $fixed.alignmentBytes){throw 'Partition predicate refused: reviewed-layout-contract.'}
 }
 function Get-WslColdSyntheticVolumePlan {
-    param([string]$FixtureParent,[string]$EvidenceParent,[string]$SourceManifestSha256)
+    param([string]$FixtureParent,[string]$EvidenceParent,[string]$SourceManifestSha256,[ValidateSet('exact-raw-acl-capacity-v1','permission-ace-zero-unused-v1')][string]$FidelityProfile='exact-raw-acl-capacity-v1')
+    if($FidelityProfile -cnotin @('exact-raw-acl-capacity-v1','permission-ace-zero-unused-v1')){throw 'Exact versioned fidelity profile required.'}
     Assert-WslSyntheticCParent $FixtureParent;Assert-WslSyntheticCParent $EvidenceParent
     $source=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
     foreach($a in @($FixtureParent,$EvidenceParent)){
@@ -116,13 +117,19 @@ function Get-WslColdSyntheticVolumePlan {
     $storage=Get-WslColdStoragePreflight
     $f=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($FixtureParent);$e=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($EvidenceParent)
     try {
-        [ordered]@{schemaVersion=3;kind='new-private-synthetic-volume-root-v1';sourceRoot=$source;sourceCommit=$code.SourceCommit;sourceManifestSha256=$SourceManifestSha256;storage=$storage;partitionLayout=(Get-WslColdSyntheticPartitionLayout);
+        $plan=[ordered]@{schemaVersion=3;kind='new-private-synthetic-volume-root-v1';sourceRoot=$source;sourceCommit=$code.SourceCommit;sourceManifestSha256=$SourceManifestSha256;storage=$storage;partitionLayout=(Get-WslColdSyntheticPartitionLayout);
             ownerSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;fixtureParent=$FixtureParent;evidenceParent=$EvidenceParent;fixtureIdentity=$f.FileIdentity;evidenceIdentity=$e.FileIdentity;
             fixtureDescriptor=$f.Read().DescriptorSha256;evidenceDescriptor=$e.Read().DescriptorSha256;
             virtualBytes=[long][Revealfleet.Backup.ColdSyntheticVirtualDisk]::VirtualBytes;hardFileBytes=[long][Revealfleet.Backup.ColdSyntheticVirtualDisk]::HardFileBytes;
             createdAt=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds();expiresAt=[DateTimeOffset]::UtcNow.AddHours(1).ToUnixTimeSeconds();
             operations=@('Create NEW UUID private C workspace and fixed128MiB VHD via CreateVirtualDisk','Attach own handle NO_DRIVE_LETTER, nonpersistent','Initialize only returned/revalidated Disk object MBR; New-Partition only that object; Format only returned/revalidated Partition NTFS','Bind native virtual identifier/file identity/physical path/device metadata/volume extents before every write','Capture expected system children; seed generic foreign owner/group control0x8004 ACL248/parsed68/zero-spare180','Require exact stable descendants, root raw capacity and rollback; retain VHD/evidence; detach own handle only');
             actualProductionAccepted=$false;existingVhdAccepted=$false;physicalDiskAccepted=$false;rootPrivileges=@('SeRestorePrivilege','SeManageVolumePrivilege')}
+        if($FidelityProfile -ceq [Revealfleet.Backup.ColdPermissionIdentity]::Profile){
+            $plan.schemaVersion=4;$plan.kind='new-private-permission-fidelity-candidate-v1'
+            $plan.operations[-1]='Require exact stable descendants and full raw CAS; candidate permits only validated zero unused ACL allocation differences in permission postconditions; retain all raw representations/VHD/evidence; detach own handle only'
+            $plan['fidelity']=[ordered]@{profile=$FidelityProfile;candidate=$true;rawEvidenceRequired=$true;fullRawCasRequired=$true;rawByteRestorationPromised=$false;descendants='exact-existing-evidence-v1'}
+        }
+        return $plan
     } finally {$f.Dispose();$e.Dispose()}
 }
 function Assert-WslColdStorageUInt16Observation {
@@ -262,9 +269,14 @@ function Invoke-WslColdSyntheticVolume {
     if(-not $IsWindows){throw 'Actual Windows/root review required; native cannot execute synthetic volume.'}
     Assert-WslBackupHash $ReviewedPlanSha256;$doc=Read-WslRecoveryDocument $PlanPath
     if($doc.Sha256 -cne $ReviewedPlanSha256){throw 'Independent reviewed plan digest differs.'};$p=$doc.Value
-    Assert-WslRecoveryFields $p @('schemaVersion','kind','sourceRoot','sourceCommit','sourceManifestSha256','storage','partitionLayout','ownerSid','fixtureParent','evidenceParent','fixtureIdentity','evidenceIdentity','fixtureDescriptor','evidenceDescriptor','virtualBytes','hardFileBytes','createdAt','expiresAt','operations','actualProductionAccepted','existingVhdAccepted','physicalDiskAccepted','rootPrivileges') 'synthetic volume review plan'
-    if($p.schemaVersion -ne 3 -or $p.kind -cne 'new-private-synthetic-volume-root-v1' -or $p.expiresAt -le [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -or $p.expiresAt-$p.createdAt -gt 3600){throw 'Fresh synthetic-only plan required.'}
-    $fresh=Get-WslColdSyntheticVolumePlan $p.fixtureParent $p.evidenceParent $p.sourceManifestSha256
+    $candidate=$p.schemaVersion -eq 4 -and $p.kind -ceq 'new-private-permission-fidelity-candidate-v1'
+    $fields=@('schemaVersion','kind','sourceRoot','sourceCommit','sourceManifestSha256','storage','partitionLayout','ownerSid','fixtureParent','evidenceParent','fixtureIdentity','evidenceIdentity','fixtureDescriptor','evidenceDescriptor','virtualBytes','hardFileBytes','createdAt','expiresAt','operations','actualProductionAccepted','existingVhdAccepted','physicalDiskAccepted','rootPrivileges')
+    if($candidate){$fields+=@('fidelity')}
+    Assert-WslRecoveryFields $p $fields 'synthetic volume review plan'
+    if(( -not $candidate -and ($p.schemaVersion -ne 3 -or $p.kind -cne 'new-private-synthetic-volume-root-v1')) -or $p.expiresAt -le [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -or $p.expiresAt-$p.createdAt -gt 3600){throw 'Fresh versioned synthetic-only plan required.'}
+    $profile=if($candidate){'permission-ace-zero-unused-v1'}else{'exact-raw-acl-capacity-v1'}
+    $fresh=Get-WslColdSyntheticVolumePlan $p.fixtureParent $p.evidenceParent $p.sourceManifestSha256 $profile
+    if($candidate -and (ConvertTo-Json -InputObject $fresh.fidelity -Compress) -cne (ConvertTo-Json -InputObject $p.fidelity -Compress)){throw 'Reviewed permission candidate profile/gates differ.'}
     foreach($name in @('sourceRoot','sourceCommit','ownerSid','fixtureIdentity','evidenceIdentity','fixtureDescriptor','evidenceDescriptor','virtualBytes','hardFileBytes')){if($fresh[$name] -cne $p[$name]){throw 'Reviewed synthetic source/parent binding drift.'}}
     foreach($name in @('operations','rootPrivileges','actualProductionAccepted','existingVhdAccepted','physicalDiskAccepted')){if((ConvertTo-Json -InputObject $fresh[$name] -Compress) -cne (ConvertTo-Json -InputObject $p[$name] -Compress)){throw 'Reviewed synthetic operation/privilege scope differs.'}}
     if((ConvertTo-Json -InputObject $fresh.storage -Depth 12 -Compress) -cne (ConvertTo-Json -InputObject $p.storage -Depth 12 -Compress)){throw 'Reviewed Microsoft Storage binding drift.'}
@@ -280,7 +292,11 @@ function Invoke-WslColdSyntheticVolume {
         $owned.Attach();Initialize-WslOwnedSyntheticVolume $owned $evidence $fresh.storage $fresh.partitionLayout
         $systems=Get-WslOwnedSyntheticTree $owned -SystemOnly;Write-WslBackupJsonNew (Join-Path $evidence 'system-before-seed.json') @{tree=$systems}
         $seed=New-WslGenericPaddedRoot;Write-WslBackupJsonNew (Join-Path $evidence 'seed-proposed.json') $seed
-        $owned.SeedRoot($seed)
+        if($candidate){
+            $probe=$owned.OpenRoot();try{$seedBefore=$probe.Read();Write-WslBackupJsonNew (Join-Path $evidence 'candidate-before-seed-raw.json') $seedBefore}finally{$probe.Dispose()}
+            $seedProof=$owned.SeedRootPermissionCandidate($seedBefore.DescriptorSha256,$seed)
+            Write-WslBackupJsonNew (Join-Path $evidence 'candidate-seed-raw-and-delta.json') $seedProof
+        }else{$owned.SeedRoot($seed)}
         $systemAfter=Get-WslOwnedSyntheticTree $owned -SystemOnly;Write-WslBackupJsonNew (Join-Path $evidence 'system-after-seed.json') @{tree=$systemAfter}
         if($systemAfter -cne $systems){throw 'System-created children changed during fixture seeding; preserve exact delta, no acceptance.'}
         $root=$owned.VolumeRoot
@@ -289,9 +305,19 @@ function Invoke-WslColdSyntheticVolume {
         $beforeTree=Get-WslOwnedSyntheticTree $owned
         if((Get-WslOwnedSyntheticTree $owned) -cne $beforeTree){throw 'Synthetic baseline unstable; no retry.'}
         $lease=$owned.OpenRoot();$before=$lease.Read();Write-WslBackupJsonNew (Join-Path $evidence 'baseline.json') @{root=$before;tree=$beforeTree;fileIdentity=$lease.FileIdentity;attributes=$lease.Attributes}
-        if($before.Control -ne 0x8004 -or $before.Layout.AclBytes -ne 248 -or $before.Layout.ParsedAclBytes -ne 68 -or $before.Layout.OwnerBytes -ne 28 -or $before.Layout.GroupBytes -ne 28){throw 'Faithful generic raw layout was not retained.'}
-        $target=$before.Restricted($user);Write-WslBackupJsonNew (Join-Path $evidence 'restricted-proposed.json') $target
-        $transaction=$lease.OpenSyntheticTransaction();$transaction.Replace($before.Sha256,[Convert]::FromBase64String($target.DescriptorBase64))
+        if($candidate){
+            $baselineDelta=[Revealfleet.Backup.ColdPermissionIdentity]::Compare([Convert]::FromBase64String($seed.DescriptorBase64),[Convert]::FromBase64String($before.DescriptorBase64))
+            Write-WslBackupJsonNew (Join-Path $evidence 'candidate-baseline-delta.json') $baselineDelta
+            $target=$seed.Restricted($user)
+        }else{
+            if($before.Control -ne 0x8004 -or $before.Layout.AclBytes -ne 248 -or $before.Layout.ParsedAclBytes -ne 68 -or $before.Layout.OwnerBytes -ne 28 -or $before.Layout.GroupBytes -ne 28){throw 'Faithful generic raw layout was not retained.'}
+            $target=$before.Restricted($user)
+        }
+        Write-WslBackupJsonNew (Join-Path $evidence 'restricted-proposed.json') $target
+        if($candidate){
+            $transaction=$lease.OpenPermissionCandidateTransaction();$forward=$transaction.Replace($before.DescriptorSha256,[Convert]::FromBase64String($target.DescriptorBase64))
+            Write-WslBackupJsonNew (Join-Path $evidence 'candidate-forward-raw-and-delta.json') $forward
+        }else{$transaction=$lease.OpenSyntheticTransaction();$transaction.Replace($before.Sha256,[Convert]::FromBase64String($target.DescriptorBase64))}
         Write-WslBackupJsonNew (Join-Path $evidence 'restricted-observed.json') @{root=$lease.Read();tree=(Get-WslOwnedSyntheticTree $owned)}
         if((Get-WslOwnedSyntheticTree $owned) -cne $beforeTree){throw 'Existing synthetic descendants changed after restriction.'}
         $rights=$owned.ProveOrdinaryRights($lease);Write-WslBackupJsonNew (Join-Path $evidence 'ordinary-rights.json') $rights
@@ -302,9 +328,19 @@ function Invoke-WslColdSyntheticVolume {
         # Keep evidence of this new child; never delete even fixture files. The
         # restore comparison includes it in a new explicit rollback baseline.
         $rollbackTree=Get-WslOwnedSyntheticTree $owned;Write-WslBackupJsonNew (Join-Path $evidence 'before-rollback.json') @{tree=$rollbackTree}
-        $transaction.Replace($target.Sha256,[Convert]::FromBase64String($before.DescriptorBase64))
-        $after=$lease.Read();if($after.DescriptorSha256 -cne $before.DescriptorSha256 -or (Get-WslOwnedSyntheticTree $owned) -cne $rollbackTree -or $transaction.MutationCalls -ne 2){throw 'Exact volume-root raw rollback/descendant proof failed.'}
-        Write-WslBackupJsonNew (Join-Path $evidence 'accepted-before-detach.json') @{root=$after;tree=$rollbackTree;mutationCalls=$transaction.MutationCalls;seedMutationCalls=$owned.SeedMutationCalls;syntheticVolumeAccepted=$true;realEAccepted=$false;productionAccepted=$false}
+        if($candidate){
+            # Roll back the original requested padded bytes, while CAS is the
+            # actual post-forward raw representation, never a semantic digest.
+            $rollback=$transaction.Replace($forward.Observed.DescriptorSha256,[Convert]::FromBase64String($seed.DescriptorBase64))
+            Write-WslBackupJsonNew (Join-Path $evidence 'candidate-rollback-raw-and-delta.json') $rollback
+            $after=$lease.Read();$restored=[Revealfleet.Backup.ColdPermissionIdentity]::Compare([Convert]::FromBase64String($before.DescriptorBase64),[Convert]::FromBase64String($after.DescriptorBase64))
+            if((Get-WslOwnedSyntheticTree $owned) -cne $rollbackTree -or $transaction.MutationCalls -ne 2){throw 'Candidate exact descendants/call count failed.'}
+            Write-WslBackupJsonNew (Join-Path $evidence 'candidate-accepted-before-detach.json') @{profile=$profile;root=$after;baseline=$before;restoredDelta=$restored;tree=$rollbackTree;mutationCalls=$transaction.MutationCalls;seedMutationCalls=$owned.SeedMutationCalls;rawByteRestorationPromised=$false;candidateSyntheticVolumeAccepted=$true;strictRawProfileAccepted=$false;realEAccepted=$false;productionAccepted=$false}
+        }else{
+            $transaction.Replace($target.Sha256,[Convert]::FromBase64String($before.DescriptorBase64))
+            $after=$lease.Read();if($after.DescriptorSha256 -cne $before.DescriptorSha256 -or (Get-WslOwnedSyntheticTree $owned) -cne $rollbackTree -or $transaction.MutationCalls -ne 2){throw 'Exact volume-root raw rollback/descendant proof failed.'}
+            Write-WslBackupJsonNew (Join-Path $evidence 'accepted-before-detach.json') @{root=$after;tree=$rollbackTree;mutationCalls=$transaction.MutationCalls;seedMutationCalls=$owned.SeedMutationCalls;syntheticVolumeAccepted=$true;realEAccepted=$false;productionAccepted=$false}
+        }
     } catch {
         $failure=$_
         if($evidence -and $owned -and $owned.VolumeRoot){

@@ -25,6 +25,104 @@ BeforeAll {
         return @{disk=$disk;returned=$part;parents=@($disk.Clone());current=@($part.Clone())}
     }
 }
+Describe 'Permission ACE candidate and independent raw identity' {
+    It 'distinguishes zero unused ACL capacity from raw forensic equality without rewriting inputs' {
+        $padded=LayoutBytes;$compact=LayoutBytes 68;$retained=[Convert]::ToBase64String($padded)
+        $delta=[Revealfleet.Backup.ColdPermissionIdentity]::Compare($padded,$compact)
+        $delta.Profile|Should -BeExactly 'permission-ace-zero-unused-v1'
+        $delta.Classification|Should -BeExactly 'ValidatedZeroUnusedAclCapacityOnly'
+        $delta.RawEqual|Should -BeFalse;$delta.RawByteRestorationPromised|Should -BeFalse
+        $delta.RequestedAclBytes|Should -Be 248;$delta.ObservedAclBytes|Should -Be 68;$delta.AclBytesInUse|Should -Be 68
+        $delta.RequestedRawSha256|Should -Not -Be $delta.ObservedRawSha256
+        [Convert]::ToBase64String($padded)|Should -BeExactly $retained
+        ([Revealfleet.Backup.ColdPermissionIdentity]::Compare($padded,$padded)).Classification|Should -BeExactly 'ExactRaw'
+        ([Revealfleet.Backup.ColdPermissionIdentity]::new($padded)).UsedIdentitySha256|Should -BeExactly ([Revealfleet.Backup.ColdPermissionIdentity]::new($compact)).UsedIdentitySha256
+    }
+    It 'rejects every changed meaningful byte rather than accepting broad access equivalence' {
+        $base=LayoutBytes 68;$dacl=[BitConverter]::ToInt32($base,16)
+        # AclSize alone describes validated free allocation. Every other byte
+        # belongs to the exact header, SID, ACL header or ordered ACE payload.
+        $tested=0
+        for($i=0;$i -lt $base.Length;$i++){
+            if($i -in @(($dacl+2),($dacl+3))){continue}
+            $changed=[byte[]]$base.Clone();$changed[$i]=$changed[$i] -bxor 1
+            {[Revealfleet.Backup.ColdPermissionIdentity]::Compare($base,$changed)}|Should -Throw -Because ('meaningful byte '+$i+' must remain exact')
+            $tested++
+        }
+        $tested|Should -Be ($base.Length-2)
+    }
+    It 'preserves supported control bits, revision and ordered ACEs exactly' {
+        $base=LayoutBytes 68
+        foreach($control in @(0x8006,0x8404,0x9004)){
+            $changed=[byte[]]$base.Clone();[BitConverter]::GetBytes([uint16]$control).CopyTo($changed,2)
+            {[Revealfleet.Backup.ColdPermissionIdentity]::new($changed)}|Should -Not -Throw
+            {[Revealfleet.Backup.ColdPermissionIdentity]::Compare($base,$changed)}|Should -Throw
+        }
+        $d=[BitConverter]::ToInt32($base,16);$changed=[byte[]]$base.Clone();$changed[$d]=4
+        {[Revealfleet.Backup.ColdPermissionIdentity]::new($changed)}|Should -Not -Throw
+        {[Revealfleet.Backup.ColdPermissionIdentity]::Compare($base,$changed)}|Should -Throw
+        $changed=[byte[]]$base.Clone();[Array]::Copy($base,$d+28,$changed,$d+8,20);[Array]::Copy($base,$d+8,$changed,$d+28,20)
+        {[Revealfleet.Backup.ColdPermissionIdentity]::Compare($base,$changed)}|Should -Throw
+    }
+    It 'refuses unsupported SACL, object, callback, conditional, opaque, null and empty forms' {
+        $base=LayoutBytes;$d=[BitConverter]::ToInt32($base,16)
+        foreach($fault in @('sacl','sacl-control','object','callback','deny','no-propagate','audit-flag','generic-rights','empty','null','opaque')){
+            $changed=[byte[]]$base.Clone()
+            switch($fault){
+                sacl {[BitConverter]::GetBytes([uint32]20).CopyTo($changed,12)}
+                sacl-control {[BitConverter]::GetBytes([uint16]0x8014).CopyTo($changed,2)}
+                object {$changed[$d+8]=5}
+                callback {$changed[$d+8]=9}
+                deny {$changed[$d+8]=1}
+                no-propagate {$changed[$d+9]=7}
+                audit-flag {$changed[$d+9]=67}
+                generic-rights {$changed[$d+15]=128}
+                empty {$changed[$d+4]=0}
+                null {[BitConverter]::GetBytes([uint32]0).CopyTo($changed,16)}
+                opaque {[BitConverter]::GetBytes([uint16]24).CopyTo($changed,$d+10)}
+            }
+            {[Revealfleet.Backup.ColdPermissionIdentity]::new($changed)}|Should -Throw -Because $fault
+        }
+    }
+    It 'rejects nonzero spare, hidden ACE, outer trailing allocation, bad bounds and reserved bytes' {
+        $base=LayoutBytes;$d=[BitConverter]::ToInt32($base,16)
+        foreach($fault in @('nonzero-spare','hidden-ace','short-acl','unaligned-acl','overflow-acl','acl-reserved1','acl-reserved2','header-reserved','sid-gap','sid-overlap','sid-overflow','ace-overflow','count-overflow')){
+            $changed=[byte[]]$base.Clone()
+            switch($fault){
+                nonzero-spare {$changed[-1]=1}
+                hidden-ace {$changed[$d+68]=0;$changed[$d+69]=3;$changed[$d+70]=20}
+                short-acl {$changed[$d+2]=64}
+                unaligned-acl {$changed[$d+2]=247}
+                overflow-acl {[BitConverter]::GetBytes([uint16]65532).CopyTo($changed,$d+2)}
+                acl-reserved1 {$changed[$d+1]=1}
+                acl-reserved2 {$changed[$d+6]=1}
+                header-reserved {$changed[1]=1}
+                sid-gap {$changed[8]=49}
+                sid-overlap {$changed[8]=20}
+                sid-overflow {$changed[21]=15}
+                ace-overflow {[BitConverter]::GetBytes([uint16]252).CopyTo($changed,$d+10)}
+                count-overflow {[BitConverter]::GetBytes([uint16]65535).CopyTo($changed,$d+4)}
+            }
+            {[Revealfleet.Backup.ColdPermissionIdentity]::new($changed)}|Should -Throw -Because $fault
+        }
+        foreach($tail in @([byte[]](0,0,0,0),[byte[]](0,0,0,1))){
+            {[Revealfleet.Backup.ColdPermissionIdentity]::new((LayoutBytes 248 $tail))}|Should -Throw
+        }
+    }
+    It 'uses the entire actual raw descriptor for CAS even when permission identity matches' {
+        $padded=LayoutBytes;$compact=LayoutBytes 68
+        $a=[Revealfleet.Backup.ColdPermissionIdentity]::new($padded);$b=[Revealfleet.Backup.ColdPermissionIdentity]::new($compact)
+        {[Revealfleet.Backup.ColdPermissionIdentity]::RequireRawCas($compact,$b.RawSha256)}|Should -Not -Throw
+        {[Revealfleet.Backup.ColdPermissionIdentity]::RequireRawCas($compact,$a.RawSha256)}|Should -Throw '*raw CAS drift*'
+        {[Revealfleet.Backup.ColdPermissionIdentity]::RequireRawCas($compact,$b.UsedIdentitySha256)}|Should -Throw '*raw CAS drift*'
+        # Forensic bytes may be recorded before synthetic seed even when their
+        # wider grammar would be refused for a candidate replacement target.
+        $wider=[byte[]]$compact.Clone();$wider[1]=1
+        $hash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($wider)).ToLowerInvariant()
+        {[Revealfleet.Backup.ColdPermissionIdentity]::RequireRawCas($wider,$hash)}|Should -Not -Throw
+        {[Revealfleet.Backup.ColdPermissionIdentity]::new($wider)}|Should -Throw
+    }
+}
 Describe 'Reviewed partition layout and format boundary' {
     It 'requests one MiB offset and alignment and refuses the observed default before modeled format' {
         $layout=Get-WslColdSyntheticPartitionLayout
