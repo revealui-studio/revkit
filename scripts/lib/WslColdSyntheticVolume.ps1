@@ -7,6 +7,27 @@ function Resolve-WslColdStorageNestedPath {
     if(-not $Relative -or [IO.Path]::IsPathRooted($Relative) -or $Relative.Contains(':') -or $Relative.Contains('\') -or $Relative.Contains('/') -or [IO.Path]::GetExtension($Relative) -cnotin @('.cdxml','.psm1')){throw 'Storage nested declaration must be a direct CDXML/script file.'}
     return [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetDirectoryName($ManifestPath)) $Relative))
 }
+function Get-WslColdStorageLiteralDeclaration {
+    param([string]$ManifestPath)
+    if([IO.FileInfo]::new($ManifestPath).Length -gt 1MB){throw 'Storage manifest size refused.'}
+    $tokens=$null;$errors=$null;$ast=[Management.Automation.Language.Parser]::ParseFile($ManifestPath,[ref]$tokens,[ref]$errors)
+    if($errors.Count -or $ast.ParamBlock -or $ast.BeginBlock -or $ast.ProcessBlock -or $ast.EndBlock.Statements.Count -ne 1){throw 'Storage manifest must contain one data table.'}
+    $statement=$ast.EndBlock.Statements[0]
+    if($statement -isnot [Management.Automation.Language.PipelineAst] -or $statement.PipelineElements.Count -ne 1 -or $statement.PipelineElements[0] -isnot [Management.Automation.Language.CommandExpressionAst] -or $statement.PipelineElements[0].Expression -isnot [Management.Automation.Language.HashtableAst]){throw 'Storage manifest data table required.'}
+    $result=@{}
+    foreach($pair in $statement.PipelineElements[0].Expression.KeyValuePairs){
+        $key=$pair.Item1.SafeGetValue()
+        if($key -iin @('GUID','ModuleVersion','NestedModules')){
+            if($result.ContainsKey($key)){throw 'Duplicate Storage identity/declaration field.'}
+            # Evaluate only literal identity/declaration nodes. A real module
+            # manifest may use supported expressions in OTHER fields (e.g.
+            # RequiredAssemblies); never evaluate those as arbitrary code here.
+            $result[$key]=$pair.Item2.SafeGetValue()
+        }
+    }
+    if($result.Count -ne 3){throw 'Literal Storage identity and nested declaration required.'}
+    return $result
+}
 function Assert-WslColdStorageCommandBinding {
     param($Parent,[string]$ManifestPath,[guid]$ManifestGuid,[version]$ManifestVersion,[string[]]$NestedPaths,[string]$Name,[object[]]$Resolved)
     $base=[IO.Path]::GetDirectoryName($ManifestPath)
@@ -36,7 +57,7 @@ function Get-WslColdStoragePreflight {
     if(-not $IsWindows -or -not [Environment]::Is64BitProcess){throw 'Read-only Storage preflight requires native 64-bit PowerShell on Windows.'}
     $manifest=[IO.Path]::GetFullPath((Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell/v1.0/Modules/Storage/Storage.psd1'))
     $files=[Collections.Generic.List[object]]::new();$files.Add((Get-WslColdMicrosoftStorageFile $manifest))
-    $data=Microsoft.PowerShell.Utility\Import-PowerShellDataFile -LiteralPath $manifest -ErrorAction Stop
+    $data=Get-WslColdStorageLiteralDeclaration $manifest
     $declarations=@($data.NestedModules)
     if($declarations.Count -lt 1 -or $declarations.Count -gt 128){throw 'Bounded declared Storage nested inventory required.'}
     $paths=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -48,6 +69,9 @@ function Get-WslColdStoragePreflight {
     foreach($loaded in @(Microsoft.PowerShell.Core\Get-Module -Name Storage -All)){
         if(-not [string]::Equals($loaded.Path,$manifest,[StringComparison]::OrdinalIgnoreCase)){throw 'Ambient Storage module differs from selected system manifest; fresh process required.'}
     }
+    # Microsoft's signed manifest uses windir for its system assembly. Refuse
+    # an ambient redirection; do not inject/repair environment values.
+    if(-not $env:windir -or -not [string]::Equals([IO.Path]::GetFullPath($env:windir),[IO.Path]::GetDirectoryName([Environment]::SystemDirectory),[StringComparison]::OrdinalIgnoreCase)){throw 'Storage system assembly environment differs from native Windows directory.'}
     $parents=@(Microsoft.PowerShell.Core\Import-Module -Name $manifest -PassThru -Global -NoClobber -ErrorAction Stop)
     if($parents.Count -ne 1){throw 'Exactly one selected Storage parent required.'};$parent=$parents[0]
     $commands=[Collections.Generic.List[object]]::new()

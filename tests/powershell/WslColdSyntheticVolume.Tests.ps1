@@ -18,6 +18,14 @@ BeforeAll {
     }
 }
 Describe 'Selected system Storage nested command ownership' {
+    It 'reads literal declarations without evaluating other supported manifest expressions' {
+        $path=Join-Path $TestDrive 'expressions.psd1'
+        [IO.File]::WriteAllText($path,'@{GUID="193c8b20-f199-43df-9b86-53ad824ed732";ModuleVersion="2.0.0.0";NestedModules=@("Disk.cdxml");RequiredAssemblies=@("$env:windir\system32\Microsoft.Windows.Storage.Core.dll")}')
+        $data=Get-WslColdStorageLiteralDeclaration $path
+        $data.NestedModules|Should -Contain 'Disk.cdxml';$data.ModuleVersion|Should -BeExactly '2.0.0.0';$data.Count|Should -Be 3
+        [IO.File]::WriteAllText($path,'@{GUID="193c8b20-f199-43df-9b86-53ad824ed732";ModuleVersion="2.0.0.0";NestedModules=@("$env:windir\Disk.cdxml")}')
+        {Get-WslColdStorageLiteralDeclaration $path}|Should -Throw
+    }
     It 'accepts modeled declared nested CDXML exports without misidentifying the child as the parent' {
         $binding=New-StorageOwnershipModel
         {Assert-WslColdStorageCommandBinding @binding}|Should -Not -Throw

@@ -1030,6 +1030,16 @@ of the seven module-qualified commands to that parent's actual exported Function
 object and its declared CIM child. Foreign loaded parents, aliases, ambiguous
 resolution and session proxies refuse. It never unloads foreign modules to pass.
 
+The first signed resolver attempt failed the new real Windows regression because
+Import-PowerShellDataFile rejected the standard manifest's expanded system-assembly
+path. That failure and bundle remain retained. Inspection now uses PowerShell's
+parser and SafeGetValue only on the literal GUID/version/NestedModules nodes;
+other manifest expressions are not evaluated by the inspector. Dynamic identity
+or nested declarations refuse. The later standard module import still processes
+the signed Microsoft manifest normally; a redirected windir refuses rather than
+being silently repaired. This is not arbitrary script evaluation or a substitute
+for the prior signature/protected-path checks.
+
 The standalone preflight needs no fixture, disk inputs or elevation:
 
 ```powershell
@@ -1058,4 +1068,5 @@ builds on89a40a3 and does not reinterpret that capture or promote volume accepta
 
 Primary references: [module manifests and NestedModules](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_module_manifests),
 [explicit-path Import-Module](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/import-module),
+[safe AST values](https://learn.microsoft.com/en-us/dotnet/api/system.management.automation.language.ast.safegetvalue),
 [Authenticode and catalog signatures](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.security/get-authenticodesignature).
