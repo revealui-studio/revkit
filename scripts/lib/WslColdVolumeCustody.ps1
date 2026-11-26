@@ -266,7 +266,7 @@ function Get-WslColdPermissionPair {
         $a.Restricted($Plan.policy.trustedUserSid).DescriptorSha256 -cne $b.DescriptorSha256 -or $Plan.fidelity.profile -cne 'permission-ace-zero-unused-v1' -or
         $Plan.fidelity.beforeRawSha256 -cne $ai.RawSha256 -or $Plan.fidelity.requestedRawSha256 -cne $bi.RawSha256 -or $Plan.fidelity.requestedPermissionSha256 -cne $bi.UsedIdentitySha256 -or
         $Plan.fidelity.childInheritanceSha256 -cne $a.ChildInheritanceSha256 -or $Plan.fidelity.childInheritanceSha256 -cne $b.ChildInheritanceSha256 -or
-        $Plan.fidelity.rawByteRestorationPromised -isnot [bool] -or $Plan.fidelity.rawByteRestorationPromised -cne $false -or $Plan.fidelity.sacl -cne 'RequireObservedAbsentBeforeEveryWrite'){throw 'Permission pair/forward/inverse/raw binding differs.'}
+        $Plan.fidelity.rawByteRestorationPromised -isnot [bool] -or $Plan.fidelity.rawByteRestorationPromised -cne $false -or $Plan.fidelity.sacl -cne 'explicit-security-components-v1:no-sacl:0x1ff'){throw 'Permission pair/forward/inverse/raw binding differs.'}
     return @{Before=$a;After=$b}
 }
 function Get-WslColdPermissionCustodyPlan {
@@ -293,7 +293,7 @@ function Get-WslColdPermissionCustodyPlan {
             sourceCommit=$code.SourceCommit;sourceFiles=@($code.Files|ForEach-Object {@{path=$_.RelativePath;sha256=$_.Sha256}});storage=$storage;
             rootFileIdentity=$r.FileIdentity;rootAttributes=$r.Attributes;before=$a;after=$b;evidenceFileIdentity=$e.FileIdentity;evidenceRawSha256=$e.Read().DescriptorSha256;
             namespacePath=$namespace;createdAt=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds();expiresAt=[DateTimeOffset]::UtcNow.AddHours(1).ToUnixTimeSeconds();
-            fidelity=@{profile=$Policy.fidelityProfile;beforeRawSha256=$a.DescriptorSha256;requestedRawSha256=$b.DescriptorSha256;requestedPermissionSha256=$bi.UsedIdentitySha256;childInheritanceSha256=$a.ChildInheritanceSha256;rawByteRestorationPromised=$false;sacl='RequireObservedAbsentBeforeEveryWrite'};
+            fidelity=@{profile=$Policy.fidelityProfile;beforeRawSha256=$a.DescriptorSha256;requestedRawSha256=$b.DescriptorSha256;requestedPermissionSha256=$bi.UsedIdentitySha256;childInheritanceSha256=$a.ChildInheritanceSha256;rawByteRestorationPromised=$false;sacl='explicit-security-components-v1:no-sacl:0x1ff'};
             authority='Independent exact plan review PLUS actual elevated current owner; no receipt/test flag grants authority';
             scope='NTFS root OWNER+DACL only; unchanged control/group/child templates; no old descendant enumeration/mutation';
             privileges=@('Scoped thread-token SeRestorePrivilege','Scoped thread-token SeSecurityPrivilege for read-only SACL refusal');

@@ -1350,7 +1350,8 @@ SACL absence must now be OBSERVED, not inferred from OWNER/GROUP/DACL-only reads
 The new scoped duplicate-thread token requires BOTH SeRestorePrivilege (foreign
 owner inverse) and SeSecurityPrivilege (read-only security observation). A separate
 compatible metadata handle requests ACCESS_SYSTEM_SECURITY and queries
-BACKUP_SECURITY_INFORMATION, including labels/resource/other SACL data. Any observed
+all nine SDK security component flags explicitly (mask0x1ff), including audit,
+label, resource, scope, trust and access-filter SACL data. Any observed
 SACL (even empty), unsupported control/reserved data, or unavailable access/API
 refuses BEFORE root mutation. No SACL/group/control/attribute setter is used;
 NtSetSecurityObject selects only OWNER+DACL. This adds a concrete real-host
@@ -1360,8 +1361,13 @@ observation. No process/account privilege, security policy or host setting is ch
 [GetSecurityInfo](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-getsecurityinfo)
 documents the required access/privilege and warns that querying is not race handling.
 [SECURITY_INFORMATION](https://learn.microsoft.com/en-us/windows/win32/secauthz/security-information)
-distinguishes whole-descriptor BACKUP reads from individual label/attribute/SACL
-selections. Missing capability is a refusal, not skipped-green production acceptance.
+distinguishes the umbrella BACKUP selector from individual label/attribute/SACL
+selections. The [Microsoft SDK header](https://github.com/microsoft/win32metadata/blob/main/generation/WinSDK/RecompiledIdlHeaders/um/winnt.h)
+defines the nine explicit component flags through ACCESS_FILTER_SECURITY_INFORMATION.
+The first hosted implementation opened its read handle but BACKUP query returned
+Win32 5 before mutation. That failed source/host proof is retained; the new plan
+binds `explicit-security-components-v1:no-sacl:0x1ff`. No failed query falls back
+to a smaller selection. Synthetic audit and integrity-label cases must refuse. Missing capability is a refusal, not skipped-green production acceptance.
 
 The evidence parent must have admin-protected ancestry/authority. Each attempt is
 NEW, private, protected, Admin-owned, with SYSTEM/Admin full and current user read-only

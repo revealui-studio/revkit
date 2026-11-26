@@ -648,6 +648,21 @@ Describe 'Elevated production-shaped transaction on fresh synthetic custody only
             return $path
         }
     }
+    It 'reads absent security components and refuses actual fresh audit and integrity-label SACLs' -Skip:(-not $IsWindows -or -not $AdminFixtureParent -or -not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))) {
+        $scope=[Revealfleet.Backup.ColdRestorePrivilege]::CustodyScope()
+        try {
+            foreach($sacl in @('(AU;SA;FR;;;WD)','(ML;;NW;;;LW)')){
+                # Only NEW private synthetic paths, descriptor supplied atomically
+                # at creation. No existing descriptor or host policy is changed.
+                $sd=[Security.AccessControl.RawSecurityDescriptor]::new(('O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)S:'+$sacl))
+                $bytes=[byte[]]::new($sd.BinaryLength);$sd.GetBinaryForm($bytes,0)
+                $root=[Revealfleet.Backup.ColdDirectorySecurityLease]::CreateSyntheticDirectory($AdminFixtureParent,$bytes)
+                $lease=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($root)
+                try { {$lease.RequireNoSacl()}|Should -Throw '*observed SACL*';$lease.NativeMutationCalls|Should -Be 0 }
+                finally {$lease.Dispose()}
+            }
+        } finally {$scope.Dispose()}
+    }
     It 'journals before mutation, retains actual raw after-state and restores foreign identity with original handle' -Skip:(-not $IsWindows -or -not $AdminFixtureParent -or -not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))) {
         $script:CustodyPrimaryFailure=$null;$root=$lease=$tx=$null;$scope=[Revealfleet.Backup.ColdRestorePrivilege]::CustodyScope()
         try {
@@ -691,6 +706,22 @@ Describe 'Elevated production-shaped transaction on fresh synthetic custody only
             {$tx.Apply()}|Should -Throw '*custody lost*';$tx.MutationCalls|Should -Be 0
             Test-Path (Join-Path $journal 'apply-intent.json')|Should -BeTrue
             $lease.Read().DescriptorSha256|Should -BeExactly $before.DescriptorSha256
+        } catch {$script:CustodyPrimaryFailure=$_;throw} finally {if($tx){$tx.Dispose()};if($root){Complete-CustodyTest $root $lease $scope}else{$scope.Dispose()}}
+    }
+    It 'retains observed-only evidence after post-write custody failure and never infers inverse success' -Skip:(-not $IsWindows -or -not $AdminFixtureParent -or -not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))) {
+        $script:CustodyPrimaryFailure=$null;$root=$lease=$tx=$null;$scope=[Revealfleet.Backup.ColdRestorePrivilege]::CustodyScope()
+        try {
+            $root=New-SyntheticTree -UnprotectedExplicit -ForeignIdentity;$tree=Stable-TreeReceipt $root;$journal=New-ProductionShapedJournal
+            $lease=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($root);$before=$lease.Read();$user=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$after=$before.Restricted($user)
+            $observer={if(Test-Path (Join-Path $journal 'apply-observed.json')){throw 'Synthetic disconnect after observed write'}}.GetNewClosure()
+            $tx=$lease.OpenProductionShapedSyntheticTransaction($before.DescriptorBase64,$after.DescriptorBase64,$user,$journal,'{}',[Action]$observer)
+            {$tx.Apply()}|Should -Throw '*disconnect*'
+            $tx.State|Should -BeExactly 'Unconfirmed';$tx.MutationCalls|Should -Be 1
+            $record=Get-Content (Join-Path $journal 'apply-observed.json') -Raw|ConvertFrom-Json
+            $record.outcome|Should -BeExactly 'ObservedOnly';$record.proof.Observed.DescriptorSha256|Should -BeExactly $lease.Read().DescriptorSha256
+            Test-Path (Join-Path $journal 'apply-accepted.json')|Should -BeFalse
+            {$tx.Rollback()}|Should -Throw '*uncertain*';$tx.MutationCalls|Should -Be 1
+            (Tree-Receipt $root)|Should -BeExactly $tree
         } catch {$script:CustodyPrimaryFailure=$_;throw} finally {if($tx){$tx.Dispose()};if($root){Complete-CustodyTest $root $lease $scope}else{$scope.Dispose()}}
     }
     It 'requires actual raw after-state for a separately opened inverse and refuses drift before mutation' -Skip:(-not $IsWindows -or -not $AdminFixtureParent -or -not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))) {

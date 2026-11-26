@@ -397,13 +397,14 @@ namespace Revealfleet.Backup {
             get {ValidateIdentity();var text=new StringBuilder(1024);uint n=GetFinalPathNameByHandleW(handle,text,(uint)text.Capacity,1);if(n==0 || n>=text.Capacity)throw new IOException("Held volume GUID unavailable");
                 string value=text.ToString();int end=value.IndexOf('}');if(!value.StartsWith(@"\\?\Volume{",StringComparison.Ordinal) || end<0)throw new IOException("Held local volume GUID refused");return value.Substring(0,end+1)+@"\";}
         }
+        public const uint SecurityObservationMask=0x1ff; // SDK OWNER/GROUP/DACL/SACL/LABEL/ATTRIBUTE/SCOPE/TRUST/FILTER
         public void RequireNoSacl() {
             // OWNER/GROUP/DACL-only GetSecurityInfo cannot establish SACL absence.
             // This separate read needs scoped SeSecurityPrivilege; it never sets it.
             ValidateIdentity();using var observer=CreateFileW(path,0x01020080,7,IntPtr.Zero,3,0x02200000,IntPtr.Zero);
             if(observer.IsInvalid || !GetFileInformationByHandle(observer,out var found) || found.Volume!=identity.Volume || found.IndexHigh!=identity.IndexHigh || found.IndexLow!=identity.IndexLow)throw new IOException("SACL observation access/identity refused");
-            uint error=GetSecurityInfo(observer,1,0x10000,out var owner,out var group,out var dacl,out var sacl,out var descriptor);
-            if(error!=0)throw new Win32Exception((int)error,"Full security descriptor BACKUP observation refused (Win32 "+error+")");
+            uint error=GetSecurityInfo(observer,1,SecurityObservationMask,out var owner,out var group,out var dacl,out var sacl,out var descriptor);
+            if(error!=0)throw new Win32Exception((int)error,"Explicit full security component observation refused (Win32 "+error+")");
             try {uint length=GetSecurityDescriptorLength(descriptor);if(length<20 || length>65536)throw new IOException("Full security observation bound");byte[] header=new byte[20];Marshal.Copy(descriptor,header,0,20);
                 if(sacl!=IntPtr.Zero || (BitConverter.ToUInt16(header,2)&~0x9406)!=0 || header[1]!=0)throw new IOException("Production permission profile refuses any observed SACL, including labels/attributes/empty/unsupported forms");}finally {LocalFree(descriptor);}
             ValidateIdentity();
@@ -461,7 +462,7 @@ namespace Revealfleet.Backup {
             void Validate(){if(closed)throw new ObjectDisposedException("Custody transaction");validate();lease.ValidateIdentity();journal.ValidateIdentity();RequireJournal();lease.RequireNoSacl();}
             void Record(string name,object value) {
                 journal.ValidateIdentity();RequireJournal();byte[] bytes=JsonSerializer.SerializeToUtf8Bytes(value,new JsonSerializerOptions {MaxDepth=24});
-                if(bytes.Length>524288)throw new IOException("Custody journal record bound");
+                if(bytes.Length>1048576)throw new IOException("Custody journal record bound");
                 using var file=new FileStream(Path.Combine(journal.CanonicalPath,name),FileMode.CreateNew,FileAccess.Write,FileShare.Read,65536,FileOptions.WriteThrough);file.Write(bytes);file.Flush(true);
             }
             ColdPermissionChangeEvidence Change(string phase,ColdSecuritySnapshot target) {
