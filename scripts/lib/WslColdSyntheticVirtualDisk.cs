@@ -37,6 +37,7 @@ namespace Revealfleet.Backup {
         string physical;ulong partitionOffset,partitionBytes;
         public string Workspace {get;private set;} public string ImagePath {get;private set;}
         public Guid Identifier {get;private set;} public string VolumeRoot {get;private set;}
+        public int SeedMutationCalls {get;private set;}
         public bool Attached => attached;public bool Closed => closed;
         public uint DeviceNumber {get;private set;}
         public ulong BackingFileBytes => (ulong)fileIdentity.High<<32|fileIdentity.Low;
@@ -114,7 +115,8 @@ namespace Revealfleet.Backup {
             ValidateVolume();if(!registered){ColdDirectorySecurityLease.RegisterSynthetic(VolumeRoot,"",ValidateVolume);registered=true;}return new ColdDirectorySecurityLease(this);
         }
         public void SeedRoot(ColdSecuritySnapshot descriptor) {
-            if(seeded)throw new IOException("Fixture root already seeded");using var root=OpenRoot();root.SeedFreshSynthetic(Convert.FromBase64String(descriptor.DescriptorBase64));seeded=true;
+            if(seeded)throw new IOException("Fixture seed attempt already consumed; retain failed attempt");seeded=true;using var root=OpenRoot();
+            try {root.SeedFreshSynthetic(Convert.FromBase64String(descriptor.DescriptorBase64));}finally {SeedMutationCalls=root.NativeMutationCalls;}
         }
         [StructLayout(LayoutKind.Sequential)] struct SidAndAttributes {public IntPtr Sid;public uint Attributes;}
         [StructLayout(LayoutKind.Sequential)] struct GenericMapping {public uint Read,Write,Execute,All;}

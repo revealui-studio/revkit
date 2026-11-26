@@ -239,6 +239,7 @@ namespace Revealfleet.Backup {
         readonly SafeFileHandle handle;readonly Info identity;readonly string path;readonly bool observationOnly;readonly uint nameFlags;readonly string finalName;
         public string FileIdentity => identity.Volume.ToString("x8")+":"+identity.IndexHigh.ToString("x8")+identity.IndexLow.ToString("x8");
         public uint Attributes => identity.Attributes;
+        public int NativeMutationCalls {get;private set;}
         public string CanonicalPath => path;
         public ColdDirectorySecurityLease(string canonicalPath) : this(canonicalPath,false) { }
         private ColdDirectorySecurityLease(string canonicalPath,bool metadataObservation) {
@@ -313,7 +314,7 @@ namespace Revealfleet.Backup {
         }
         void SetNative(byte[] bytes,uint selection) {
             RequireSynthetic();IntPtr buffer=Marshal.AllocHGlobal(bytes.Length);
-            try {Marshal.Copy(bytes,0,buffer,bytes.Length);int status=NtSetSecurityObject(handle,selection,buffer);if(status<0)throw new Win32Exception((int)RtlNtStatusToDosError(status));}
+            try {Marshal.Copy(bytes,0,buffer,bytes.Length);NativeMutationCalls++;int status=NtSetSecurityObject(handle,selection,buffer);if(status<0)throw new Win32Exception((int)RtlNtStatusToDosError(status));}
             finally {Marshal.FreeHGlobal(buffer);}
         }
         sealed class SyntheticBinding {public string Path,Identity;public Action Validate;}
@@ -339,13 +340,13 @@ namespace Revealfleet.Backup {
         }
         public sealed class SyntheticTransaction : IDisposable {
             readonly ColdDirectorySecurityLease lease;bool closed;
-            public int MutationCalls {get;private set;}
+            public int MutationCalls => lease.NativeMutationCalls;
             public bool IsClosed => closed;
             internal SyntheticTransaction(ColdDirectorySecurityLease owner){lease=owner;lease.RequireSynthetic();}
             public void Replace(string expected,byte[] bytes) {
                 if(closed)throw new ObjectDisposedException("Synthetic transaction");lease.RequireSynthetic();
                 var before=lease.Read();if(before.Sha256!=expected)throw new IOException("Synthetic descriptor drift");
-                before.RequireReplacementScope(new ColdSecuritySnapshot(bytes));MutationCalls++;lease.ReplaceConstrainedCore(expected,bytes);
+                before.RequireReplacementScope(new ColdSecuritySnapshot(bytes));lease.ReplaceConstrainedCore(expected,bytes);
             }
             public void Dispose(){closed=true;}
         }

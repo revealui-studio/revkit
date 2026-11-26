@@ -114,6 +114,7 @@ function Invoke-WslColdSyntheticVolume {
     if($p.schemaVersion -ne 1 -or $p.kind -cne 'new-private-synthetic-volume-root-v1' -or $p.expiresAt -le [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -or $p.expiresAt-$p.createdAt -gt 3600){throw 'Fresh synthetic-only plan required.'}
     $fresh=Get-WslColdSyntheticVolumePlan $p.fixtureParent $p.evidenceParent $p.sourceManifestSha256
     foreach($name in @('sourceRoot','sourceCommit','ownerSid','fixtureIdentity','evidenceIdentity','fixtureDescriptor','evidenceDescriptor','virtualBytes','hardFileBytes')){if($fresh[$name] -cne $p[$name]){throw 'Reviewed synthetic source/parent binding drift.'}}
+    foreach($name in @('operations','rootPrivileges','actualProductionAccepted','existingVhdAccepted','physicalDiskAccepted')){if((ConvertTo-Json -InputObject $fresh[$name] -Compress) -cne (ConvertTo-Json -InputObject $p[$name] -Compress)){throw 'Reviewed synthetic operation/privilege scope differs.'}}
     if([IO.DriveInfo]::new('C:\').AvailableFreeSpace -lt 1GB+[Revealfleet.Backup.ColdSyntheticVirtualDisk]::HardFileBytes){throw 'Conservative C synthetic capacity refused.'}
     $scope=[Revealfleet.Backup.ColdSyntheticVirtualDisk]::OpenPrivilegeScope();$owned=$lease=$transaction=$null;$failure=$null;$evidence=$null
     try {
@@ -149,7 +150,7 @@ function Invoke-WslColdSyntheticVolume {
         $rollbackTree=Get-WslOwnedSyntheticTree $owned;Write-WslBackupJsonNew (Join-Path $evidence 'before-rollback.json') @{tree=$rollbackTree}
         $transaction.Replace($target.Sha256,[Convert]::FromBase64String($before.DescriptorBase64))
         $after=$lease.Read();if($after.DescriptorSha256 -cne $before.DescriptorSha256 -or (Get-WslOwnedSyntheticTree $owned) -cne $rollbackTree -or $transaction.MutationCalls -ne 2){throw 'Exact volume-root raw rollback/descendant proof failed.'}
-        Write-WslBackupJsonNew (Join-Path $evidence 'accepted-before-detach.json') @{root=$after;tree=$rollbackTree;mutationCalls=$transaction.MutationCalls;syntheticVolumeAccepted=$true;realEAccepted=$false;productionAccepted=$false}
+        Write-WslBackupJsonNew (Join-Path $evidence 'accepted-before-detach.json') @{root=$after;tree=$rollbackTree;mutationCalls=$transaction.MutationCalls;seedMutationCalls=$owned.SeedMutationCalls;syntheticVolumeAccepted=$true;realEAccepted=$false;productionAccepted=$false}
     } catch {
         $failure=$_
         if($evidence -and $owned -and $owned.VolumeRoot){
