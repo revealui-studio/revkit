@@ -580,3 +580,136 @@ Describe 'Receipt observer lifetime and error preservation' {
         } catch {$script:CustodyPrimaryFailure=$_;throw} finally {Complete-CustodyTest $root $lease}
     }
 }
+
+Describe 'Versioned production permission custody admission; no modeled mutation' {
+    BeforeAll {
+        function New-PermissionPolicyModel {
+            @{schemaVersion=2;kind='cold-volume-permission-custody-v2';fidelityProfile='permission-ace-zero-unused-v1';volumeRoot='X:\';hardware=@{};namespace='reviewed-recovery';trustedUserSid='S-1-5-21-111-222-333-1001';evidenceDirectory='Y:\protected';evidenceHardware=@{};sourceRoot='Z:\protected';sourceManifestSha256=('a'*64);namespaceAdditionalBytes=2MB;evidenceAdditionalBytes=8MB;reserveBytes=64GB}
+        }
+    }
+    It 'requires an explicit versioned policy and refuses coercion, unknown fields, weak budgets and owner drift' {
+        Mock Assert-WslColdVolumeRoot {}
+        Mock Assert-WslColdCanonicalDirectory {}
+        Mock Get-WslColdCustodyCurrentUser {'S-1-5-21-111-222-333-1001'}
+        {Assert-WslColdPermissionPolicy (New-PermissionPolicyModel)}|Should -Not -Throw
+        foreach($fault in @('legacy','schema-string','unknown','profile','owner','budget','reserve','namespace')){
+            $p=New-PermissionPolicyModel
+            switch($fault){legacy {$p.kind='cold-volume-custody-v1'} schema-string {$p.schemaVersion='2'} unknown {$p.testOnly=$true} profile {$p.fidelityProfile='exact-raw-acl-capacity-v1'} owner {$p.trustedUserSid='S-1-5-18'} budget {$p.evidenceAdditionalBytes=1MB} reserve {$p.reserveBytes=1GB} namespace {$p.namespace='../other'}}
+            {Assert-WslColdPermissionPolicy $p}|Should -Throw -Because $fault
+        }
+    }
+    It 'refuses a synthetic receipt as production authority before inspecting its raw proof' {
+        $path=Join-Path $TestDrive 'receipt.json';Write-WslBackupJsonNew $path @{profile='cold-volume-permission-custody-v2';bindingScope='FreshSyntheticOnly';context=@{};outcome='Accepted';proof=@{}}
+        Mock Assert-WslColdProtectedPath {}
+        $hash=(Get-FileHash $path).Hash.ToLowerInvariant()
+        {Read-WslColdPermissionReceipt @{transactionId='not-used'} ('a'*64) $path $hash}|Should -Throw '*not bound*'
+    }
+    It 'refuses same-hardware, same-volume and insufficient source growth before effects using observed bounded inputs' {
+        $root=Join-Path $TestDrive 'source';[void][IO.Directory]::CreateDirectory($root);[IO.File]::WriteAllText((Join-Path $root 'artifact-source-manifest.json'),'{}')
+        $p=New-PermissionPolicyModel;$p.sourceRoot=$root;$p.hardware.serial='one';$p.evidenceHardware.serial='two'
+        Mock Get-WslColdCustodyHardware {param($Path,$Expected) @{Domain=$Expected.serial;Free=128GB}}
+        (Assert-WslColdPermissionCapacity @{policy=$p} @()).payloadBytes|Should -Be 2
+        $p.evidenceHardware.serial='one';{Assert-WslColdPermissionCapacity @{policy=$p} @()}|Should -Throw '*independence*'
+        $p.evidenceHardware.serial='two';$p.namespaceAdditionalBytes=2;{Assert-WslColdPermissionCapacity @{policy=$p} @()}|Should -Throw '*positive-overhead*'
+    }
+    It 'expires execution plans but retains the original exact review as a historical rollback reference' {
+        Mock Assert-WslColdPermissionPolicy {}
+        Mock Get-WslColdPermissionPair {return @{}}
+        $now=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        $p=@{schemaVersion=4;kind='cold-volume-permission-custody-plan-v4';intent='ApplyOnly';transactionId=[guid]::NewGuid().ToString('D');policy=@{volumeRoot='X:';namespace='reviewed'};sourceCommit=('a'*40);sourceFiles=@();storage=@{};rootFileIdentity='bound';rootAttributes=16;before=@{};after=@{};evidenceFileIdentity='other';evidenceRawSha256=('b'*64);namespacePath=(Join-Path $TestDrive 'reviewed');createdAt=$now-7200;expiresAt=$now-3600;fidelity=@{};authority='review';scope='root';privileges=@();rollback=$null;productionActivated=$false;existingChildrenPrivatized=$false}
+        # Join-Path is not a host probe; use this platform's bounded test path.
+        $p.policy.volumeRoot=$TestDrive
+        {Assert-WslColdPermissionPlan $p Apply}|Should -Throw '*Fresh exact-phase*'
+        {Assert-WslColdPermissionPlan $p Apply -OriginalRollbackReference}|Should -Not -Throw
+        {Assert-WslColdPermissionPlan $p Rollback -OriginalRollbackReference}|Should -Throw '*exact-phase*'
+        $p.createdAt=$now;$p.expiresAt=$now+3600;$p.productionActivated='false'
+        {Assert-WslColdPermissionPlan $p Apply}|Should -Throw '*boolean*'
+        $p.productionActivated=$false;$p.createdAt=[string]$now
+        {Assert-WslColdPermissionPlan $p Apply}|Should -Throw '*integer*'
+    }
+    It 'refuses unexpected private or arbitrary public paths without opening their contents' {
+        $root=Join-Path $TestDrive 'retained';[void][IO.Directory]::CreateDirectory($root);[IO.File]::WriteAllText((Join-Path $root 'unknown-private-key'),'not a real key')
+        # New-only production path requires Windows handles. Native refusal must
+        # not become acceptance by a model; real namespace tests are below.
+        if(-not $IsWindows){{Get-WslColdRetainedNamespace @{namespacePath=$root} @()}|Should -Throw}
+        else {# The trusted synthetic constructor will enforce canonical NTFS ancestry.
+            {Get-WslColdRetainedNamespace @{namespacePath=$root;sourceCommit=('a'*40);policy=@{}} @()}|Should -Throw
+        }
+    }
+}
+
+Describe 'Elevated production-shaped transaction on fresh synthetic custody only' -Tag 'Elevated' {
+    BeforeAll {
+        function New-ProductionShapedJournal {
+            if(-not $AdminFixtureParent){throw 'Independently audited Admin fixture parent required.'}
+            [void](Assert-WslColdProtectedPath $AdminFixtureParent -Directory)
+            $path=Join-Path $AdminFixtureParent ('journal-'+[guid]::NewGuid().ToString('N'))
+            [Revealfleet.Backup.ColdSourceLease]::CreateProtectedDirectory($path,(New-WslColdCustodyJournalDescriptor ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)))
+            return $path
+        }
+    }
+    It 'journals before mutation, retains actual raw after-state and restores foreign identity with original handle' -Skip:(-not $IsWindows -or -not $AdminFixtureParent -or -not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))) {
+        $script:CustodyPrimaryFailure=$null;$root=$lease=$tx=$null;$scope=[Revealfleet.Backup.ColdRestorePrivilege]::CustodyScope()
+        try {
+            $root=New-SyntheticTree -UnprotectedExplicit -ForeignIdentity;$tree=Stable-TreeReceipt $root;$journal=New-ProductionShapedJournal
+            $lease=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($root);$before=$lease.Read();$user=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$after=$before.Restricted($user)
+            # Public production factory refuses a subtree; no test flag can
+            # turn this receipt or capability into a real volume authority.
+            {$lease.OpenProductionPermissionTransaction($lease.FileIdentity,[guid]::NewGuid().ToString('D'),$before.DescriptorBase64,$after.DescriptorBase64,$user,$journal,'{}',[Action]{})}|Should -Throw '*canonical NTFS volume*'
+            Test-Path (Join-Path $journal 'prepared.json')|Should -BeFalse
+            $seen=[Collections.Generic.List[string]]::new()
+            $observer={if(Test-Path (Join-Path $journal 'apply-intent.json')){$seen.Add($lease.Read().DescriptorSha256)}}.GetNewClosure()
+            $tx=$lease.OpenProductionShapedSyntheticTransaction($before.DescriptorBase64,$after.DescriptorBase64,$user,$journal,'{"syntheticOnly":true}',[Action]$observer)
+            $tx.BindingScope|Should -BeExactly 'FreshSyntheticOnly'
+            $proof=$tx.Apply();$tx.State|Should -BeExactly 'Applied';$tx.MutationCalls|Should -Be 1
+            $seen|Should -Contain $before.DescriptorSha256 # persisted intent while root still unchanged
+            (Get-Content (Join-Path $journal 'apply-accepted.json') -Raw|ConvertFrom-Json).proof.Observed.DescriptorSha256|Should -BeExactly $lease.Read().DescriptorSha256
+            (Tree-Receipt $root)|Should -BeExactly $tree
+            $inverse=$tx.Rollback();$tx.State|Should -BeExactly 'RolledBack';$tx.MutationCalls|Should -Be 2
+            [void][Revealfleet.Backup.ColdPermissionIdentity]::Compare([Convert]::FromBase64String($before.DescriptorBase64),[Convert]::FromBase64String($inverse.Observed.DescriptorBase64))
+            (Tree-Receipt $root)|Should -BeExactly $tree
+            {$tx.Apply()}|Should -Throw;{$tx.Rollback()}|Should -Throw
+        } catch {$script:CustodyPrimaryFailure=$_;throw} finally {if($tx){$tx.Dispose()};if($root){Complete-CustodyTest $root $lease $scope}else{$scope.Dispose()}}
+    }
+    It 'refuses an observer or intent-write failure before native mutation without cleanup manufacturing success' -Skip:(-not $IsWindows -or -not $AdminFixtureParent -or -not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))) {
+        $script:CustodyPrimaryFailure=$null;$root=$lease=$tx=$null;$scope=[Revealfleet.Backup.ColdRestorePrivilege]::CustodyScope()
+        try {
+            $root=New-SyntheticTree -UnprotectedExplicit -ForeignIdentity;$tree=Stable-TreeReceipt $root;$journal=New-ProductionShapedJournal
+            $lease=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($root);$before=$lease.Read();$user=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$after=$before.Restricted($user)
+            $tx=$lease.OpenProductionShapedSyntheticTransaction($before.DescriptorBase64,$after.DescriptorBase64,$user,$journal,'{}',[Action]{})
+            # A pre-existing intent record is evidence/custody failure, never
+            # overwritten. Assertions occur BEFORE defensive handle disposal.
+            [IO.File]::WriteAllText((Join-Path $journal 'apply-intent.json'),'retained collision')
+            {$tx.Apply()}|Should -Throw;$tx.MutationCalls|Should -Be 0
+            $lease.Read().DescriptorSha256|Should -BeExactly $before.DescriptorSha256
+            (Tree-Receipt $root)|Should -BeExactly $tree
+            [IO.File]::ReadAllText((Join-Path $journal 'apply-intent.json'))|Should -BeExactly 'retained collision'
+            {$tx.Apply()}|Should -Throw;$tx.Dispose();$tx=$null
+            $journal=New-ProductionShapedJournal;$counter=[Collections.Generic.List[int]]::new()
+            $observer={$counter.Add(1);if($counter.Count -ge 3){throw 'Synthetic hardware/source custody lost after intent'}}.GetNewClosure()
+            $tx=$lease.OpenProductionShapedSyntheticTransaction($before.DescriptorBase64,$after.DescriptorBase64,$user,$journal,'{}',[Action]$observer)
+            {$tx.Apply()}|Should -Throw '*custody lost*';$tx.MutationCalls|Should -Be 0
+            Test-Path (Join-Path $journal 'apply-intent.json')|Should -BeTrue
+            $lease.Read().DescriptorSha256|Should -BeExactly $before.DescriptorSha256
+        } catch {$script:CustodyPrimaryFailure=$_;throw} finally {if($tx){$tx.Dispose()};if($root){Complete-CustodyTest $root $lease $scope}else{$scope.Dispose()}}
+    }
+    It 'requires actual raw after-state for a separately opened inverse and refuses drift before mutation' -Skip:(-not $IsWindows -or -not $AdminFixtureParent -or -not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))) {
+        $script:CustodyPrimaryFailure=$null;$root=$lease=$tx=$null;$scope=[Revealfleet.Backup.ColdRestorePrivilege]::CustodyScope()
+        try {
+            $root=New-SyntheticTree -UnprotectedExplicit -ForeignIdentity;$tree=Stable-TreeReceipt $root;$lease=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($root)
+            $before=$lease.Read();$user=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$after=$before.Restricted($user)
+            $tx=$lease.OpenProductionShapedSyntheticTransaction($before.DescriptorBase64,$after.DescriptorBase64,$user,(New-ProductionShapedJournal),'{}',[Action]{})
+            $proof=$tx.Apply();$tx.Dispose();$tx=$null;$lease.Dispose();$lease=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($root)
+            $journal=New-ProductionShapedJournal
+            # A permission-equivalent padded representation is NOT actual raw CAS.
+            $padded=[Revealfleet.Backup.ColdSecuritySnapshot]::new([Revealfleet.Backup.ColdSecurityLayout]::Compose([uint16]$after.Control,[Convert]::FromBase64String($after.OwnerBase64),[Convert]::FromBase64String($after.GroupBase64),[Convert]::FromBase64String($after.DaclBase64),512,$null))
+            {$lease.OpenProductionShapedSyntheticTransaction($before.DescriptorBase64,$after.DescriptorBase64,$user,$journal,'{}',[Action]{},$padded.DescriptorBase64)}|Should -Throw '*raw CAS drift*'
+            $lease.NativeMutationCalls|Should -Be 0
+            $tx=$lease.OpenProductionShapedSyntheticTransaction($before.DescriptorBase64,$after.DescriptorBase64,$user,(New-ProductionShapedJournal),'{}',[Action]{},$proof.Observed.DescriptorBase64)
+            $tx.State|Should -BeExactly 'RollbackPrepared';$inverse=$tx.Rollback()
+            $lease.NativeMutationCalls|Should -Be 1
+            [void][Revealfleet.Backup.ColdPermissionIdentity]::Compare([Convert]::FromBase64String($before.DescriptorBase64),[Convert]::FromBase64String($inverse.Observed.DescriptorBase64))
+            (Tree-Receipt $root)|Should -BeExactly $tree
+        } catch {$script:CustodyPrimaryFailure=$_;throw} finally {if($tx){$tx.Dispose()};if($root){Complete-CustodyTest $root $lease $scope}else{$scope.Dispose()}}
+    }
+}

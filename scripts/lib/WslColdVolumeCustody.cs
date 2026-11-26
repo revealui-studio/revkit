@@ -8,6 +8,8 @@ using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
+using System.Text.Json;
+using System.Threading;
 using Microsoft.Win32.SafeHandles;
 namespace Revealfleet.Backup {
     public sealed class ColdRootGrant {
@@ -258,6 +260,7 @@ namespace Revealfleet.Backup {
         [DllImport("advapi32.dll",SetLastError=true)] static extern bool RevertToSelf();
         IntPtr token; bool active; readonly int thread;
         public ColdRestorePrivilege() : this(new[]{"SeRestorePrivilege"}) { }
+        public static ColdRestorePrivilege CustodyScope() => new ColdRestorePrivilege(new[]{"SeRestorePrivilege","SeSecurityPrivilege"});
         internal static ColdRestorePrivilege SyntheticVolumeScope() => new ColdRestorePrivilege(new[]{"SeRestorePrivilege","SeManageVolumePrivilege"});
         private ColdRestorePrivilege(string[] required) {
             if(!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
@@ -294,7 +297,7 @@ namespace Revealfleet.Backup {
         [DllImport("advapi32.dll",SetLastError=true)] static extern uint GetSecurityInfo(SafeFileHandle handle,int type,uint selection,out IntPtr owner,out IntPtr group,out IntPtr dacl,out IntPtr sacl,out IntPtr descriptor);
         [DllImport("advapi32.dll",SetLastError=true)] static extern uint GetSecurityDescriptorLength(IntPtr descriptor);
         [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr pointer);
-        readonly SafeFileHandle handle;readonly Info identity;readonly string path;readonly bool observationOnly;readonly uint nameFlags;readonly string finalName;
+        int activeCustody;readonly SafeFileHandle handle;readonly Info identity;readonly string path;readonly bool observationOnly;readonly uint nameFlags;readonly string finalName;
         public string FileIdentity => identity.Volume.ToString("x8")+":"+identity.IndexHigh.ToString("x8")+identity.IndexLow.ToString("x8");
         public uint Attributes => identity.Attributes;
         public int NativeMutationCalls {get;private set;}
@@ -332,6 +335,9 @@ namespace Revealfleet.Backup {
             // coexists with the retained MAXIMUM_ALLOWED/no-delete-share handle.
             using var named=CreateFileW(path,0x80,7,IntPtr.Zero,3,0x02200000,IntPtr.Zero);
             if(named.IsInvalid || !GetFileInformationByHandle(named,out var found) || found.Volume!=identity.Volume || found.IndexHigh!=identity.IndexHigh || found.IndexLow!=identity.IndexLow || found.Attributes!=identity.Attributes) throw new IOException("Named root substitution/disconnect refused");
+            var heldGuid=new StringBuilder(32768);var namedGuid=new StringBuilder(32768);
+            uint hg=GetFinalPathNameByHandleW(handle,heldGuid,(uint)heldGuid.Capacity,1),ng=GetFinalPathNameByHandleW(named,namedGuid,(uint)namedGuid.Capacity,1);
+            if(hg==0 || ng==0 || hg>=heldGuid.Capacity || ng>=namedGuid.Capacity || heldGuid.ToString()!=namedGuid.ToString())throw new IOException("Named and held volume GUID paths differ");
         }
         public ColdSecuritySnapshot Read() {
             ValidateIdentity();
@@ -381,10 +387,113 @@ namespace Revealfleet.Backup {
             var observed=Read();var delta=ColdPermissionIdentity.Compare(Convert.FromBase64String(target.DescriptorBase64),Convert.FromBase64String(observed.DescriptorBase64));
             return new ColdPermissionChangeEvidence {Before=before,Requested=target,Observed=observed,Delta=delta};
         }
-        void SetNative(byte[] bytes,uint selection) {
-            RequireSynthetic();IntPtr buffer=Marshal.AllocHGlobal(bytes.Length);
+        void SetNative(byte[] bytes,uint selection) {RequireSynthetic();SetNativeHeld(bytes,selection);}
+        void SetNativeHeld(byte[] bytes,uint selection) {
+            ValidateIdentity();IntPtr buffer=Marshal.AllocHGlobal(bytes.Length);
             try {Marshal.Copy(bytes,0,buffer,bytes.Length);NativeMutationCalls++;int status=NtSetSecurityObject(handle,selection,buffer);if(status<0)throw new Win32Exception((int)RtlNtStatusToDosError(status));}
             finally {Marshal.FreeHGlobal(buffer);}
+        }
+        public string VolumeGuidPath {
+            get {ValidateIdentity();var text=new StringBuilder(1024);uint n=GetFinalPathNameByHandleW(handle,text,(uint)text.Capacity,1);if(n==0 || n>=text.Capacity)throw new IOException("Held volume GUID unavailable");
+                string value=text.ToString();int end=value.IndexOf('}');if(!value.StartsWith(@"\\?\Volume{",StringComparison.Ordinal) || end<0)throw new IOException("Held local volume GUID refused");return value.Substring(0,end+1)+@"\";}
+        }
+        public void RequireNoSacl() {
+            // OWNER/GROUP/DACL-only GetSecurityInfo cannot establish SACL absence.
+            // This separate read needs scoped SeSecurityPrivilege; it never sets it.
+            ValidateIdentity();using var observer=CreateFileW(path,0x01020080,7,IntPtr.Zero,3,0x02200000,IntPtr.Zero);
+            if(observer.IsInvalid || !GetFileInformationByHandle(observer,out var found) || found.Volume!=identity.Volume || found.IndexHigh!=identity.IndexHigh || found.IndexLow!=identity.IndexLow)throw new IOException("SACL observation access/identity refused");
+            uint error=GetSecurityInfo(observer,1,0x10000,out var owner,out var group,out var dacl,out var sacl,out var descriptor);
+            if(error!=0)throw new Win32Exception((int)error);
+            try {uint length=GetSecurityDescriptorLength(descriptor);if(length<20 || length>65536)throw new IOException("Full security observation bound");byte[] header=new byte[20];Marshal.Copy(descriptor,header,0,20);
+                if(sacl!=IntPtr.Zero || (BitConverter.ToUInt16(header,2)&~0x9406)!=0 || header[1]!=0)throw new IOException("Production permission profile refuses any observed SACL, including labels/attributes/empty/unsupported forms");}finally {LocalFree(descriptor);}
+            ValidateIdentity();
+        }
+        public PermissionCustodyTransaction OpenProductionPermissionTransaction(string rootIdentity,string volumeUuid,string originalBase64,string restrictedBase64,string user,string evidenceAttempt,string contextJson,Action validateBindings,string rollbackObservedBase64=null) {
+            if(path.Length!=3 || path[1]!=':' || path[2]!='\\' || path[0]<'A' || path[0]>'Z' || observationOnly || FileIdentity!=rootIdentity || VolumeGuidPath!=@"\\?\Volume{"+Guid.ParseExact(volumeUuid,"D").ToString("D")+@"}\")throw new IOException("Production custody requires exact canonical NTFS volume/root handle binding");
+            return new PermissionCustodyTransaction(this,originalBase64,restrictedBase64,user,evidenceAttempt,contextJson,validateBindings,rollbackObservedBase64,"Global\\Revkit.VolumeCustody."+volumeUuid,false);
+        }
+        public PermissionCustodyTransaction OpenProductionShapedSyntheticTransaction(string originalBase64,string restrictedBase64,string user,string evidenceAttempt,string contextJson,Action validateBindings,string rollbackObservedBase64=null) {
+            // NOT a production switch. Only this process's fresh C synthetic
+            // capability can enter the same transaction engine for regression.
+            RequireSynthetic();return new PermissionCustodyTransaction(this,originalBase64,restrictedBase64,user,evidenceAttempt,contextJson,validateBindings,rollbackObservedBase64,"Local\\Revkit.SyntheticCustody."+FileIdentity.Replace(':','-'),true);
+        }
+        public sealed class PermissionCustodyTransaction : IDisposable {
+            public const string Profile="cold-volume-permission-custody-v2";
+            readonly ColdDirectorySecurityLease lease,journal;readonly Action validate;readonly ColdSecuritySnapshot original,restricted;
+            readonly string context,journalRaw;readonly Mutex writer;bool ownsWriter;string expected;bool closed,applyTried,rollbackTried;
+            public string BindingScope {get;private set;}
+            public string State {get;private set;} public int MutationCalls => lease.NativeMutationCalls;
+            public ColdPermissionChangeEvidence Applied {get;private set;}
+            internal PermissionCustodyTransaction(ColdDirectorySecurityLease held,string before,string after,string user,string attempt,string contextJson,Action external,string rollbackObserved,string lockName,bool syntheticOnly) {
+                BindingScope=syntheticOnly?"FreshSyntheticOnly":"ProductionVolume";
+                if(!OperatingSystem.IsWindows() || !new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator) || WindowsIdentity.GetCurrent().User.Value!=user)throw new IOException("Current elevated reviewed owner required");
+                if(external==null || contextJson==null || Encoding.UTF8.GetByteCount(contextJson)>262144)throw new IOException("Bounded reviewed context and live bindings required");
+                using(var doc=JsonDocument.Parse(contextJson,new JsonDocumentOptions {MaxDepth=24})){if(doc.RootElement.ValueKind!=JsonValueKind.Object)throw new IOException("Reviewed journal context object required");}
+                lease=held;validate=external;original=new ColdSecuritySnapshot(Convert.FromBase64String(before));restricted=new ColdSecuritySnapshot(Convert.FromBase64String(after));
+                new ColdPermissionIdentity(Convert.FromBase64String(before));new ColdPermissionIdentity(Convert.FromBase64String(after));
+                if(original.Restricted(user).DescriptorSha256!=restricted.DescriptorSha256)throw new IOException("Only exact reviewed root restriction and its inverse are admitted");
+                original.RequireReplacementScope(restricted);restricted.RequireReplacementScope(original);context=contextJson;
+                if(Interlocked.CompareExchange(ref lease.activeCustody,1,0)!=0)throw new IOException("Owning lease already has a custody transaction");
+                try {
+                    journal=new ColdDirectorySecurityLease(attempt);journalRaw=journal.Read().DescriptorSha256;
+                    writer=new Mutex(false,lockName);try {ownsWriter=writer.WaitOne(0);}catch(AbandonedMutexException){writer.ReleaseMutex();throw new IOException("Abandoned custody exclusion refused; no lock breaking/retry");}
+                    if(!ownsWriter)throw new IOException("Another custody transaction owns this volume");
+                    if(journal.CanonicalPath==Path.GetPathRoot(journal.CanonicalPath) || (!syntheticOnly && journal.VolumeGuidPath==lease.VolumeGuidPath))throw new IOException("Independent journal filesystem and non-root attempt required");
+                    RequireJournal();Validate();
+                    if(rollbackObserved==null){expected=original.DescriptorSha256;State="Prepared";}
+                    else {var observed=new ColdSecuritySnapshot(Convert.FromBase64String(rollbackObserved));ColdPermissionIdentity.Compare(Convert.FromBase64String(after),Convert.FromBase64String(rollbackObserved));expected=observed.DescriptorSha256;State="RollbackPrepared";}
+                    ColdPermissionIdentity.RequireRawCas(Convert.FromBase64String(lease.Read().DescriptorBase64),expected);
+                    Record("prepared.json",new {profile=Profile,bindingScope=BindingScope,context=JsonSerializer.Deserialize<JsonElement>(context),original,restricted,expectedRawSha256=expected,rootIdentity=lease.FileIdentity,rootVolume=lease.VolumeGuidPath,rawByteRestorationPromised=false,state=State});
+                } catch {if(ownsWriter){writer.ReleaseMutex();ownsWriter=false;}writer?.Dispose();journal?.Dispose();Interlocked.Exchange(ref lease.activeCustody,0);throw;}
+            }
+            void RequireJournal() {
+                var snapshot=journal.Read();if(snapshot.DescriptorSha256!=journalRaw)throw new IOException("Journal owner/DACL/control drift");
+                var sd=new RawSecurityDescriptor(Convert.FromBase64String(snapshot.DescriptorBase64),0);
+                if(sd.Owner.Value!="S-1-5-32-544" || (sd.ControlFlags&ControlFlags.DiscretionaryAclProtected)==0)throw new IOException("Admin-owned protected independent journal required");
+                string user=WindowsIdentity.GetCurrent().User.Value;
+                foreach(GenericAce item in sd.DiscretionaryAcl) {
+                    if(!(item is CommonAce ace) || ace.IsCallback || ace.OpaqueLength!=0 || ace.AceQualifier!=AceQualifier.AccessAllowed)throw new IOException("Unsupported journal ACL");
+                    string sid=ace.SecurityIdentifier.Value;uint mask=unchecked((uint)ace.AccessMask);
+                    if(sid!="S-1-5-18" && sid!="S-1-5-32-544" && (sid!=user || (mask&~0x1200a9u)!=0))throw new IOException("Journal data/write access outside protected authority");
+                }
+            }
+            void Validate(){if(closed)throw new ObjectDisposedException("Custody transaction");validate();lease.ValidateIdentity();journal.ValidateIdentity();RequireJournal();lease.RequireNoSacl();}
+            void Record(string name,object value) {
+                journal.ValidateIdentity();RequireJournal();byte[] bytes=JsonSerializer.SerializeToUtf8Bytes(value,new JsonSerializerOptions {MaxDepth=24});
+                if(bytes.Length>524288)throw new IOException("Custody journal record bound");
+                using var file=new FileStream(Path.Combine(journal.CanonicalPath,name),FileMode.CreateNew,FileAccess.Write,FileShare.Read,65536,FileOptions.WriteThrough);file.Write(bytes);file.Flush(true);
+            }
+            ColdPermissionChangeEvidence Change(string phase,ColdSecuritySnapshot target) {
+                Validate();var before=lease.Read();ColdPermissionIdentity.RequireRawCas(Convert.FromBase64String(before.DescriptorBase64),expected);before.RequireReplacementScope(target);
+                // Journal intent is durable BEFORE the native call. After it,
+                // recheck ALL external bindings and full raw CAS without retry.
+                Record(phase+"-intent.json",new {profile=Profile,bindingScope=BindingScope,expectedRawSha256=expected,before,requested=target,rootIdentity=lease.FileIdentity});
+                Validate();ColdPermissionIdentity.RequireRawCas(Convert.FromBase64String(lease.Read().DescriptorBase64),expected);
+                State="Unconfirmed";bool observationRecorded=false;
+                try {
+                    lease.SetNativeHeld(Convert.FromBase64String(target.DescriptorBase64),5);
+                    var observed=lease.Read();
+                    Record(phase+"-observed.json",new {profile=Profile,bindingScope=BindingScope,context=JsonSerializer.Deserialize<JsonElement>(context),outcome="ObservedOnly",proof=new {Before=before,Requested=target,Observed=observed}});observationRecorded=true;
+                    var delta=ColdPermissionIdentity.Compare(Convert.FromBase64String(target.DescriptorBase64),Convert.FromBase64String(observed.DescriptorBase64));
+                    Validate();var proof=new ColdPermissionChangeEvidence {Before=before,Requested=target,Observed=observed,Delta=delta};
+                    Record(phase+"-accepted.json",new {profile=Profile,bindingScope=BindingScope,context=JsonSerializer.Deserialize<JsonElement>(context),outcome="Accepted",proof});expected=observed.DescriptorSha256;return proof;
+                } catch(Exception error) {
+                    // A failed setter/readback/journal may have mutated. No
+                    // inferred cleanup, automatic inverse or retry is accepted.
+                    if(!observationRecorded){try{var actual=lease.Read();Record(phase+"-observed.json",new {profile=Profile,bindingScope=BindingScope,context=JsonSerializer.Deserialize<JsonElement>(context),outcome="ObservedOnly",proof=new {Before=before,Requested=target,Observed=actual}});}catch{}}
+                    try {Record(phase+"-unconfirmed.json",new {profile=Profile,bindingScope=BindingScope,state=State,reason=error.Message,nativeMutationCalls=MutationCalls});}catch { }
+                    throw;
+                }
+            }
+            public ColdPermissionChangeEvidence Apply() {
+                if(State!="Prepared" || applyTried)throw new IOException("Apply requires unused reviewed forward transaction");applyTried=true;
+                Applied=Change("apply",restricted);State="Applied";return Applied;
+            }
+            public ColdPermissionChangeEvidence Rollback() {
+                if((State!="Applied" && State!="RollbackPrepared") || rollbackTried)throw new IOException("Rollback requires actual observed after-state; no uncertain inverse/retry");rollbackTried=true;
+                var proof=Change("rollback",original);State="RolledBack";return proof;
+            }
+            public void Dispose(){if(closed)return;closed=true;try{journal.Dispose();}finally{try{if(ownsWriter){writer.ReleaseMutex();ownsWriter=false;}writer.Dispose();}finally{Interlocked.Exchange(ref lease.activeCustody,0);}}}
         }
         sealed class SyntheticBinding {public string Path,Identity;public Action Validate;}
         static readonly List<SyntheticBinding> syntheticRoots=new List<SyntheticBinding>();

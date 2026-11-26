@@ -1283,3 +1283,175 @@ Codex relocation stays behind restore absent a complete combined budget. All pri
 failed filesystem/sparse/ACL receipts, old fixtures, root storage-owner/busctl gaps,
 Node24 producer, Python/Nix/provenance and deferred standard plus custom Zed IDE
 return obligations remain intact. Overall migration is NOT GREEN.
+
+
+### Reviewed production permission custody v2 (source promotion, no activation)
+
+The controller subsequently accepted the actual laptop permission candidate at
+efcd20f: read-only Storage preflight and32/32 focused tests;143 selected elevated
+component cases,141 passed/two expected platform skips, no failures/not-run.
+A separate NEW128MiB NTFS volume-root transaction exited0: own create/attach/MBR/
+1MiB partition/format/native extents, seed, forward, ordinary rights/creation,
+new-child inheritance, retained-handle inverse and own detach all passed. The
+controller independently compared exact descendant evidence, raw CAS chain and
+three native calls (one seed/two transaction). Seed/rollback ACL248/used68 became
+ACL68; forward ACL248/used132 becameACL132. Only validated zero unused allocation
+differed. This fixture's observed baseline/final raw hashes happened to match;
+padded raw restoration is NOT promised. Strict raw-profile failures remain failed.
+No real E permission change, source/worker activation or production backup occurred.
+
+This supports explicit source promotion review of a DIFFERENT operational profile:
+policy schema2/kind `cold-volume-permission-custody-v2`, `fidelityProfile` exactly
+`permission-ace-zero-unused-v1`; plan schema4/kind
+`cold-volume-permission-custody-plan-v4`. Legacy schema1 policy/schema3 exact-raw
+plans and public `ColdDirectorySecurityLease.Replace` STILL REFUSE mutation. Real
+volumes never acquire synthetic provenance. The new reviewed entry is the existing
+`Invoke-WslColdVolumeCustody.ps1`; default remains READ-ONLY Plan. Production and
+synthetic transaction factories have separate admission; synthetic journals carry
+`bindingScope=FreshSyntheticOnly` and are rejected as production rollback evidence.
+No test flag, supplied boolean, laptop SID/hash or old receipt authorizes a target.
+
+Plan binds canonical direct NTFS root, exact MBR/GPT hardware/filesystem, native
+volume-GUID/root-file identity/attributes, current owner, protected source manifest
+and exact closure, Microsoft system Storage binding, independently protected
+DIFFERENT hardware/filesystem evidence parent, exact evidence identity/raw descriptor,
+new bounded namespace, positive payload/evidence growth allowances and reserve,
+original/requested raw descriptors, unchanged inheritance/control/group and the
+versioned fidelity contract. Explicit phase/UUID/freshness is required; Apply plan
+has at most one hour and cannot act as a Rollback plan. Namespace collision refuses.
+The shared signed-system Storage resolver now belongs to `WslDiskIdentity.ps1`;
+synthetic and production owners reuse it. Production does NOT source a fixture
+harness or diagnostic. Disk operations here only OBSERVE module-qualified Storage
+objects; no attach/mount/format/registration/startup exists in custody execution.
+
+Apply/Rollback are supported only from a fresh noninteractive PowerShell process,
+protected reviewed source, exact externally reviewed plan SHA and actual elevated
+current owner. Root/controller independently verifies the signed archive/deployment
+before invocation; a manifest/hash is not authority by itself. All source/manifest/
+plan/receipt inputs are regular canonical single-link files held read-only with
+write/delete exclusion and rehashed/reidentified through the transaction. Empty
+tracked source files are still bound. Protected ancestry prevents untrusted source
+substitution; pre-existing CLR types at the CLI refuse to avoid stale loaded code.
+Native named/held GUID paths are compared, not only volume serial/file index.
+
+The same original MAXIMUM_ALLOWED/no-delete-share root handle survives forward,
+namespace copy, inverse and final evidence. Exact native volume GUID, fresh signed
+Storage hardware/capacity observations and held identities are checked before each
+write and afterward. A nonblocking per-volume named mutex serializes these maintained
+controllers; occupied/abandoned exclusion refuses, without lock breaking or retry.
+This is not an OS-atomic security-descriptor compare/exchange against arbitrary
+concurrent administrators: controller maintenance must be coordinated and trusted
+Admin/System/TrustedInstaller remain outside the untrusted-principal threat model.
+Device removal/rebind, source drift, expiry or uncertain validation refuses; it is
+never converted into a cleanup/rollback success. Native synchronous calls have no
+claimed hard cancellation latency. Root retains and investigates uncertain attempts.
+
+SACL absence must now be OBSERVED, not inferred from OWNER/GROUP/DACL-only reads.
+The new scoped duplicate-thread token requires BOTH SeRestorePrivilege (foreign
+owner inverse) and SeSecurityPrivilege (read-only security observation). A separate
+compatible metadata handle requests ACCESS_SYSTEM_SECURITY and queries
+BACKUP_SECURITY_INFORMATION, including labels/resource/other SACL data. Any observed
+SACL (even empty), unsupported control/reserved data, or unavailable access/API
+refuses BEFORE root mutation. No SACL/group/control/attribute setter is used;
+NtSetSecurityObject selects only OWNER+DACL. This adds a concrete real-host
+prerequisite: old permission-candidate proof did not certify this new full security
+observation. No process/account privilege, security policy or host setting is changed.
+
+[GetSecurityInfo](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-getsecurityinfo)
+documents the required access/privilege and warns that querying is not race handling.
+[SECURITY_INFORMATION](https://learn.microsoft.com/en-us/windows/win32/secauthz/security-information)
+distinguishes whole-descriptor BACKUP reads from individual label/attribute/SACL
+selections. Missing capability is a refusal, not skipped-green production acceptance.
+
+The evidence parent must have admin-protected ancestry/authority. Each attempt is
+NEW, private, protected, Admin-owned, with SYSTEM/Admin full and current user read-only
+access. Public parent traversal is allowed; its child journal does not inherit public
+read/write grants. The per-plan UUID determines its exclusive attempt directory,
+so even an unsuccessful created attempt cannot be replayed/adopted by the same plan.
+An existing directory always refuses. No old fixture, production journal or arbitrary
+caller destination is adopted. The parent and attempt are continuously held;
+there is only ONE DELETE-requesting lease per directory, avoiding earlier self-conflict.
+
+Before the FIRST native write, exact reviewed input bytes are independently copied
+and flushed into the journal, and `prepared.json` retains original/requested raw
+snapshots and review context. Each write first flushes a NEW intent, then rechecks
+external bindings and full raw CAS. Readback raw evidence is flushed BEFORE meaningful
+comparison/acceptance. `ObservedOnly` is distinct from `Accepted`; an error after a
+setter may have mutated and is `Unconfirmed`. Best-effort failure observation is
+read-only evidence, not an operation retry. No failed journal/write/readback is
+silently accepted. Failure records cannot replace the original exception. Handle,
+mutex and scoped privilege ownership unwinds on setup/operation/cleanup failures;
+cleanup failure is reported, never inferred as restoration.
+
+Forward is ONLY the deterministic reviewed `Restricted(currentUser)` transformation;
+its inverse ONLY the original descriptor. The existing bounded parser/zero-unused
+capacity comparison remains unchanged. Full raw CAS uses the actual CURRENT observed
+hash, never predicted compact bytes or a permission hash. Owner/group/control,
+ordered ACE bytes/flags/masks/SIDs, ACL revision/reserved fields and exact child
+inheritance projection remain strict. Unsupported object/conditional/SACL/malformed/
+nonzero-free/outer-tail forms refuse. There is no Set-Acl/SetSecurityInfo recursion,
+protection transition, descriptor canonicalization or old-child enumeration. Actual
+prior constrained root/subtree proofs support this specific inheritance-preserving
+shape, not arbitrary NTFS policies. Existing WSL children are NOT made private.
+
+After accepted forward mutation, only NEW protected public authority and private
+empty-data namespaces are installed from the held exact source. No service/task/WSL
+activation is performed. If public-code copying/final evidence fails, an inverse is
+attempted ONLY from the engine's accepted observed after-state, after independently
+journaled failure and a bounded known-public/empty-private namespace observation.
+It uses the SAME original handle/full raw CAS. Binding drift or uncertain forward
+prevents an inverse; failed/partial namespaces and every receipt are retained. No
+prune/delete/repair/adoption follows. Restoring the old root also restores its parent
+DELETE_CHILD fallback: retained namespaces are then NOT accepted authority/private
+custody even if their own DACLs remain protected. No real secrets belong there before
+separate deployment acceptance.
+
+A later independently invoked inverse requires original reviewed Apply plan+SHA,
+independently reviewed production apply-observation/acceptance receipt+SHA, and a
+NEW fresh RollbackOnly plan+SHA. The original Apply plan may be expired as a historical
+baseline; it cannot authorize a new forward write. Receipt context must bind that
+original review/source/UUID/root identity; synthetic or unrelated receipts refuse.
+Observed-only receipts are revalidated from raw data and never promoted by a status
+label. Their actual after-state must match the approved forward permission identity
+AND current full raw descriptor. Later current raw edits/substitution refuse.
+The new inverse plan binds the original before/after scope and exact observed raw
+CAS; it cannot change the original target or source policy. Every reference stays
+held and rehashed. No plan predicts kernel compaction.
+
+Only the bounded NEW namespace may be inventoried for an inverse: at most512entries/
+16MiB public source, exact signed file paths/hashes, no reparses, private data EMPTY.
+Unknown/private files refuse BEFORE reading them. Missing public files are retained
+partial evidence, not adopted. Root/child descriptor/metadata/content snapshot must
+match fresh review and remain unchanged across inverse. No scan/read/rewrite of old
+WSL/user descendants occurs. If deployment has begun using the namespace, controller
+must stop and obtain a separate storage-owner disposition; rollback is not a way to
+silently expose production private data.
+
+Root review interfaces ONLY (not source-lane execution):
+
+```powershell
+# NEW protected source/manifest, independently protected different-hardware
+# evidence parent and explicit private policy v2. No E plan is created by native.
+& PACKAGE\scripts\Invoke-WslColdVolumeCustody.ps1 -Phase Plan -PolicyPath REVIEWED_PRIVATE_POLICY_V2
+# Save/recompute exact plan; current source/host/SACL/capacity review then owner UAC.
+pwsh -NoLogo -NoProfile -NonInteractive -File PACKAGE\scripts\Invoke-WslColdVolumeCustody.ps1 -Phase Apply -PlanPath REVIEWED_APPLY_V4 -ReviewedPlanSha256 EXTERNAL_REVIEW_HASH
+# A later inverse has its OWN observation/review. Never reuse a guessed after hash.
+& PACKAGE\scripts\Invoke-WslColdVolumeCustody.ps1 -Phase PlanRollback -PlanPath ORIGINAL_APPLY_V4 -ReviewedPlanSha256 ORIGINAL_REVIEW_HASH -ApplyReceiptPath REVIEWED_APPLY_OBSERVATION -ReviewedApplyReceiptSha256 EXTERNAL_RECEIPT_HASH
+pwsh -NoLogo -NoProfile -NonInteractive -File PACKAGE\scripts\Invoke-WslColdVolumeCustody.ps1 -Phase Rollback -PlanPath NEW_REVIEWED_ROLLBACK_V4 -ReviewedPlanSha256 NEW_EXTERNAL_REVIEW_HASH
+```
+
+Hosted Windows production-shaped tests use ONLY fresh private C synthetic roots,
+the same engine and a separately marked synthetic journal. They prove intent-before-
+mutation, observed raw chain, retained-handle/fresh inverse, exact descendants,
+source/hardware-observer and intent-file failures before native calls, and raw drift
+refusal BEFORE defensive cleanup. They do NOT prove independent hardware, a real
+production volume, or the whole controller admission. Those remain controller
+source/host review and actual read-only E plan gates before any real mutation.
+
+No real E apply/rollback is accepted by this source promotion. Full repository keyfile
+bootstrap/init/export/off-laptop Google+Apple recovery, final immutable worker/policy/
+device/cgroup admission, all-writer outage, fresh shared-E dense restore plus positive
+overhead plus64GiB reserve, encrypted full backup/readback and independent dense
+restore/import/boot remain open. Codex state relocation stays behind restore. Desktop
+RPC, Node24 strict offline producer, busctl rotation, Python/Nix/provenance and BOTH
+standard IDE entries and custom RevealUI Zed return remain required. Overall NOT GREEN.
