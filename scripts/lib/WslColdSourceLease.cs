@@ -174,6 +174,7 @@ namespace Revealfleet.Backup {
         public async Task VerifyAsync(CancellationToken token) {
             Validate(); Capacity();
             var start=new System.Diagnostics.ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),"System32","wsl.exe"));
+            start.WorkingDirectory=Path.GetDirectoryName(start.FileName);
             start.UseShellExecute=false;start.CreateNoWindow=true;start.RedirectStandardOutput=true;start.RedirectStandardError=true;
             start.StandardOutputEncoding=Encoding.Unicode;
             foreach(var arg in new[]{"--list","--running","--quiet"}) start.ArgumentList.Add(arg);

@@ -33,6 +33,7 @@ namespace Revealfleet.Backup {
         static Process StartControl(string file,string[] args) {
             var psi=new ProcessStartInfo(file) {UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true};
             foreach(var arg in args)psi.ArgumentList.Add(arg);
+            psi.WorkingDirectory=Path.GetDirectoryName(Path.GetFullPath(file));
             return Process.Start(psi);
         }
         public static Task<string> RunSelectedControlOnProcessAsync(Process child,byte[] input,int startup,int operation,int teardown) {

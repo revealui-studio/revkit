@@ -1,5 +1,6 @@
 #Requires -Version 7.0
-# Opt-in root OWNER+DACL only; existing descendants are never enumerated.
+# Root OWNER+DACL planning only. Apply/Rollback blocked by actual Windows drift.
+# No production mutation API is accepted; descendants are never enumerated.
 . (Join-Path $PSScriptRoot 'WslBackup.ps1')
 . (Join-Path $PSScriptRoot 'WindowsArtifactDeployment.ps1')
 
@@ -83,7 +84,7 @@ function Get-WslColdVolumeCustodyPlan {
             evidenceFileIdentity=$safeEvidence.FileIdentity;evidenceDescriptorSha256=$evidenceDescriptor.Sha256;
             createdAt=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds();expiresAt=[DateTimeOffset]::UtcNow.AddHours(1).ToUnixTimeSeconds();
             namespacePath=$namespace;sourceOrWorkerActivated=$false;descendantsEnumerated=$false;existingChildParentDeletionFallbackRemoved=$true;
-            api='SetSecurityInfo OWNER+DACL; exact MAXIMUM_ALLOWED handle; no propagation';
+            api='UNACCEPTED root-only filesystem security contract; actual Windows child/control drift retained';
             privileges='Scoped thread-token SeRestorePrivilege required BEFORE mutation; no account/process trust change';
             sacl='Not read or selected by mutation API';group='Observed and unchanged';
             rollback='Root OWNER+DACL only, same volume/root/current after hash. New namespace/evidence retained. Never overwrite later edits.'}
@@ -167,65 +168,8 @@ function Invoke-WslColdVolumeCustody {
     if($evidence.Domain -ceq $p.policy.hardware.volumeUuid -or $p.policy.evidenceHardware.serial -ceq $p.policy.hardware.serial){throw 'Independent evidence custody required.'}
     [void](Assert-WslColdProtectedPath $p.policy.evidenceDirectory -Directory -PrivateData)
     Initialize-WslColdWorkerProtocol
-    # Probe/enable restore privilege BEFORE evidence or root mutation. Scope is
-    # synchronous on this thread and always restores the original token context.
-    $privilege=[Revealfleet.Backup.ColdRestorePrivilege]::new()
-    $lease=$evidenceLease=$lock=$null;$attempt=$null
-    try {
-        $lease=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($p.policy.volumeRoot)
-        $evidenceLease=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($p.policy.evidenceDirectory)
-        if($lease.FileIdentity -cne $p.rootFileIdentity -or $lease.Attributes -ne $p.rootAttributes -or $evidenceLease.FileIdentity -cne $p.evidenceFileIdentity -or $evidenceLease.Read().Sha256 -cne $p.evidenceDescriptorSha256){throw 'Root/evidence handle or descriptor changed.'}
-        $before=[Revealfleet.Backup.ColdSecuritySnapshot]::new([Convert]::FromBase64String($p.before.DescriptorBase64))
-        $after=$before.Restricted($p.policy.trustedUserSid)
-        if($before.Sha256 -cne $p.before.Sha256 -or $after.Sha256 -cne $p.after.Sha256 -or $after.DescriptorBase64 -cne $p.after.DescriptorBase64){throw 'Reviewed descriptor transformation differs.'}
-        $expectedHash=if($Phase -ceq 'Apply'){$before.Sha256}else{$after.Sha256}
-        $target=if($Phase -ceq 'Apply'){$after}else{$before}
-        if($lease.Read().Sha256 -cne $expectedHash){throw 'Owner/DACL/group/control drift; nothing changed.'}
-        $lockPath=Join-Path $p.policy.evidenceDirectory ('volume-'+$p.policy.hardware.volumeUuid+'.lock')
-        if(Test-Path -LiteralPath $lockPath){[void](Assert-WslColdProtectedPath $lockPath -PrivateData)}
-        $lock=[IO.File]::Open($lockPath,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
-        $attempt=Join-Path $p.policy.evidenceDirectory ([Guid]::NewGuid().ToString('D'))
-        $descriptor=New-WslColdNamespaceDescriptor $p.policy.trustedUserSid -PrivateData
-        [Revealfleet.Backup.ColdSourceLease]::CreateProtectedDirectory($attempt,$descriptor)
-        # All four exact preimages are CreateNew + Flush(true), BEFORE mutation.
-        Write-WslBackupJsonNew (Join-Path $attempt 'reviewed-plan.json') $p
-        Write-WslBackupJsonNew (Join-Path $attempt 'before.json') $lease.Read()
-        Write-WslBackupJsonNew (Join-Path $attempt 'proposed.json') $target
-        Write-WslBackupJsonNew (Join-Path $attempt 'pending.json') @{phase=$Phase;reviewedPlanSha256=$document.Sha256;rootFileIdentity=$lease.FileIdentity;sourceCommit=$code.SourceCommit}
-        # Prove the SAME original SID can be assigned and recovered on a NEW
-        # private synthetic object BEFORE touching the selected volume root.
-        $probePath=Join-Path $attempt 'owner-prerequisite'
-        [Revealfleet.Backup.ColdSourceLease]::CreateProtectedDirectory($probePath,$descriptor)
-        $probe=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($probePath)
-        try {
-            $probeBefore=$probe.Read();$probeForeign=$probeBefore.WithOwner($before.OwnerSid)
-            Write-WslBackupJsonNew (Join-Path $attempt 'owner-probe-before.json') $probeBefore
-            Write-WslBackupJsonNew (Join-Path $attempt 'owner-probe-proposed.json') $probeForeign
-            $probe.Replace($probeBefore.Sha256,$probeForeign.DescriptorBase64)
-            Write-WslBackupJsonNew (Join-Path $attempt 'owner-probe-foreign.json') $probe.Read()
-            $probe.Replace($probeForeign.Sha256,$probeBefore.DescriptorBase64)
-            Write-WslBackupJsonNew (Join-Path $attempt 'owner-probe-restored.json') $probe.Read()
-        } finally {$probe.Dispose()}
-        [void](Assert-WslColdWindowsHardware $p.policy.volumeRoot $p.policy.hardware)
-        $evidenceLease.ValidateIdentity()
-        Assert-WslColdCustodyGrowth $p.policy $initialRoot.Free $evidence.Free
-        $lease.Replace($expectedHash,$target.DescriptorBase64)
-        Write-WslBackupJsonNew (Join-Path $attempt 'after.json') $lease.Read()
-        $namespace=$null
-        if($Phase -ceq 'Apply'){$namespace=Install-WslColdVolumeNamespaces $p $code.Files $attempt}
-        Assert-WslColdCustodyGrowth $p.policy $initialRoot.Free $evidence.Free
-        Write-WslBackupJsonNew (Join-Path $attempt 'complete.json') @{phase=$Phase;descriptorSha256=$lease.Read().Sha256;rootFileIdentity=$lease.FileIdentity;namespace=$namespace;activated=$false;fullRestoreAccepted=$false}
-        [pscustomobject]@{Phase=$Phase;EvidenceAttempt=$attempt;Namespace=$namespace;Activated=$false;RootDescriptorVerified=$true;DescendantsRewritten=$false}
-    } catch {
-        if($attempt){
-            # Never auto-rollback an error: it could overwrite an intervening edit.
-            # Best effort diagnostics do not replace the durable pending record.
-            try {Write-WslBackupJsonNew (Join-Path $attempt 'failure.json') @{phase=$Phase;current=$lease.Read();action='Retain all attempts. Rollback requires same root and exact accepted after hash.'}} catch {}
-        }
-        throw
-    } finally {
-        if($lock){$lock.Dispose()};if($evidenceLease){$evidenceLease.Dispose()};if($lease){$lease.Dispose()};$privilege.Dispose()
-    }
+    throw 'Root-only filesystem security contract unaccepted after actual Windows control/child drift; no mutation admitted.'
+
 }
 
 function Get-WslColdVolumeRollbackPlan {

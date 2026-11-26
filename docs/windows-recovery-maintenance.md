@@ -332,16 +332,21 @@ are accepted.
 
 ### Descriptor transformation and propagation boundary
 
+**Actual Windows evidence invalidated the proposed SetSecurityInfo contract.**
+The documented MAXIMUM_ALLOWED exception did not prevent control-bit changes or,
+in the deliberately different-template case, changes to existing child descriptors.
+Production `ColdDirectorySecurityLease.Replace` and custody Apply/Rollback now refuse
+without mutation. Plan remains read-only review data, never an apply capability.
+The previously proposed mutation transaction has been removed, rather than leaving
+unreachable code which appears deployable. Exact descriptor/control/group drift
+checks and the retained no-delete-share custody handle remain.
+
 [Microsoft SetSecurityInfo](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo)
-documents default child propagation and the exception for a handle opened with
-MAXIMUM_ALLOWED. `ColdDirectorySecurityLease` uses CreateFileW with exactly that
-access mask, OPEN_EXISTING/BACKUP_SEMANTICS/OPEN_REPARSE_POINT and no delete sharing.
-It verifies NTFS, canonical final handle path, no alias/reparse, volume serial,
-file index and unchanged attributes; it reopens the same name to detect detached
-or substituted namespace resolution. SetSecurityInfo receives that SAME handle,
-OWNER+DACL only, with NO protected/unprotected transition flags. Target group/
-control changes refuse before mutation; the original protection state is preserved. Group and SACL are never
-selected; attributes are never set. SACL bytes are not read or claimed verified.
+documents propagation and the MAXIMUM_ALLOWED exception. Actual receipts take
+precedence over that inference. [Automatic inheritance conversion](https://learn.microsoft.com/en-us/windows/win32/secauthz/automatic-propagation-of-inheritable-aces)
+can alter representations/control flags; this is an explanation to investigate,
+not permission to normalize a failed exact comparison. Group/SACL/attributes are
+not selected for mutation, and SACL bytes are not claimed verified.
 
 The before record retains original descriptor bytes, exact owner SID and raw
 DACL bytes, group, DACL-related control flags and a deterministic snapshot SHA256.
@@ -478,7 +483,8 @@ Interfaces (review placeholders, never run by the native source lane):
 ```powershell
 # Plan only; stdout saved as exact JSON, independently reviewed and hashed.
 pwsh -NoLogo -NoProfile -NonInteractive -File PACKAGE\scripts\Invoke-WslColdVolumeCustody.ps1 -PolicyPath PRIVATE_POLICY
-# Later, ONLY after accepted Windows tests and owner/root review:
+# BLOCKED: these interfaces refuse until a separately reviewed implementation
+# and actual Windows contract acceptance replace the disproved API:
 pwsh -NoLogo -NoProfile -NonInteractive -File PROTECTED_PACKAGE\scripts\Invoke-WslColdVolumeCustody.ps1 -Phase Apply -PlanPath REVIEWED_PLAN -ReviewedPlanSha256 EXACT_SHA256
 # Root-only descriptor rollback; never adopt later edits or delete namespaces:
 pwsh -NoLogo -NoProfile -NonInteractive -File PROTECTED_PACKAGE\scripts\Invoke-WslColdVolumeCustody.ps1 -Phase Rollback -PlanPath REVIEWED_PLAN -ReviewedPlanSha256 EXACT_SHA256
@@ -540,8 +546,8 @@ only and shares read/write/delete; it compares the same canonical volume/file
 index/attributes without requesting DELETE. Receipt capture uses a separate
 READ_CONTROL+attributes, fully shared, observation-only handle. That handle cannot
 mutate descriptors. It can coexist with the real custody handle while the latter
-continues to exclude deletion/substitution and retains the MAXIMUM_ALLOWED
-SetSecurityInfo no-child-propagation contract. The identity recheck is preserved,
+continues to exclude deletion/substitution. The claimed SetSecurityInfo
+no-child-propagation contract was subsequently disproved and is blocked. The identity recheck is preserved,
 not skipped or made path-specific. New Windows regression loops named/receipt
 observations under a held custody lease and asserts rename exclusion BEFORE
 cleanup. Existing raw descriptor, parent DELETE_CHILD effect, privacy and rollback
@@ -651,3 +657,84 @@ This is a recorded source follow-up, not live storage hardening or permission to
 modify the active main/worker/protected VHDs during this test turn. Desktop native
 connection adoption, Codex offline move, producer Node24 hold and all deferred
 IDE/Nix/Python/provenance work remain independent unfinished obligations.
+
+
+### Actual control/child drift: blocked production, bounded native API experiment
+
+The exact prior Windows run had46 cases:38 passed,3 failed,5 skipped. Root control
+changed from0x9004 to0x9404 in two fixtures. One deliberately different template
+also changed child DACL/protection/ACE representation. An unprotected fixture's
+later D:AI observation and missing final receipt remain failed evidence. No root
+apply/elevated acceptance follows from source checks. All old fixtures/receipts
+remain untouched. E permissions were never changed.
+
+The alternative is **test-only**, in `WslColdVolumeCustody.Fixture.cs`, excluded
+from the runtime manifest. `SyntheticSecurityLab` exclusively creates new UUID
+roots, registers them in-process, rejects existing/unregistered targets and
+reparse/Git parents, then allows only those trees in the native experiment.
+It uses `NtSetSecurityObject` with OWNER+DACL only, explicit metadata/security
+access and a separate fully shared handle compatible with held custody. It never
+sets protection-transition flags. [Microsoft's NtSetSecurityObject page](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntsetsecurityobject)
+explicitly names the Nt form for user mode, but its requirements table describes
+the kernel DDI. That is not an accepted Windows filesystem propagation/support
+guarantee. Exact before/after root and child checks must actually pass; even a
+synthetic pass cannot promote this API to production without a separate support
+and contract review. `SetKernelObjectSecurity` warns against filesystem objects;
+obsolete path-based `SetFileSecurity` is not substituted.
+
+Timestamp diagnosis is separate: construction writers close before observations;
+file hashing closes before fresh `GetFileInformationByHandle` creation/write time
+and attribute reads. Cached GetChildItem timestamps are not used. Two immediate
+independent observations must agree, without sleep/retry, or the baseline refuses
+and retains both observations. The no-replacement observer case compares the same
+metadata, so a timestamp failure cannot be mislabeled as mutation-only behavior.
+The previously missing unprotected final capture now preserves the original body
+failure while reporting a secondary receipt failure. SACL/last-access effects are
+not claimed covered. No original timestamp observations are rewritten.
+
+Windows CI now runs seven synthetic owner suites, including custody, control,
+admission, worker and binary transport. The maintained acceptance runner emits
+NUnit XML and a bounded nonsecret summary, preserves original fixture trees and
+never uploads payloads/keys/cache/repository/private-input data. It allows only
+the two explicitly native-only skipped cases; other skips fail acceptance.
+Elevated cases require an actual admin token and a successfully scoped restore
+privilege preflight. The disposable CI runner may exclusively create a protected
+UUID anchor under validated ProgramFiles; it never edits any existing ACL. Laptop
+acceptance uses a separately audited private parent, never the unsafe Temp parent.
+
+Root staging from one signed Git archive (all paths are review placeholders):
+
+```powershell
+# Ordinary: explicit elevatedAccepted gap remains; no production apply.
+& PACKAGE\tests\powershell\Invoke-WslColdWindowsAcceptance.ps1 -OutputDirectory NEW_RESULTS -RetainedFixtureParent AUDITED_PRIVATE_PARENT
+# Separate actual elevation, only on NEW synthetic fixtures after root review:
+& PACKAGE\tests\powershell\Invoke-WslColdWindowsAcceptance.ps1 -OutputDirectory OTHER_NEW_RESULTS -RetainedFixtureParent AUDITED_ADMIN_PROTECTED_PARENT -IncludeElevated
+```
+
+Include the test fixture C# and acceptance runner in the exact test supplement.
+Neither command accepts an arbitrary existing mutation target. Do not run any
+custody Apply/Rollback on E; those commands now refuse. If the experiment fails,
+retain every failed descriptor/metadata observation and investigate the precise
+class. A supported production implementation remains a concrete API/host blocker,
+not a missing owner permission for ordinary source work.
+
+### Selected-worker cwd is part of fixed launch admission
+
+All selected-worker control/serve/reconcile/probe argv now include `--cd /`
+before `--exec`. The Windows ProcessStartInfo working directory is explicitly
+the absolute executable's parent, both in owned controls and serve/list monitors.
+No caller UNC or repo cwd selects a worker directory. Caller-owned already-started
+process test seams cannot retroactively fix cwd; their caller must configure it.
+Strict selected stderr, startup/work/teardown budgets, shell-free arguments,
+immutable source/interpreter and identity checks remain. The actual diagnostic
+with only `--cd /` passed a29.136s cold probe without warnings; this candidate-only
+receipt is not acceptance of the changed signed source or production worker.
+Root must stage the consistent new release and test from the problematic UNC cwd
+while spare is genuinely stopped, main running and recovery stopped. No warmup,
+retry, sleep, keeper or ignored stderr is an operational dependency.
+
+Existing E WSL/VHD broad ACLs and VM/capability grants remain a separate storage
+owner follow-up behind cold outage/backup/recovery proof. New namespace protection
+does not privatize old descendants. Never change live storage ACLs to make tests
+pass. Desktop RPC/Codex offline relocation, real key recovery/capacity/full backup/
+dense restore/import/boot and deferred runtime/editor/provenance work stay open.

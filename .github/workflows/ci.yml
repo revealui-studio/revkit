@@ -563,8 +563,9 @@ jobs:
           python3 -B -m unittest discover -s tests -p 'test_codex_*.py'
 
   windows-artifact-acls:
-    name: Native Windows artifact directory ACLs
+    name: Native Windows backup and artifact custody
     runs-on: windows-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -574,12 +575,19 @@ jobs:
         run: |
           Install-Module -Name Pester -RequiredVersion 5.5.0 -Force -SkipPublisherCheck -Scope CurrentUser
           Import-Module Pester -RequiredVersion 5.5.0
-      - name: Verify actual private directory reconciliation
+      - name: Verify Windows custody, controls, admission and transport
         shell: pwsh
         run: |
-          $config = New-PesterConfiguration
-          $config.Run.Path = './tests/powershell/WindowsArtifactDeployment.Tests.ps1', './tests/powershell/CodexOfflineCopy.Tests.ps1'
-          $env:REVKIT_TEST_PYTHON = (Get-Command python -ErrorAction Stop).Source
-          $config.Run.Exit = $true
-          $config.Output.Verbosity = 'Detailed'
-          Invoke-Pester -Configuration $config
+          $out = Join-Path $env:RUNNER_TEMP ('revkit-windows-results-' + [Guid]::NewGuid().ToString('N'))
+          "REVKIT_WINDOWS_RESULTS=$out" >> $env:GITHUB_ENV
+          ./tests/powershell/Invoke-WslColdWindowsAcceptance.ps1 -OutputDirectory $out -CreateCiAnchor -IncludeElevated
+      - name: Retain bounded nonsecret Windows failure evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-synthetic-acceptance
+          path: |
+            ${{ env.REVKIT_WINDOWS_RESULTS }}/windows-results.xml
+            ${{ env.REVKIT_WINDOWS_RESULTS }}/windows-acceptance.json
+          if-no-files-found: warn
+          retention-days: 7

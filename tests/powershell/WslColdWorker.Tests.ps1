@@ -43,6 +43,7 @@ Describe 'Cold worker fixed protocol and closed launch admission' {
         $plan.UseShellExecute|Should -BeFalse
         $plan.CreateNoWindow|Should -BeTrue
         $plan.ArgumentList[-1]|Should -Be '--serve'
+        $plan.ArgumentList[0..4]|Should -Be @('--distribution','Synthetic-worker','--cd','/','--exec')
         $args.WorkerRegistrationId=$args.ProtectedRegistrationId
         {Get-WslColdWorkerLaunchPlan @args}|Should -Throw
         $args.WorkerRegistrationId=$args.SourceRegistrationId

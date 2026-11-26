@@ -48,12 +48,33 @@ Describe 'Selected-worker cold-start budget is distinct from operation time' {
         {[Revealfleet.Backup.ColdProtocol]::RunControlAsync('not-launched',[string[]]@(),[byte[]]@(),30001).GetAwaiter().GetResult()}|Should -Throw
         {[Revealfleet.Backup.ColdProtocol]::RunSelectedWorkerControlAsync('not-launched',[string[]]@(),[byte[]]@(),180001,1000,5000).GetAwaiter().GetResult()}|Should -Throw
     }
+    It 'launches both owned control paths in the executable directory independently of caller cwd' {
+        $hostPath=(Get-Process -Id $PID).Path
+        $expected=[IO.Path]::GetDirectoryName($hostPath)
+        $other=Join-Path $TestDrive 'caller-cwd';[void][IO.Directory]::CreateDirectory($other)
+        $old=[Environment]::CurrentDirectory
+        try {
+            [Environment]::CurrentDirectory=$other
+            foreach($selected in @($false,$true)){
+                $code=if($selected){Control-Prefix}else{''}
+                $code+='[Console]::Write([Environment]::CurrentDirectory)'
+                $argv=@('-NoProfile','-NonInteractive','-EncodedCommand',[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($code)))
+                $result=if($selected){[Revealfleet.Backup.ColdProtocol]::RunSelectedWorkerControlAsync($hostPath,$argv,[byte[]]@(),15000,5000,5000).GetAwaiter().GetResult()}else{[Revealfleet.Backup.ColdProtocol]::RunControlAsync($hostPath,$argv,[byte[]]@(),5000).GetAwaiter().GetResult()}
+                $result|Should -BeExactly $expected
+                [Environment]::CurrentDirectory|Should -BeExactly $other
+            }
+        } finally {[Environment]::CurrentDirectory=$old}
+    }
     It 'derives finite phase budgets and fixed control arguments from reviewed selected-worker policy' {
-        $p=@{sourceCommit=('a'*40);transactionId='11111111-1111-4111-8111-111111111111';worker=@{distro='synthetic-worker';interpreter='/usr/bin/python3.14';controlBudget=@{bootInitMilliseconds=60000;launchAllowanceMilliseconds=30000;operationMilliseconds=15000;reconciliationMilliseconds=30000;frontendTeardownMilliseconds=5000}}}
+        $p=@{budget=@{timeoutSeconds=60};sourceCommit=('a'*40);transactionId='11111111-1111-4111-8111-111111111111';worker=@{distro='synthetic-worker';interpreter='/usr/bin/python3.14';controlBudget=@{bootInitMilliseconds=60000;launchAllowanceMilliseconds=30000;operationMilliseconds=15000;reconciliationMilliseconds=30000;frontendTeardownMilliseconds=5000}}}
         (Get-WslColdWorkerControlBudget $p prepare).StartupMilliseconds|Should -Be 90000
         (Get-WslColdWorkerControlBudget $p status).OperationMilliseconds|Should -Be 15000
         (Get-WslColdWorkerControlBudget $p reconcile).OperationMilliseconds|Should -Be 30000
-        foreach($action in @('prepare','status','reconcile','probe')){(Get-WslColdWorkerArguments $p $action)|Should -Contain ('--control-'+$action)}
+        foreach($action in @('prepare','status','reconcile','probe','serve')){
+            $argv=Get-WslColdWorkerArguments $p $action
+            $argv[0..6]|Should -Be @('--distribution','synthetic-worker','--user','root','--cd','/','--exec')
+            if($action -ne 'serve'){$argv|Should -Contain ('--control-'+$action)}
+        }
         $p.worker.controlBudget.frontendTeardownMilliseconds=10001
         {Get-WslColdWorkerControlBudget $p reconcile}|Should -Throw
     }

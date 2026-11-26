@@ -813,7 +813,7 @@ function Get-WslColdWorkerLaunchPlan {
     [pscustomobject]@{
         Protocol = 'revkit-cold-worker-v1'; Profile = 'cold-vhd-container-v1'; CanExecute = $false
         FileName = 'wsl.exe'; UseShellExecute = $false; CreateNoWindow = $true
-        ArgumentList = @('--distribution',$WorkerDistro,'--exec','/usr/bin/python3','-I','-B',
+        ArgumentList = @('--distribution',$WorkerDistro,'--cd','/','--exec','/usr/bin/python3','-I','-B',
             '/opt/revkit/wsl-cold-worker.py','--serve')
         WorkerRegistrationId = $WorkerRegistrationId.ToString('D')
         MissingAdmission = @('immutable worker/runtime deployment','authoritative registration and final-handle cold source lease',
@@ -1028,7 +1028,7 @@ function Invoke-WslColdSelectedControl {
 
 function Get-WslColdWorkerArguments {
     param($Policy,[string]$Action)
-    $base=@('--distribution',$Policy.worker.distro,'--user','root','--exec')
+    $base=@('--distribution',$Policy.worker.distro,'--user','root','--cd','/','--exec')
     if($Action -ceq 'serve') {
         $unit='revkit-cold-'+$Policy.transactionId+'.service'
         return $base+@('/usr/bin/systemd-run','--quiet','--pipe','--wait','--collect','--service-type=exec',
@@ -1140,6 +1140,7 @@ function Invoke-WslColdContainerOperation {
         $request=@{protocol='revkit-cold-worker-v1';profile=$p.profile;transactionId=$p.transactionId;archiveId=$p.archiveId;phase=$Phase;bindingSha256=$doc.Sha256;bytes=$bytes;sha256=$sha}
         $secret=[Revealfleet.Backup.ColdCommitGuard]::PrivateInput($Passphrase)
         $start=[Diagnostics.ProcessStartInfo]::new((Join-Path $env:SystemRoot 'System32/wsl.exe'))
+        $start.WorkingDirectory=[IO.Path]::GetDirectoryName($start.FileName)
         $start.UseShellExecute=$false;$start.CreateNoWindow=$true;$start.RedirectStandardInput=$true;$start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
         foreach($arg in (Get-WslColdWorkerArguments $p 'serve')){$start.ArgumentList.Add($arg)}
         $child=[Diagnostics.Process]::new();$child.StartInfo=$start

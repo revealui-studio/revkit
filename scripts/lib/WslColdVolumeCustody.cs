@@ -134,7 +134,6 @@ namespace Revealfleet.Backup {
         [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool GetVolumeInformationByHandleW(SafeFileHandle h,StringBuilder name,uint size,out uint serial,out uint maximum,out uint flags,StringBuilder filesystem,uint fsSize);
         [DllImport("advapi32.dll",SetLastError=true)] static extern uint GetSecurityInfo(SafeFileHandle handle,int type,uint selection,out IntPtr owner,out IntPtr group,out IntPtr dacl,out IntPtr sacl,out IntPtr descriptor);
         [DllImport("advapi32.dll",SetLastError=true)] static extern uint GetSecurityDescriptorLength(IntPtr descriptor);
-        [DllImport("advapi32.dll",SetLastError=true)] static extern uint SetSecurityInfo(SafeFileHandle handle,int type,uint selection,IntPtr owner,IntPtr group,IntPtr dacl,IntPtr sacl);
         [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr pointer);
         readonly SafeFileHandle handle;readonly Info identity;readonly string path;readonly bool observationOnly;
         public string FileIdentity => identity.Volume.ToString("x8")+":"+identity.IndexHigh.ToString("x8")+identity.IndexLow.ToString("x8");
@@ -146,7 +145,8 @@ namespace Revealfleet.Backup {
             if(!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
             path=Path.GetFullPath(canonicalPath);
             if(path.Length<3 || path[1]!=':' || !String.Equals(path,canonicalPath,StringComparison.Ordinal)) throw new IOException("Canonical local directory required");
-            // EXACT MAXIMUM_ALLOWED: documented SetSecurityInfo no-propagation.
+            // Retain MAXIMUM_ALLOWED/no-delete-share custody. Descriptor mutation
+            // is blocked: actual Windows disproved the SetSecurityInfo contract.
             // Keep metadata reads/writes shared; withhold DELETE sharing.
             handle=CreateFileW(path,metadataObservation ? 0x00020080u : 0x02000000u,metadataObservation ? 7u : 3u,IntPtr.Zero,3,0x02200000,IntPtr.Zero);
             try {
@@ -185,20 +185,9 @@ namespace Revealfleet.Backup {
             if(current.Sha256!=expectedSha256)throw new IOException("Owner/DACL/control/group drift; nothing replaced");
             var bytes=Convert.FromBase64String(targetDescriptorBase64);var target=new ColdSecuritySnapshot(bytes);
             if(target.Control!=current.Control || target.GroupBase64!=current.GroupBase64)throw new IOException("Group/control changes are outside OWNER+DACL transaction scope");
-            IntPtr buffer=Marshal.AllocHGlobal(bytes.Length);
-            try {
-                Marshal.Copy(bytes,0,buffer,bytes.Length);
-                int ownerOffset=BitConverter.ToInt32(bytes,4),daclOffset=BitConverter.ToInt32(bytes,16);
-                if(ownerOffset<20 || daclOffset<20)throw new IOException("Explicit owner/DACL required");
-                // OWNER+DACL ONLY. Group/SACL/attributes never selected. Preserve
-                // original DACL protection state: do NOT request protected or
-                // unprotected transitions. MAXIMUM_ALLOWED suppresses propagation.
-                uint selection=5;
-                uint error=SetSecurityInfo(handle,1,selection,IntPtr.Add(buffer,ownerOffset),IntPtr.Zero,IntPtr.Add(buffer,daclOffset),IntPtr.Zero);
-                if(error!=0)throw new Win32Exception((int)error);
-                var observed=Read();
-                if(observed.Sha256!=target.Sha256)throw new IOException("Applied descriptor/control verification failed; retain evidence, no automatic rollback");
-            } finally {Marshal.FreeHGlobal(buffer);}
+            // Actual Windows 0a9fecd evidence changed control bits AND child
+            // descriptors. No API is promoted by a source check or test flag.
+            throw new IOException("Root-only filesystem security contract unaccepted; no mutation performed");
         }
         [StructLayout(LayoutKind.Sequential)] struct SecurityAttributes {public uint Length;public IntPtr Descriptor;public int Inherit;}
         public static void CopyNewProtectedFile(string source,string destination,byte[] descriptor) {

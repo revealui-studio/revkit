@@ -9,6 +9,7 @@ BeforeAll {
         [uint32]$mask=0;foreach($r in $Rows){if(-not ($r.Flags -band 8) -and $r.Sid -in $Sids){$mask=$mask -bor $r.Mask}};return $mask
     }
         if($IsWindows){
+            if(-not ('Revealfleet.Tests.SyntheticSecurityLab' -as [type])){Add-Type -Path (Join-Path $PSScriptRoot 'WslColdVolumeCustody.Fixture.cs')}
             function New-SyntheticTree {
                 $base=if($RetainedFixtureParent){$RetainedFixtureParent}else{$TestDrive}
                 if($RetainedFixtureParent){
@@ -17,12 +18,11 @@ BeforeAll {
                     $cursor=[IO.DirectoryInfo]::new($base)
                     while($cursor){if(Test-Path -LiteralPath (Join-Path $cursor.FullName '.git')){throw 'Synthetic custody must be outside Git.'};$cursor=$cursor.Parent}
                 }
-                $root=Join-Path $base ([Guid]::NewGuid().ToString('N'))
                 $descriptor=[Security.AccessControl.DirectorySecurity]::new();$descriptor.SetAccessRuleProtection($true,$false)
                 $user=[Security.Principal.WindowsIdentity]::GetCurrent().User
                 $descriptor.SetOwner($user)
                 foreach($sid in @('S-1-1-0','S-1-3-0','S-1-5-18')){$descriptor.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid),'FullControl','ContainerInherit,ObjectInherit','None','Allow'))}
-                [Revealfleet.Backup.ColdSourceLease]::CreateProtectedDirectory($root,$descriptor.GetSecurityDescriptorBinaryForm())
+                $root=[Revealfleet.Tests.SyntheticSecurityLab]::CreateRoot($base,$descriptor.GetSecurityDescriptorBinaryForm())
                 $child=New-Item -ItemType Directory -Path (Join-Path $root 'ordinary')
                 $grandchild=New-Item -ItemType Directory -Path (Join-Path $child.FullName 'grandchild')
                 $file=Join-Path $grandchild.FullName 'data.bin';[IO.File]::WriteAllBytes($file,[byte[]](1,0,255,42))
@@ -36,18 +36,53 @@ BeforeAll {
                 Save-CustodyTestReceipt $root initial
                 return $root
             }
+            function Stable-TreeReceipt([string]$Root) {
+                # Two immediate, independent, closed-reader observations are a
+                # precondition. Instability refuses; never retry until green.
+                $first=Tree-Receipt $Root;$second=Tree-Receipt $Root
+                if($first -cne $second){
+                    if($RetainedFixtureParent){Write-WslBackupJsonNew ($Root+'-unstable-baseline.json') @{first=$first;second=$second;productionAccepted=$false}}
+                    throw 'Synthetic metadata baseline unstable; no replacement admitted.'
+                }
+                Save-CustodyTestReceipt $Root baseline
+                return $second
+            }
+            function Invoke-SyntheticReplacement($Lease,[string]$Expected,[string]$Descriptor) {
+                $before=$Lease.Read()
+                if($before.Sha256 -cne $Expected){throw 'Synthetic candidate descriptor drift'}
+                $target=[Revealfleet.Backup.ColdSecuritySnapshot]::new([Convert]::FromBase64String($Descriptor))
+                if($target.GroupBase64 -cne $before.GroupBase64 -or $target.Control -ne $before.Control){throw 'Synthetic candidate group/control change refused'}
+                [Revealfleet.Tests.SyntheticSecurityLab]::SetNativeCandidate($Lease.CanonicalPath,[Convert]::FromBase64String($Descriptor))
+                if($Lease.Read().Sha256 -cne $target.Sha256){throw 'Synthetic candidate exact descriptor/control verification failed; retain attempt'}
+            }
             function Tree-Receipt([string]$Root) {
                 @((Get-ChildItem -LiteralPath $Root -Recurse -Force)|ForEach-Object {
-                    $item=$_;$acl=Get-Acl -LiteralPath $item.FullName
-                    [ordered]@{path=$item.FullName;descriptor=$acl.Sddl;attributes=[int]$item.Attributes;created=$item.CreationTimeUtc.Ticks;written=$item.LastWriteTimeUtc.Ticks;data=$(if(-not $item.PSIsContainer){(Get-FileHash -LiteralPath $item.FullName).Hash}else{''})}
+                    $item=$_
+                    # Hash closes its reader before fresh metadata observation.
+                    # Never compare cached enumeration timestamps. No sleep/retry.
+                    $data=if(-not $item.PSIsContainer){(Get-FileHash -LiteralPath $item.FullName).Hash}else{''}
+                    $acl=Get-Acl -LiteralPath $item.FullName
+                    $metadata=[Revealfleet.Tests.SyntheticSecurityLab]::Metadata($item.FullName)
+                    [ordered]@{path=$item.FullName;descriptor=$acl.Sddl;attributes=$metadata[0];created=$metadata[1];written=$metadata[2];data=$data}
                 })|ConvertTo-Json -Depth 8 -Compress
             }
         }
 
             function Save-CustodyTestReceipt([string]$Root,[string]$Phase) {
                 if(-not $RetainedFixtureParent){return}
-                Write-WslBackupJsonNew ($Root+'-'+$Phase+'.json') @{root=$Root;phase=$Phase;descriptor=[Revealfleet.Backup.ColdDirectorySecurityLease]::ObserveForReceipt($Root);tree=(Tree-Receipt $Root);productionAccepted=$false}
+                Write-WslBackupJsonNew ($Root+'-'+$Phase+'.json') @{root=$Root;phase=$Phase;descriptor=[Revealfleet.Backup.ColdDirectorySecurityLease]::ObserveForReceipt($Root);tree=(Tree-Receipt $Root);apiExperiment='ntsetsecurityobject-synthetic-only-v1';productionAccepted=$false}
             }
+function Complete-CustodyTest([string]$Root,$Lease,$Scope=$null) {
+    $cleanupError=$null
+    foreach($owned in @($Lease,$Scope)){
+        if($owned){try {$owned.Dispose()}catch {if(-not $cleanupError){$cleanupError=$_};Write-Warning 'Owned synthetic handle cleanup failed; evidence capture still attempted.'}}
+    }
+    # Final metadata is observed AFTER closing owned writer/security handles.
+    # Neither cleanup nor evidence may replace an earlier assertion failure.
+    if($cleanupError -and -not $script:CustodyPrimaryFailure){$script:CustodyPrimaryFailure=$cleanupError}
+    Save-CustodyFinalReceipt $Root
+    if($cleanupError -and $script:CustodyPrimaryFailure -eq $cleanupError){throw $cleanupError}
+}
 function Save-CustodyFinalReceipt([string]$Root) {
     try {Save-CustodyTestReceipt $Root final}
     catch {
@@ -118,7 +153,7 @@ Describe 'Bounded root ACL semantics on every platform' {
     }
 }
 
-Describe 'Actual Windows synthetic no-propagation and custody' -Tag 'WindowsSynthetic' {
+Describe 'Windows native-API EXPERIMENT and custody; production replacement blocked' -Tag 'WindowsSynthetic' {
     It 'refuses a synthetic subdirectory at the PRODUCTION volume-root entrypoint' -Skip:(-not $IsWindows) {
         $script:CustodyPrimaryFailure=$null
         {Assert-WslColdVolumeRoot (Join-Path $TestDrive 'not-a-root')}|Should -Throw
@@ -126,7 +161,7 @@ Describe 'Actual Windows synthetic no-propagation and custody' -Tag 'WindowsSynt
     }
     It 'preserves every real child/grandchild descriptor, owner, bytes and metadata during root-only DACL update' -Skip:(-not $IsWindows) {
         $script:CustodyPrimaryFailure=$null
-        $root=New-SyntheticTree;$original=Tree-Receipt $root
+        $root=New-SyntheticTree;$original=Stable-TreeReceipt $root
         $lease=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($root)
         try {
             $before=$lease.Read();$user=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -137,7 +172,7 @@ Describe 'Actual Windows synthetic no-propagation and custody' -Tag 'WindowsSynt
             $sd.Owner=[Security.Principal.SecurityIdentifier]::new($user)
             $bytes=[byte[]]::new($sd.BinaryLength);$sd.GetBinaryForm($bytes,0)
             $target=[Revealfleet.Backup.ColdSecuritySnapshot]::new($bytes)
-            $lease.Replace($before.Sha256,$target.DescriptorBase64)
+            (Invoke-SyntheticReplacement $lease $before.Sha256 $target.DescriptorBase64)
             $lease.Read().Sha256|Should -BeExactly $target.Sha256
             (Tree-Receipt $root)|Should -BeExactly $original
             $new=Join-Path $root 'new-ordinary-file';[IO.File]::WriteAllText($new,'new child')
@@ -146,14 +181,14 @@ Describe 'Actual Windows synthetic no-propagation and custody' -Tag 'WindowsSynt
             # Before rollback remove only this test-created extra file; existing
             # descendants remain untouched by the OWNER+DACL primitive itself.
             Remove-Item -LiteralPath $new
-            $lease.Replace($target.Sha256,$before.DescriptorBase64)
+            (Invoke-SyntheticReplacement $lease $target.Sha256 $before.DescriptorBase64)
             $lease.Read().Sha256|Should -BeExactly $before.Sha256
             (Tree-Receipt $root)|Should -BeExactly $original
-        } catch {$script:CustodyPrimaryFailure=$_;throw} finally {try {Save-CustodyFinalReceipt $root} finally {$lease.Dispose()}}
+        } catch {$script:CustodyPrimaryFailure=$_;throw} finally {Complete-CustodyTest $root $lease}
     }
-    It 'demonstrates MAXIMUM_ALLOWED no-propagation using a deliberately DIFFERENT child template' -Skip:(-not $IsWindows) {
+    It 'experiments with exact native-API no-propagation using a deliberately DIFFERENT child template' -Skip:(-not $IsWindows) {
         $script:CustodyPrimaryFailure=$null
-        $root=New-SyntheticTree;$original=Tree-Receipt $root
+        $root=New-SyntheticTree;$original=Stable-TreeReceipt $root
         $lease=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($root)
         try {
             $before=$lease.Read();$currentUser=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$target=$before.Restricted($currentUser).WithOwner($currentUser)
@@ -161,39 +196,41 @@ Describe 'Actual Windows synthetic no-propagation and custody' -Tag 'WindowsSynt
             foreach($ace in $sd.DiscretionaryAcl){if($ace.SecurityIdentifier.Value -eq 'S-1-1-0' -and ($ace.AceFlags -band 8)){$ace.AccessMask=0x1200a9}}
             $bytes=[byte[]]::new($sd.BinaryLength);$sd.GetBinaryForm($bytes,0)
             $target=[Revealfleet.Backup.ColdSecuritySnapshot]::new($bytes)
-            $lease.Replace($before.Sha256,$target.DescriptorBase64)
+            (Invoke-SyntheticReplacement $lease $before.Sha256 $target.DescriptorBase64)
             (Tree-Receipt $root)|Should -BeExactly $original
             $new=Join-Path $root 'different-template-child';[IO.File]::WriteAllText($new,'new synthetic child')
             $newAcl=[Security.AccessControl.RawSecurityDescriptor]::new((Get-Acl -LiteralPath $new).Sddl)
             @($newAcl.DiscretionaryAcl|Where-Object {$_.SecurityIdentifier.Value -eq 'S-1-1-0'})[0].AccessMask|Should -Be 0x1200a9
             Remove-Item -LiteralPath $new
-            $lease.Replace($target.Sha256,$before.DescriptorBase64)
+            (Invoke-SyntheticReplacement $lease $target.Sha256 $before.DescriptorBase64)
             (Tree-Receipt $root)|Should -BeExactly $original
-        } catch {$script:CustodyPrimaryFailure=$_;throw} finally {try {Save-CustodyFinalReceipt $root} finally {$lease.Dispose()}}
+        } catch {$script:CustodyPrimaryFailure=$_;throw} finally {Complete-CustodyTest $root $lease}
     }
     It 'preserves unprotected subtree control/group and existing child descriptors with the same handle API' -Skip:(-not $IsWindows) {
         $script:CustodyPrimaryFailure=$null
-        $root=New-SyntheticTree;$child=Join-Path $root 'ordinary';$original=Tree-Receipt $child
+        $root=New-SyntheticTree;$child=Join-Path $root 'ordinary';$original=Stable-TreeReceipt $child
         $lease=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($child)
         try {
             $before=$lease.Read();($before.Control -band 0x1000)|Should -Be 0
             $target=$before.WithOwner($before.OwnerSid)
-            $lease.Replace($before.Sha256,$target.DescriptorBase64)
+            (Invoke-SyntheticReplacement $lease $before.Sha256 $target.DescriptorBase64)
             $lease.Read().Control|Should -Be $before.Control
             $lease.Read().GroupBase64|Should -BeExactly $before.GroupBase64
             (Tree-Receipt $child)|Should -BeExactly $original
-        } finally {$lease.Dispose()}
+        } catch {$script:CustodyPrimaryFailure=$_;throw} finally {Complete-CustodyTest $root $lease}
     }
     It 'refuses descriptor drift before replacement and an existing namespace without cleanup-induced success' -Skip:(-not $IsWindows) {
         $script:CustodyPrimaryFailure=$null
         $root=New-SyntheticTree;$lease=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($root)
         try {
-            $before=$lease.Read()
+            $before=$lease.Read();$tree=Stable-TreeReceipt $root
+            {$lease.Replace($before.Sha256,$before.DescriptorBase64)}|Should -Throw -ExpectedMessage '*contract unaccepted*'
+            (Tree-Receipt $root)|Should -BeExactly $tree
             {$lease.Replace(('0'*64),$before.DescriptorBase64)}|Should -Throw
             $lease.Read().Sha256|Should -BeExactly $before.Sha256
             {[Revealfleet.Backup.ColdSourceLease]::CreateProtectedDirectory($root,[Convert]::FromBase64String($before.DescriptorBase64))}|Should -Throw
             $lease.Read().Sha256|Should -BeExactly $before.Sha256
-        } catch {$script:CustodyPrimaryFailure=$_;throw} finally {try {Save-CustodyFinalReceipt $root} finally {$lease.Dispose()}}
+        } catch {$script:CustodyPrimaryFailure=$_;throw} finally {Complete-CustodyTest $root $lease}
     }
     It 'creates protected children which retain private exclusion and resist rename while held' -Skip:(-not $IsWindows) {
         $script:CustodyPrimaryFailure=$null
@@ -205,7 +242,7 @@ Describe 'Actual Windows synthetic no-propagation and custody' -Tag 'WindowsSynt
             {Move-Item -LiteralPath $path -Destination ($path+'-moved') -ErrorAction Stop}|Should -Throw
             $lease.ValidateIdentity()
             [IO.File]::ReadAllText((Join-Path $path 'retained.txt'))|Should -BeExactly 'synthetic preserved'
-        } catch {$script:CustodyPrimaryFailure=$_;throw} finally {try {Save-CustodyFinalReceipt $root} finally {$lease.Dispose()}}
+        } catch {$script:CustodyPrimaryFailure=$_;throw} finally {Complete-CustodyTest $root $lease}
     }
 }
 
@@ -218,27 +255,27 @@ Describe 'Elevated synthetic owner transition and rollback' -Tag 'Elevated' {
         $script:CustodyPrimaryFailure=$null
         # Shared private-tree helpers are loaded by the file BeforeAll.
         # This case never selects a real volume or production namespace.
-        $root=New-SyntheticTree;$receipt=Tree-Receipt $root
+        $root=New-SyntheticTree;$receipt=Stable-TreeReceipt $root
         $tokenBefore=[Security.Principal.WindowsIdentity]::GetCurrent().Name
         $levelBefore=[Security.Principal.WindowsIdentity]::GetCurrent().ImpersonationLevel
         $scope=[Revealfleet.Backup.ColdRestorePrivilege]::new();$lease=$null
         try {
             $lease=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($root)
             $before=$lease.Read();$foreign=$before.WithOwner('S-1-5-21-111-222-333-4294960000')
-            $lease.Replace($before.Sha256,$foreign.DescriptorBase64)
+            (Invoke-SyntheticReplacement $lease $before.Sha256 $foreign.DescriptorBase64)
             $lease.Read().OwnerSid|Should -BeExactly $foreign.OwnerSid
             $after=$foreign.Restricted([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
-            $lease.Replace($foreign.Sha256,$after.DescriptorBase64)
+            (Invoke-SyntheticReplacement $lease $foreign.Sha256 $after.DescriptorBase64)
             $lease.Read().OwnerSid|Should -BeExactly 'S-1-5-32-544'
             (Tree-Receipt $root)|Should -BeExactly $receipt
             # Stale-before rollback must fail; it cannot overwrite current state.
-            {$lease.Replace($foreign.Sha256,$before.DescriptorBase64)}|Should -Throw
+            {(Invoke-SyntheticReplacement $lease $foreign.Sha256 $before.DescriptorBase64)}|Should -Throw
             $lease.Read().Sha256|Should -BeExactly $after.Sha256
-            $lease.Replace($after.Sha256,$foreign.DescriptorBase64)
+            (Invoke-SyntheticReplacement $lease $after.Sha256 $foreign.DescriptorBase64)
             $lease.Read().Sha256|Should -BeExactly $foreign.Sha256
-            $lease.Replace($foreign.Sha256,$before.DescriptorBase64)
+            (Invoke-SyntheticReplacement $lease $foreign.Sha256 $before.DescriptorBase64)
             (Tree-Receipt $root)|Should -BeExactly $receipt
-        } catch {$script:CustodyPrimaryFailure=$_;throw} finally {try {Save-CustodyFinalReceipt $root} finally {if($lease){$lease.Dispose()};$scope.Dispose()}}
+        } catch {$script:CustodyPrimaryFailure=$_;throw} finally {Complete-CustodyTest $root $lease $scope}
         [Security.Principal.WindowsIdentity]::GetCurrent().Name|Should -BeExactly $tokenBefore
         [Security.Principal.WindowsIdentity]::GetCurrent().ImpersonationLevel|Should -Be $levelBefore
     }
@@ -255,8 +292,8 @@ Describe 'Elevated synthetic owner transition and rollback' -Tag 'Elevated' {
         try {
             $lease=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($root)
             $before=$lease.Read();$after=$before.Restricted([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
-            $lease.Replace($before.Sha256,$after.DescriptorBase64)
-        } finally {if($lease){$lease.Dispose()};$scope.Dispose()}
+            (Invoke-SyntheticReplacement $lease $before.Sha256 $after.DescriptorBase64)
+        } catch {$script:CustodyPrimaryFailure=$_;Complete-CustodyTest $root $lease $scope;$lease=$scope=$null;throw} finally {if($lease){$lease.Dispose()};if($scope){$scope.Dispose()}}
         $namespace=Join-Path $root 'new-authority'
         [Revealfleet.Backup.ColdSourceLease]::CreateProtectedDirectory($namespace,(New-WslColdNamespaceDescriptor ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)))
         $ordinary=[Revealfleet.Tests.OrdinaryCaller]::new()
@@ -274,7 +311,7 @@ Describe 'Elevated synthetic owner transition and rollback' -Tag 'Elevated' {
         Test-Path -LiteralPath (Join-Path $namespace 'forbidden')|Should -BeFalse
         (Get-Acl -LiteralPath $existingAuthority).Sddl|Should -BeExactly $existingAcl
         $lease=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($root);$scope=[Revealfleet.Backup.ColdRestorePrivilege]::new()
-        try {$lease.Replace($after.Sha256,$before.DescriptorBase64)} catch {$script:CustodyPrimaryFailure=$_;throw} finally {try {Save-CustodyFinalReceipt $root} finally {$lease.Dispose();$scope.Dispose()}}
+        try {(Invoke-SyntheticReplacement $lease $after.Sha256 $before.DescriptorBase64)} catch {$script:CustodyPrimaryFailure=$_;throw} finally {Complete-CustodyTest $root $lease $scope}
     }
 }
 
@@ -301,7 +338,7 @@ Describe 'Elevated new-namespace installation under an independent protected syn
         try {
             $lease=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($root)
             $before=$lease.Read();$after=$before.Restricted([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
-            $lease.Replace($before.Sha256,$after.DescriptorBase64)
+            (Invoke-SyntheticReplacement $lease $before.Sha256 $after.DescriptorBase64)
             $source=Join-Path $root 'fixed-synthetic-package';[IO.Directory]::CreateDirectory($source)|Out-Null
             $input=Join-Path $source 'fixed.bin';[IO.File]::WriteAllBytes($input,[byte[]](1,2,3,255))
             $manifest=Join-Path $source 'artifact-source-manifest.json';[IO.File]::WriteAllText($manifest,'{"synthetic":true}')
@@ -325,14 +362,29 @@ Describe 'Elevated new-namespace installation under an independent protected syn
             [IO.File]::ReadAllBytes($partial).Length|Should -Be 4
             Test-Path -LiteralPath (Join-Path $partialAttempt 'namespaces-verified.json')|Should -BeFalse
             $lease.Read().Sha256|Should -BeExactly $after.Sha256
-            $lease.Replace($after.Sha256,$before.DescriptorBase64)
+            (Invoke-SyntheticReplacement $lease $after.Sha256 $before.DescriptorBase64)
             Test-Path -LiteralPath $partial|Should -BeTrue
             $lease.Read().Sha256|Should -BeExactly $before.Sha256
-        } catch {$script:CustodyPrimaryFailure=$_;throw} finally {try {Save-CustodyFinalReceipt $root} finally {if($lease){$lease.Dispose()};$scope.Dispose()}}
+        } catch {$script:CustodyPrimaryFailure=$_;throw} finally {Complete-CustodyTest $root $lease $scope}
     }
 }
 
 Describe 'Receipt observer lifetime and error preservation' {
+    It 'compiles the bounded native API lab and refuses existing/unregistered targets before native access' {
+        if(-not ('Revealfleet.Tests.SyntheticSecurityLab' -as [type])){Add-Type -Path (Join-Path $PSScriptRoot 'WslColdVolumeCustody.Fixture.cs')}
+        {[Revealfleet.Tests.SyntheticSecurityLab]::SetNativeCandidate($TestDrive,[byte[]]@())}|Should -Throw
+    }
+    It 'captures final evidence even if handle disposal fails and preserves the original failure' {
+        $script:CustodyPrimaryFailure=[InvalidOperationException]::new('original assertion')
+        $owned=[pscustomobject]@{};$owned|Add-Member ScriptMethod Dispose {throw 'synthetic disposal failure'}
+        Mock Save-CustodyTestReceipt {}
+        {Complete-CustodyTest 'not-opened' $owned}|Should -Not -Throw
+        Should -Invoke Save-CustodyTestReceipt -Times 1
+        $script:CustodyPrimaryFailure.Message|Should -BeExactly 'original assertion'
+        $script:CustodyPrimaryFailure=$null
+        {Complete-CustodyTest 'not-opened' $owned}|Should -Throw -ExpectedMessage '*synthetic disposal*'
+        $script:CustodyPrimaryFailure=$null
+    }
     It 'keeps the original assertion visible when final receipt capture also fails' {
         $script:CustodyPrimaryFailure=$null
         Mock Save-CustodyTestReceipt {throw 'secondary receipt fixture error'}
@@ -346,13 +398,14 @@ Describe 'Receipt observer lifetime and error preservation' {
         $script:CustodyPrimaryFailure=$null
         $root=New-SyntheticTree;$lease=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($root)
         try {
-            $before=$lease.Read()
+            $before=$lease.Read();$tree=Stable-TreeReceipt $root
             1..3|ForEach-Object {
                 $lease.ValidateIdentity()
                 [Revealfleet.Backup.ColdDirectorySecurityLease]::ObserveForReceipt($root).Sha256|Should -BeExactly $before.Sha256
             }
+            (Tree-Receipt $root)|Should -BeExactly $tree
             {Move-Item -LiteralPath $root -Destination ($root+'-renamed') -ErrorAction Stop}|Should -Throw
             $lease.Read().Sha256|Should -BeExactly $before.Sha256
-        } catch {$script:CustodyPrimaryFailure=$_;throw} finally {try {Save-CustodyFinalReceipt $root} finally {$lease.Dispose()}}
+        } catch {$script:CustodyPrimaryFailure=$_;throw} finally {Complete-CustodyTest $root $lease}
     }
 }
