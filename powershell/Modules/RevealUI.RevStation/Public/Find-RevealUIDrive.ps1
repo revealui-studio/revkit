@@ -10,6 +10,15 @@ function Find-RevealUIDrive {
 
     $marker = "powershell\Modules\RevealUI.RevStation\RevealUI.RevStation.psd1"
 
+    $savedRoot = Get-SavedRevkitRoot
+    if (-not [string]::IsNullOrWhiteSpace($savedRoot)) {
+        if (-not (Test-Path -LiteralPath (Join-Path $savedRoot $marker) -PathType Leaf)) {
+            throw 'Configured RevKit Windows artifact is unavailable; legacy checkout discovery is not a replacement.'
+        }
+        if ($UpdateEnv) { $env:REVEALUI_ROOT = $savedRoot }
+        return $savedRoot
+    }
+
     # Layer 1: Check existing env var
     if ($env:REVEALUI_ROOT -and (Test-Path (Join-Path $env:REVEALUI_ROOT $marker) -ErrorAction SilentlyContinue)) {
         return $env:REVEALUI_ROOT

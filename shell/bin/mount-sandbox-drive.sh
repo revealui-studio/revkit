@@ -1,5 +1,5 @@
 #!/bin/bash
-# mount-sandbox-drive.sh mounts the Sandbox infrastructure drive by filesystem label.
+# mount-sandbox-drive.sh mounts only the approved Sandbox disk identity.
 # Called by Windows mount script (Mount-WSLDev.ps1) after wsl --mount --bare.
 #
 # Defense-in-depth checks (GAP-118 + GAP-119, 2026-04-24):
@@ -11,8 +11,8 @@
 #
 #  2. After mount, $MOUNT_POINT/.sandbox-marker MUST exist (placed during one-
 #     time `--init` setup). If it's missing, the script unmounts immediately
-#     and exits 1. The device is chosen only by the Sandbox filesystem label.
-#     There is no unlabeled-ext4 fallback.
+#     and exits 1. Root-owned identity configuration pins disk/GPT/filesystem
+#     identity; neither a label nor a marker selects the device.
 #
 #  3. Every mount attempt is logged to /var/log/revealui-mount.log (timestamp,
 #     mode, source, device, outcome).
@@ -21,6 +21,7 @@
 #   sudo /usr/local/bin/mount-sandbox-drive.sh --mount-only   # steady-state, NOPASSWD path
 #   sudo /usr/local/bin/mount-sandbox-drive.sh --init         # one-time setup; creates marker
 set -euo pipefail
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
 MOUNT_POINT="/mnt/sandbox"
 DRIVE_LABEL="Sandbox"
@@ -86,9 +87,49 @@ log_mount() {
     } >> "$LOG_FILE" 2>/dev/null || true
 }
 
+IDENTITY_HELPER="/usr/local/lib/revealfleet/wsl-disk-identity.py"
+IDENTITY_CONFIG="/etc/revealfleet/disks/sandbox.json"
+
+verify_identity() {
+    /usr/bin/python3 -I -c '
+import os, pathlib, stat, sys
+for text in sys.argv[1:]:
+    path = pathlib.Path(text)
+    for component in [*reversed(path.parents), path]:
+        info = component.lstat()
+        if info.st_uid != 0 or info.st_mode & 0o022 or stat.S_ISLNK(info.st_mode):
+            raise SystemExit("Root-owned non-writable identity tooling/configuration required")
+    if not stat.S_ISREG(path.lstat().st_mode):
+        raise SystemExit("Identity tooling/configuration must be regular files")
+' "$IDENTITY_HELPER" "$IDENTITY_CONFIG" || return
+    /usr/bin/python3 -I "$IDENTITY_HELPER" --identity "$IDENTITY_CONFIG" \
+        --require-mount-point "$MOUNT_POINT" --require-label "$DRIVE_LABEL" --deadline-seconds 30
+}
+
+if ! IDENTITY_REPORT="$(verify_identity)"; then
+    echo "ERROR: Configure the approved Sandbox identity through RevKit provisioning at $IDENTITY_CONFIG; no filesystem was mounted." >&2
+    exit 1
+fi
+IDENTITY_FIELDS="$(printf '%s' "$IDENTITY_REPORT" | /usr/bin/python3 -I -c '
+import json, sys
+value = json.load(sys.stdin)
+if value.get("identityVerified") is not True or value.get("mountState") not in {"MOUNTED", "NOT_MOUNTED"}:
+    raise SystemExit("Incomplete identity verification")
+print(value["partitionPath"])
+print(value["mountState"])
+')"
+mapfile -t VERIFIED_FIELDS <<< "$IDENTITY_FIELDS"
+if [ "${#VERIFIED_FIELDS[@]}" -ne 2 ]; then
+    echo "ERROR: Invalid identity probe response." >&2
+    exit 1
+fi
+EXTDEV="${VERIFIED_FIELDS[0]}"
+MOUNT_STATE="${VERIFIED_FIELDS[1]}"
+SOURCE="approved-identity"
+
 # Already mounted? Still verify the marker so a previously-mounted wrong drive
 # doesn't pass through unchecked.
-if mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
+if [ "$MOUNT_STATE" = "MOUNTED" ]; then
     if [[ "$INIT_MARKER" == "true" ]]; then
         if [[ ! -f "$MARKER_FILE" ]]; then
             echo "Sandbox drive already mounted but marker missing. Creating $MARKER_FILE."
@@ -114,35 +155,8 @@ if mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
     exit 0
 fi
 
-# --- Find by filesystem label, with a short retry ---
-# `wsl --mount --bare` can return before udev/blkid has indexed the partition
-# label. Retry briefly. If the label never appears, stop. Do not mount some
-# other unlabeled ext4 just because it is the first free partition. A disk
-# that carries a .sandbox-marker is not proof it is the Sandbox drive.
-EXTDEV=""
-SOURCE="label"
-LABEL_RETRIES="${SANDBOX_LABEL_RETRIES:-5}"
-LABEL_RETRY_SLEEP="${SANDBOX_LABEL_RETRY_SLEEP:-1}"
-case "$LABEL_RETRIES" in
-    ''|*[!0-9]*) LABEL_RETRIES=5 ;;
-esac
-case "$LABEL_RETRY_SLEEP" in
-    ''|*[!0-9]*) LABEL_RETRY_SLEEP=1 ;;
-esac
-_attempt=1
-while [ "$_attempt" -le "$LABEL_RETRIES" ]; do
-    EXTDEV=$(blkid -L "$DRIVE_LABEL" 2>/dev/null || true)
-    [ -n "$EXTDEV" ] && break
-    if [ "$_attempt" -lt "$LABEL_RETRIES" ] && [ "$LABEL_RETRY_SLEEP" -gt 0 ]; then
-        sleep "$LABEL_RETRY_SLEEP"
-    fi
-    _attempt=$((_attempt + 1))
-done
-
-if [ -z "$EXTDEV" ]; then
-    echo "ERROR: No partition with label '$DRIVE_LABEL' found after retries." >&2
-    echo "       Refusing to guess an unlabeled ext4 device." >&2
-    log_mount "failed=label-not-found"
+if [ -L "$MOUNT_POINT" ]; then
+    echo "ERROR: Sandbox mountpoint cannot be a symbolic link." >&2
     exit 1
 fi
 
@@ -154,6 +168,28 @@ mount -t ext4 -o defaults,noatime "$EXTDEV" "$MOUNT_POINT"
 if ! mountpoint -q "$MOUNT_POINT"; then
     echo "ERROR: Mount failed for $EXTDEV." >&2
     log_mount "failed=mount-syscall-failed device=$EXTDEV source=$SOURCE"
+    exit 1
+fi
+
+if ! POST_MOUNT_REPORT="$(verify_identity)"; then
+    umount "$MOUNT_POINT"
+    echo "ERROR: Mounted filesystem identity failed revalidation." >&2
+    exit 1
+fi
+if ! POST_MOUNT_STATE="$(printf '%s' "$POST_MOUNT_REPORT" | /usr/bin/python3 -I -c '
+import json, sys
+value = json.load(sys.stdin)
+if value.get("identityVerified") is not True or value.get("mountState") != "MOUNTED":
+    raise SystemExit("Mounted identity is unverified")
+print(value["mountState"])
+')"; then
+    umount "$MOUNT_POINT"
+    echo "ERROR: Mounted identity response is invalid." >&2
+    exit 1
+fi
+if [ "$POST_MOUNT_STATE" != "MOUNTED" ]; then
+    umount "$MOUNT_POINT"
+    echo "ERROR: Mount state failed exact verification." >&2
     exit 1
 fi
 

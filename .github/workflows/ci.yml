@@ -546,3 +546,50 @@ jobs:
           persist-credentials: false
       - name: Run native-home bootstrap tests
         run: bash tests/test-bootstrap-native.sh
+
+  native-runtime-adapters:
+    name: Native runtime and offline migration adapters
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Verify runtime, disk and offline state adapters
+        run: |
+          python3 -B -m unittest discover -s tests -p 'test_linux_node.py'
+          python3 -B -m unittest discover -s tests -p 'test_linux_boot.py'
+          python3 -B -m unittest discover -s tests -p 'test_wsl_disk_identity.py'
+          python3 -B -m unittest discover -s tests -p 'test_windows_artifacts.py'
+          python3 -B -m unittest discover -s tests -p 'test_codex_*.py'
+
+  windows-artifact-acls:
+    name: Native Windows backup and artifact custody
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Install Pester 5
+        shell: pwsh
+        run: |
+          Install-Module -Name Pester -RequiredVersion 5.5.0 -Force -SkipPublisherCheck -Scope CurrentUser
+          Import-Module Pester -RequiredVersion 5.5.0
+      - name: Verify Windows custody, controls, admission and transport
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP ('revkit-windows-results-' + [Guid]::NewGuid().ToString('N'))
+          "REVKIT_WINDOWS_RESULTS=$out" >> $env:GITHUB_ENV
+          ./tests/powershell/Invoke-WslColdWindowsAcceptance.ps1 -OutputDirectory $out -CreateCiAnchor -IncludeElevated
+      - name: Retain bounded nonsecret Windows failure evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-synthetic-acceptance
+          path: |
+            ${{ env.REVKIT_WINDOWS_RESULTS }}/windows-results.xml
+            ${{ env.REVKIT_WINDOWS_RESULTS }}/windows-acceptance.json
+            ${{ env.REVKIT_WINDOWS_RESULTS }}/private-anchor-audit.json
+            ${{ env.REVKIT_WINDOWS_RESULTS }}/authority-anchor-audit.json
+          if-no-files-found: warn
+          retention-days: 7

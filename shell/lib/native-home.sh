@@ -474,6 +474,28 @@ revkit_link_fleet() {
   echo "  Done."
 }
 
+revkit_install_control_cli() {
+  local fleet target dest
+  fleet="${REVEALFLEET_ROOT:-${_FLEET_PIN:-}}"
+  [ -n "$fleet" ] || { printf 'revkit: fleet bootstrap pin required for control CLI\n' >&2; return 1; }
+  target="$fleet/revealui/packages/harnesses/dist/cli.js"
+  dest="$HOME/.local/bin/revealui-harnesses"
+  [ -f "$target" ] || { printf 'revkit: build @revealui/harnesses before control CLI installation\n' >&2; return 1; }
+  if [ -e "$dest" ] || [ -L "$dest" ]; then
+    if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$target" ]; then return 0; fi
+    printf 'revkit: owner executable preserved: %s\n' "$dest" >&2
+    return 1
+  fi
+  if [ "${DRY_RUN:-0}" -eq 1 ]; then
+    printf '  [dry-run] control CLI %s -> %s\n' "$dest" "$target"
+    return 0
+  fi
+  node --check "$target" || return
+  mkdir -p "$(dirname "$dest")"
+  ln -s "$target" "$dest"
+  printf '  Installed native control CLI: %s\n' "$dest"
+}
+
 revkit_bootstrap_control_layer() {
   echo "[7] Writing native control home (~/.revealui)..."
   revkit_install_native_templates

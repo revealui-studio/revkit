@@ -13,6 +13,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $PSCommandPath
+. (Join-Path $here 'lib' 'WslPlatform.ps1')
+$null = Assert-WslPlatformVersion
 
 $src = "C:\WSL\$Distro\ext4.vhdx"
 $already = Join-Path $Destination 'ext4.vhdx'

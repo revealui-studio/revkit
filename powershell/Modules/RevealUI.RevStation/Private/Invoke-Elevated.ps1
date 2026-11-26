@@ -19,15 +19,13 @@ function Invoke-Elevated {
         [switch]$Wait
     )
 
-    # Inline module discovery + caller's command
+    $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..' '..' '..' '..'))
+    $manifest = Join-Path $root 'powershell\Modules\RevealUI.RevStation\RevealUI.RevStation.psd1'
+    if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { throw 'Active maintained Windows module artifact is unavailable.' }
+    $quotedManifest = $manifest.Replace("'", "''")
     $script = @"
-`$r = Get-Volume | Where-Object DriveLetter | ForEach-Object { "`$(`$_.DriveLetter):\.revealui"; "`$(`$_.DriveLetter):\professional\.revealui" } |
-  Where-Object { Test-Path "`$_\powershell\Modules\RevealUI.RevStation" } | Select-Object -First 1
-if (`$r) {
-  `$env:PSModulePath = (Join-Path `$r 'powershell\Modules') + ';' + `$env:PSModulePath
-  Import-Module RevealUI.RevStation
-  $Command
-} else { Write-Error 'RevealUI.RevStation module not found on any drive' }
+Import-Module -Name '$quotedManifest' -Force -ErrorAction Stop
+$Command
 "@
 
     $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($script))
