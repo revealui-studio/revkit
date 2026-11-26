@@ -11,10 +11,10 @@ BeforeAll {
         if($IsWindows){
             if(-not ('Revealfleet.Tests.SyntheticSecurityLab' -as [type])){Add-Type -Path (Join-Path $PSScriptRoot 'WslColdVolumeCustody.Fixture.cs')}
             function New-SyntheticTree {
-                param([switch]$UnprotectedExplicit,[switch]$ForeignIdentity)
+                param([switch]$UnprotectedExplicit,[switch]$ForeignIdentity,[switch]$AuthorityParent)
                 $base=if($RetainedFixtureParent){$RetainedFixtureParent}else{$TestDrive}
                 if($RetainedFixtureParent){
-                    [void](Assert-WslColdProtectedPath $base -Directory -PrivateData)
+                    [void](Assert-WslColdProtectedPath $base -Directory -PrivateData:(-not $AuthorityParent))
                     if([IO.Path]::GetFullPath($base) -ceq [IO.Path]::GetPathRoot($base)){throw 'Synthetic fixture parent cannot be a volume root.'}
                     $cursor=[IO.DirectoryInfo]::new($base)
                     while($cursor){if(Test-Path -LiteralPath (Join-Path $cursor.FullName '.git')){throw 'Synthetic custody must be outside Git.'};$cursor=$cursor.Parent}
@@ -400,10 +400,15 @@ Describe 'Elevated synthetic owner transition and rollback' -Tag 'Elevated' {
         } finally {if($scope){$scope.Dispose();$scope=$null}}
         $namespace=Join-Path $root 'new-authority'
         [Revealfleet.Backup.ColdSourceLease]::CreateProtectedDirectory($namespace,(New-WslColdNamespaceDescriptor ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)))
+        $rootDescriptor=[Convert]::FromBase64String($lease.Read().DescriptorBase64)
         $ordinary=[Revealfleet.Tests.OrdinaryCaller]::new()
         try {
             $ordinary.Enter()
-            foreach($right in @(0x10000,0x40,0x40000,0x80000)){[Revealfleet.Tests.OrdinaryCaller]::CanOpen($root,$right)|Should -BeFalse}
+            # Actual token/DACL admission is checked independently of the
+            # retained lease's DELETE sharing exclusion. Never map error32 to
+            # access-denied or release custody to manufacture this evidence.
+            foreach($right in @(0x10000,0x40,0x40000,0x80000)){$ordinary.AllowedByDacl($rootDescriptor,$right)|Should -BeFalse}
+            foreach($right in @(2,4)){$ordinary.AllowedByDacl($rootDescriptor,$right)|Should -BeTrue}
             [Revealfleet.Tests.OrdinaryCaller]::CreateChildren($root)
             [IO.File]::ReadAllText((Join-Path $root 'ordinary-created-file'))|Should -BeExactly 'ordinary synthetic bytes'
             [Revealfleet.Tests.OrdinaryCaller]::CanOpen($namespace,0x10000)|Should -BeFalse
@@ -439,7 +444,7 @@ Describe 'Elevated new-namespace installation under an independent protected syn
         # user Temp. Failure to provide that anchor is an explicit test gap.
         [void](Assert-WslColdProtectedPath $AdminFixtureParent -Directory)
         $savedParent=$RetainedFixtureParent;$RetainedFixtureParent=$AdminFixtureParent
-        try {$root=New-SyntheticTree}finally {$RetainedFixtureParent=$savedParent}
+        try {$root=New-SyntheticTree -AuthorityParent}finally {$RetainedFixtureParent=$savedParent}
         $scope=[Revealfleet.Backup.ColdRestorePrivilege]::new();$lease=$null
         try {
             $lease=[Revealfleet.Backup.ColdDirectorySecurityLease]::new($root)

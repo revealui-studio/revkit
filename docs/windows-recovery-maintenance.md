@@ -854,3 +854,28 @@ backup/restore acceptance before simultaneous Codex relocation unless a complete
 fresh combined budget proves both. No sparse/compression/dedup credit; no source
 outage, real key/repository, full backup/restore, live ACL edit or relocation is
 accepted by this source increment. All deferred migration obligations remain.
+
+
+The first new hosted Windows run exercised110 cases:106 passed,2 failed,
+2 expected platform skips,0 not-run. Constrained forward/rollback, zero-call
+changed-template refusal, unprotected control and elevated unresolved-owner/group
+cases passed there. This is hosted synthetic evidence, not laptop/volume-root or
+production acceptance. Private and public ancestor audits had no outside effective
+mutation offenders. The current hosted C root's S-1-5-11 append/create-directory
+right4 is safe ancestry but an invalid public code leaf write grant; its inherit-only
+generic template is likewise not effective ancestor authority. These observations
+explain the role distinction on this host; the old disposed runner did not capture
+its exact offending SID, so historical identity equality is not asserted.
+
+Two remaining test defects were then repaired. A filtered token's DELETE open of
+the still-held root returned sharing32 before an ACL denial could be established.
+The test now uses [AccessCheck](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-accesscheck)
+with an actual restricted impersonation token and the exact held root descriptor
+to prove its denied security rights and permitted creation rights, independently
+of sharing. Real child creation and unheld target opens still prove filesystem
+behavior. CanOpen still throws on sharing32; it is never recast as access-denied.
+The original retained handle/custody stays held throughout. The authority namespace
+factory now validates its explicitly public parent as public, while private fixture
+parents retain strict PrivateData validation. No operational guard was changed.
+Failed source/test packages and CI XML/audits are retained; revised tests still
+need actual Windows execution.
